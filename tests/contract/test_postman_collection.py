@@ -6,41 +6,22 @@ It runs with `uv run pytest` and needs neither Docker nor Node.js: it only reads
 
 import json
 import re
-from collections.abc import Iterator
-from pathlib import Path
 
-from src.main import create_app
-
-POSTMAN = Path(__file__).resolve().parents[1] / "postman"
-COLLECTION = POSTMAN / "collections" / "MailySoft-System-Suscripciones.postman_collection.json"
-# Requests that prepare scenarios (`setup: ...`) or check the public documentation (`docs: ...`)
-# are not operations of the API: their name does not start with an `operationId`.
-HELPER_PREFIXES = {"setup", "docs"}
-JWT_PATTERN = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.")
-
-
-def requests_of(items: list[dict]) -> Iterator[dict]:
-    for item in items:
-        if "item" in item:
-            yield from requests_of(item["item"])
-        else:
-            yield item
+from tests.contract.postman_support import (
+    COLLECTION,
+    E2E_HELPER_PREFIXES as HELPER_PREFIXES,
+    JWT_PATTERN,
+    MANUAL_COLLECTION,
+    MANUAL_ENVIRONMENTS,
+    POSTMAN,
+    operation_ids_of_the_api,
+    prefix_of,
+    requests_of,
+)
 
 
 def collection() -> dict:
     return json.loads(COLLECTION.read_text(encoding="utf-8"))
-
-
-def prefix_of(name: str) -> str:
-    assert ": " in name, f"the name of the request «{name}» must be «<operationId>: <description>»"
-    return name.split(": ", 1)[0]
-
-
-def operation_ids_of_the_api() -> set[str]:
-    schema = create_app().openapi()
-    return {
-        operation["operationId"] for item in schema["paths"].values() for operation in item.values()
-    }
 
 
 def test_the_collection_covers_exactly_the_operations_of_the_openapi():
@@ -82,10 +63,15 @@ def test_the_authentication_only_references_variables():
 
 
 def test_no_file_of_the_postman_folder_holds_a_token_or_a_secret():
+    # The files of the manual collection (spec 002) are left out on purpose: they must name the
+    # `auth0ClientSecret` variable and its `secret` type, so a search for the word would always
+    # fire. They are checked by structure in `test_manual_postman_collection.py`.
+    manual = {MANUAL_COLLECTION, *MANUAL_ENVIRONMENTS.values()}
     files = [
         path
         for path in POSTMAN.rglob("*")
         if path.is_file()
+        and path not in manual
         and "node_modules" not in path.parts
         and "reports" not in path.parts
         and path.name != "package-lock.json"

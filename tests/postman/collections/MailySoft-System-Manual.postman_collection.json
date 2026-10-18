@@ -1,0 +1,2386 @@
+{
+  "info": {
+    "name": "MailySoft System API - Manual",
+    "description": "# MailySoft System API — colección manual\n\n**Si pulsas *Enviar* y no pasa nada, abre la Consola de Postman** (*Ver → Mostrar Consola de Postman*): ahí se explica por qué no se envió la petición. El mismo motivo queda en la variable de colección `accessProblem`.\n\nSirve para probar **a mano** las 6 operaciones de `/api/v1/subscriptions` (listar, consultar, crear, actualizar, cambiar el estatus y eliminar), la documentación pública y los errores clave (401, 403, 404, 409, 422 y 503), con datos de ejemplo ya preparados. No necesita iniciar sesión en Postman y no envía nada a otro servicio que no sea **Auth0** (para pedir el token) y **la API que pruebas**. No sustituye a pytest ni a la colección de punta a punta (Newman).\n\n## Para empezar\n\n1. Importa esta colección y un entorno (`manual-local`, o `manual-deployed-test` para un entorno desplegado de pruebas).\n2. Elige ese entorno arriba a la derecha.\n3. En el entorno rellena `auth0Domain` (sin `https://`, por ejemplo `mi-tenant.us.auth0.com`), `auth0Audience` (idéntico al identificador de la API de usuarios, que es quien verifica el token), `auth0ClientId` y `auth0ClientSecret`. **El secreto solo en tu copia local de la variable**, nunca en un valor que se sincronice.\n4. Envía `0. Empezar → list_subscriptions: comprobar el acceso y ver el catálogo`. Responde 200 **sin que pegues ningún token**: la colección lo pide sola a Auth0, lo reutiliza y lo renueva 60 segundos antes de que venza.\n\nSi falta algún valor o Auth0 no responde, la petición **no se envía** (nunca sale sin token) y se explica en la Consola qué revisar.\n\n## Requisitos previos (fuera de la colección)\n\n- Una aplicación *Machine to Machine* de Auth0 autorizada para el *audience* del API de usuarios (su `sub` termina en `@clients`).\n- Ese `sub` registrado como usuario en el API de usuarios, con un rol que tenga `subscriptions:read`, `subscriptions:write`, `subscriptions:update` y `subscriptions:delete`. El catálogo del API de usuarios ya los trae, pero su script `bootstrap_admin.sql` solo asocia al *Administrator* los 12 permisos de usuarios, roles y permisos.\n- Opcional, para el caso 403: una segunda aplicación autorizada para el mismo *audience*, registrada **sin** permisos de suscripciones (`plainClientId` y `plainClientSecret`). Sin ella, esas peticiones se omiten y lo explican.\n\n## Entorno desplegado de pruebas\n\nCambiar de entorno es **solo elegir el otro y rellenar sus valores** (`baseUrl` y los de acceso): no hay que editar ninguna petición. Al cambiar, la colección no reutiliza lo del otro entorno: pide un token nuevo y descarta los identificadores guardados (esas suscripciones no existen allí; crea otra con la carpeta 1). La carpeta 3 (simulación de clínicas) solo funciona en local: en el desplegado se omite sola, sin fallar. Ese entorno debe apuntar a una base de datos de pruebas dedicada, nunca a datos reales.\n\n## Advertencias\n\n- **Solo bases de datos de pruebas.** En local, una base dedicada a las pruebas manuales (`maily_system_manual`; nunca la de desarrollo `maily_system` ni la de pytest) y nunca datos reales. La colección crea y elimina —de forma lógica— suscripciones y solo toca las que ella misma crea; el borrado deja filas «Eliminada».\n- **El secreto va solo en tu copia local.** Los archivos de la colección y de los entornos no contienen secretos ni tokens.\n- La Consola de Postman registra por sí misma la petición a Auth0, cuerpo incluido. Es local, pero **no compartas capturas de ella**.\n- Si **todas las respuestas son 403**: la persona no está registrada en el API de usuarios o su rol no tiene los cuatro permisos de suscripciones. Si **todo responde 503** con `authorization_unavailable`: el API de usuarios no responde.\n- Sin API de clínicas ni simulación, `clinics_count` sale `null` y eliminar responde 503: es lo esperado.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "accessToken",
+      "value": "",
+      "description": "Token de acceso de la aplicación principal. Lo escribe el script de acceso; nunca se escribe a mano ni va en los archivos.",
+      "type": "string"
+    },
+    {
+      "key": "accessTokenExpiresAt",
+      "value": "",
+      "description": "Vencimiento del token principal, en milisegundos desde la época. Lo escribe el script de acceso.",
+      "type": "string"
+    },
+    {
+      "key": "accessTokenKey",
+      "value": "",
+      "description": "Clave dominio|audience|clientId con que se pidió el token principal; si cambia, se pide otro.",
+      "type": "string"
+    },
+    {
+      "key": "plainToken",
+      "value": "",
+      "description": "Token de la segunda aplicación (opcional, sin permisos). Lo escribe el script de acceso.",
+      "type": "string"
+    },
+    {
+      "key": "plainTokenExpiresAt",
+      "value": "",
+      "description": "Vencimiento del token de la segunda aplicación, en milisegundos desde la época.",
+      "type": "string"
+    },
+    {
+      "key": "plainTokenKey",
+      "value": "",
+      "description": "Clave dominio|audience|clientId con que se pidió el token de la segunda aplicación.",
+      "type": "string"
+    },
+    {
+      "key": "badToken",
+      "value": "",
+      "description": "Token inventado para el caso 401 «token inválido». Se regenera en cada uso; nunca es real.",
+      "type": "string"
+    },
+    {
+      "key": "accessProblem",
+      "value": "",
+      "description": "Último motivo por el que el script omitió una petición (el mismo texto sale en la Consola de Postman).",
+      "type": "string"
+    },
+    {
+      "key": "sessionApi",
+      "value": "",
+      "description": "Dirección de la API (baseUrl) con que se guardaron los datos de la sesión; si cambia, se descartan.",
+      "type": "string"
+    },
+    {
+      "key": "subscriptionId",
+      "value": "",
+      "description": "Identificador de la suscripción de prueba actual, creada por esta colección.",
+      "type": "string"
+    },
+    {
+      "key": "subscriptionName",
+      "value": "",
+      "description": "Nombre de la suscripción de prueba actual; el script comprueba que sigue siendo este antes de modificarla.",
+      "type": "string"
+    },
+    {
+      "key": "otherSubscriptionId",
+      "value": "",
+      "description": "Identificador de la segunda suscripción de prueba (choque de nombres).",
+      "type": "string"
+    },
+    {
+      "key": "otherSubscriptionName",
+      "value": "",
+      "description": "Nombre de la segunda suscripción de prueba.",
+      "type": "string"
+    },
+    {
+      "key": "deletedSubscriptionId",
+      "value": "",
+      "description": "Identificador de la última suscripción que esta colección eliminó con éxito (solo se usa en consultas).",
+      "type": "string"
+    },
+    {
+      "key": "newSuffix",
+      "value": "",
+      "description": "Sufijo único de la creación en curso; lo genera el script de acceso.",
+      "type": "string"
+    },
+    {
+      "key": "nonexistentSubscriptionId",
+      "value": "2147483647",
+      "description": "Identificador que no existe, para el caso 404 (solo se usa en consultas).",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Empezar",
+      "description": "Lo primero que se envía: comprueba que el **acceso** funciona y que la API publica su documentación.\n\n1. Elige el entorno y rellena `auth0Domain`, `auth0Audience`, `auth0ClientId` y `auth0ClientSecret` (el secreto solo en tu copia local).\n2. Envía `list_subscriptions: comprobar el acceso y ver el catálogo`.\n3. Si no pasa nada al pulsar *Enviar*, abre la **Consola de Postman** (*Ver → Mostrar Consola de Postman*): ahí se explica por qué no se envió la petición.",
+      "item": [
+        {
+          "name": "list_subscriptions: comprobar el acceso y ver el catálogo",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "Devuelve **todas** las suscripciones vigentes (Activa, Inactiva y Bloqueada), sin paginar, cada una con su estatus y su número de clínicas. Es la primera petición que conviene enviar: si responde 200, tu acceso está bien configurado.\n\n**Permiso requerido**: `subscriptions:read`.\n\n**Respuestas esperadas**\n- **200**: un arreglo (vacío si aún no hay suscripciones). `clinics_count` es un número o `null` («no disponible»: sin API de clínicas ni simulación es lo esperado).\n- **401**: el token falta o no es válido.\n- **403**: tu aplicación no está registrada en el API de usuarios o su rol no tiene `subscriptions:read`.\n- **503**: no se pudo verificar tu permiso (el API de usuarios no responde).\n\nSi pulsas *Enviar* y no pasa nada, abre la **Consola de Postman**: la petición no se envió y ahí se explica por qué."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"es un arreglo\", function () { pm.expect(body).to.be.an(\"array\"); });",
+                  "pm.test(\"cada suscripción trae los campos del contrato\", function () {",
+                  "  (body || []).forEach(function (subscription) {",
+                  "    pm.expect(subscription).to.include.all.keys(\"id\", \"name\", \"monthly_price\", \"features\", \"status\", \"clinics_count\");",
+                  "    pm.expect(subscription.monthly_price).to.be.a(\"string\");",
+                  "    pm.expect(subscription.features).to.be.an(\"array\");",
+                  "    pm.expect(subscription.status).to.include.all.keys(\"id\", \"name\");",
+                  "    pm.expect(subscription.clinics_count === null || typeof subscription.clinics_count === \"number\").to.eql(true);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "docs: contrato OpenAPI",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openapi.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openapi.json"
+              ]
+            },
+            "description": "El contrato OpenAPI que publica la API (`/openapi.json`). Es **público**: no pide token ni permiso.\n\n**Respuesta esperada**: 200 con el documento, que describe las rutas de suscripciones.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 200 sin token\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"es un documento OpenAPI\", function () { pm.expect(body).to.have.property(\"openapi\"); });",
+                  "pm.test(\"describe las rutas de suscripciones\", function () {",
+                  "  pm.expect(Object.keys(body.paths)).to.include.members([\"/api/v1/subscriptions\", \"/api/v1/subscriptions/{subscription_id}\"]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "docs: documentación interactiva",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/docs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "docs"
+              ]
+            },
+            "description": "La documentación interactiva de la API (`/docs`). Es **pública**: no pide token ni permiso.\n\n**Respuesta esperada**: 200 con una página HTML.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"responde 200 sin token\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"es una página HTML\", function () { pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"text/html\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Ciclo de vida de una suscripción",
+      "description": "Se recorre **en orden**: crear, consultar, listar, actualizar, cambiar el estatus (Inactiva, Bloqueada y de nuevo Activa), eliminar y comprobar que ya no aparece.\n\nTodas las peticiones, salvo la primera, actúan **solo sobre la suscripción que crea la 1.1**; si envías una de ellas antes de crear nada, no sale y la Consola explica que primero hay que crear. Cada ejecución crea un nombre nuevo (`Prueba manual …`), así que puedes repetir el recorrido.\n\nSin API de clínicas ni simulación, `clinics_count` sale `null` y **eliminar responde 503**: es lo esperado (levanta la simulación de la carpeta 3 para verlo funcionar). En un entorno desplegado de pruebas el recorrido es el mismo; solo cambia el entorno elegido (al cambiar, los datos guardados se descartan: crea otra suscripción con la 1.1).",
+      "item": [
+        {
+          "name": "create_subscription: crear la suscripción de prueba",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "Crea una suscripción con un nombre **único en cada ejecución** (`Prueba manual …`) y guarda su identificador y su nombre para las peticiones siguientes. Nace **Activa** y con 0 clínicas.\n\n**Permiso requerido**: `subscriptions:write`.\n\n**Respuestas esperadas**: **201** con la suscripción creada; 401 sin token válido; 403 sin permiso; 409 si el nombre ya existe; 422 si hay datos no válidos; 503 si no se pudo verificar el permiso.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Prueba manual {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": 4500,\n  \"features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 201\", function () { pm.response.to.have.status(201); });",
+                  "if (pm.response.code === 201 && body) {",
+                  "  pm.collectionVariables.set(\"subscriptionId\", String(body.id));",
+                  "  pm.collectionVariables.set(\"subscriptionName\", body.name);",
+                  "}",
+                  "pm.test(\"nace Activa\", function () { pm.expect(body && body.status).to.eql({ id: 1, name: \"Activa\" }); });",
+                  "pm.test(\"el precio es una cadena con dos decimales\", function () { pm.expect(body && body.monthly_price).to.eql(\"4500.00\"); });",
+                  "pm.test(\"una suscripción nueva no tiene clínicas\", function () { pm.expect(body && body.clinics_count).to.eql(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription: consultar la suscripción creada",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "description": "Consulta la suscripción creada en la 1.1.\n\n**Permiso requerido**: `subscriptions:read`.\n\n**Respuestas esperadas**: **200** con la suscripción; 404 si no existe o está eliminada; 401, 403 y 503 como en cualquier operación.\n\n`clinics_count` es el número de clínicas que informa el API de clínicas. Si no se pudo consultar (sin API de clínicas ni simulación) es `null`, «no disponible»: la consulta sigue funcionando."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"es la suscripción creada\", function () { pm.expect(String(body && body.id)).to.eql(pm.collectionVariables.get(\"subscriptionId\")); });",
+                  "pm.test(\"el conteo de clínicas es un número o «no disponible» (null)\", function () {",
+                  "  pm.expect(body && (body.clinics_count === null || typeof body.clinics_count === \"number\")).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list_subscriptions: la suscripción creada aparece en el catálogo",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "Lista el catálogo completo (sin paginar) y comprueba que la suscripción creada aparece.\n\n**Permiso requerido**: `subscriptions:read`.\n\n**Respuesta esperada**: **200** con un arreglo que incluye la suscripción de prueba. En un entorno compartido habrá además las de otras personas: la colección no las toca."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"el catálogo incluye la suscripción creada\", function () {",
+                  "  const found = (body || []).find(function (s) { return String(s.id) === pm.collectionVariables.get(\"subscriptionId\"); });",
+                  "  pm.expect(found, \"la suscripción creada no aparece\").to.be.an(\"object\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_subscription: cambiar el precio y las funciones",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "description": "Cambia solo el precio y las funciones de la suscripción creada (se envía únicamente lo que cambia).\n\n**Permiso requerido**: `subscriptions:update`.\n\n**Respuestas esperadas**: **200** con la suscripción actualizada; 404 si no existe; 409 si el nombre ya lo usa otra; 422 si hay datos no válidos o campos no permitidos.\n\nAntes de enviarla, la colección comprueba que la suscripción guardada sigue siendo la que ella creó; si no, no la envía y lo explica en la Consola.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"monthly_price\": 4700,\n  \"features\": [\"Hasta 8 consultorios\"]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"el precio cambió\", function () { pm.expect(body && body.monthly_price).to.eql(\"4700.00\"); });",
+                  "pm.test(\"las funciones cambiaron\", function () { pm.expect(body && body.features).to.eql([\"Hasta 8 consultorios\"]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_subscription: cambiar el nombre",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "description": "Cambia el nombre de la suscripción creada (le añade «renombrada») y guarda el nombre nuevo, que es el que la colección espera encontrar antes de modificarla de nuevo.\n\n**Permiso requerido**: `subscriptions:update`.\n\n**Respuestas esperadas**: **200** con el nombre nuevo; 409 si otra suscripción ya se llama así.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{subscriptionName}} renombrada\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 200\", function () { pm.response.to.have.status(200); });",
+                  "if (pm.response.code === 200 && body) {",
+                  "  pm.collectionVariables.set(\"subscriptionName\", body.name);",
+                  "}",
+                  "pm.test(\"el nombre cambió\", function () { pm.expect(body && body.name).to.include(\"renombrada\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "change_subscription_status: pasar a Inactiva",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}",
+                "status"
+              ]
+            },
+            "description": "Cambia el estatus de la suscripción a **Inactiva** (`status_id` 2). Los estatus que admite esta operación son 1 (Activa), 2 (Inactiva) y 3 (Bloqueada); «Eliminada» solo se alcanza con la operación de eliminar.\n\n**Permiso requerido**: `subscriptions:update` (cambiar el estatus cuenta como actualizar).\n\n**Respuestas esperadas**: **200** con el estatus nuevo; 409 si ya lo tenía; 422 si el estatus no está permitido.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status_id\": 2\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"el estatus es Inactiva\", function () { pm.expect(body && body.status).to.eql({ id: 2, name: \"Inactiva\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "change_subscription_status: pasar a Bloqueada",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}",
+                "status"
+              ]
+            },
+            "description": "Cambia el estatus de la suscripción a **Bloqueada** (`status_id` 3).\n\n**Permiso requerido**: `subscriptions:update`.\n\n**Respuestas esperadas**: **200** con el estatus nuevo; 409 si ya lo tenía.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status_id\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"el estatus es Bloqueada\", function () { pm.expect(body && body.status).to.eql({ id: 3, name: \"Bloqueada\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "change_subscription_status: volver a Activa",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}",
+                "status"
+              ]
+            },
+            "description": "Devuelve la suscripción a **Activa** (`status_id` 1).\n\n**Permiso requerido**: `subscriptions:update`.\n\n**Respuestas esperadas**: **200** con el estatus nuevo; 409 si ya estaba Activa.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status_id\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"el estatus es Activa\", function () { pm.expect(body && body.status).to.eql({ id: 1, name: \"Activa\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "delete_subscription: eliminar la suscripción de prueba",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "description": "Elimina —de forma **lógica**: pasa a «Eliminada» y deja de aparecer— la suscripción creada. Antes de eliminar, la API consulta al API de clínicas cuántas tiene asignadas.\n\n**Permiso requerido**: `subscriptions:delete`.\n\n**Respuestas esperadas** (las tres son válidas según el entorno)\n- **204**: se eliminó. Es lo que ocurre si el API de clínicas (o su simulación) responde y la suscripción no tiene clínicas.\n- **409** `subscription_has_clinics`: tiene clínicas asignadas; no se elimina.\n- **503** `clinics_check_unavailable`: no se pudo comprobar si tiene clínicas, así que **no se elimina nada**. Es lo esperado sin API de clínicas ni simulación; para ver el 204, levanta la simulación de la carpeta 3."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "const code = pm.response.code;",
+                  "if (code === 204) {",
+                  "  pm.collectionVariables.set(\"deletedSubscriptionId\", pm.collectionVariables.get(\"subscriptionId\"));",
+                  "  pm.test(\"la suscripción se eliminó (204)\", function () { pm.response.to.have.status(204); });",
+                  "} else if (code === 409) {",
+                  "  pm.test(\"se rechazó porque tiene clínicas asignadas (409 subscription_has_clinics)\", function () {",
+                  "    pm.expect(body && body.code).to.eql(\"subscription_has_clinics\");",
+                  "  });",
+                  "} else if (code === 503) {",
+                  "  pm.test(\"no se pudo comprobar el API de clínicas (503 clinics_check_unavailable): es lo esperado sin API de clínicas ni simulación y no se eliminó nada\", function () {",
+                  "    pm.expect(body && body.code).to.eql(\"clinics_check_unavailable\");",
+                  "  });",
+                  "} else {",
+                  "  pm.test(\"respuesta inesperada (\" + code + \"): se esperaba 204, 409 o 503\", function () { throw new Error(\"estatus \" + code); });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription: la eliminada ya no se encuentra",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "description": "Consulta de nuevo la suscripción de prueba.\n\n**Permiso requerido**: `subscriptions:read`.\n\n**Respuestas esperadas**\n- Si la petición anterior la eliminó (204): **404** `subscription_not_found`; una suscripción eliminada se comporta como inexistente.\n- Si el borrado no se completó (409 o 503): **200**, porque la suscripción sigue existiendo."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "const deleted = pm.collectionVariables.get(\"deletedSubscriptionId\") === pm.collectionVariables.get(\"subscriptionId\");",
+                  "if (deleted) {",
+                  "  pm.test(\"la eliminada ya no se encuentra (404 subscription_not_found)\", function () {",
+                  "    pm.response.to.have.status(404);",
+                  "    pm.expect(body && body.code).to.eql(\"subscription_not_found\");",
+                  "  });",
+                  "} else {",
+                  "  pm.test(\"la suscripción sigue existiendo porque el borrado anterior no se completó (409 o 503)\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Casos de error",
+      "description": "Cada petición provoca **un** error a propósito y comprueba su estatus, su código y su mensaje en español, para que veas y entiendas lo que recibe quien consume la API. La descripción de cada caso empieza por su estatus.\n\nLas dos primeras **preparan** las suscripciones que usan los demás casos; la última **limpia**. Ningún caso actúa sobre datos que no haya creado esta colección.\n\n**Dos errores que esta carpeta no provoca** (porque exigirían apagar o romper otro servicio), pero que conviene reconocer:\n- **503 `authorization_unavailable`** en cualquier operación: no se pudo verificar tu permiso porque el **API de usuarios no responde**. Revisa que esté levantada y que `USERS_API_BASE_URL` de la API apunte a ella.\n- **403 en todas las operaciones**: tu aplicación de acceso no está registrada como usuario en el API de usuarios, o su rol no tiene los cuatro permisos de suscripciones (`subscriptions:read`, `write`, `update` y `delete`). Recuerda que el script `bootstrap_admin.sql` del API de usuarios solo asocia al *Administrator* los permisos de usuarios, roles y permisos.\n\nLos casos 403 de esta carpeta usan una **segunda aplicación opcional sin permisos** (`plainClientId` y `plainClientSecret` del entorno); si no está configurada, esas dos peticiones se omiten y lo explican.",
+      "item": [
+        {
+          "name": "create_subscription: crear la suscripción para los casos de error",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "**Preparación.** Crea la suscripción sobre la que actúan los casos 409 y 422 de esta carpeta; sustituye a la suscripción de prueba anterior (guarda su identificador y su nombre).\n\n**Permiso requerido**: `subscriptions:write`. **Respuesta esperada**: **201**.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Prueba manual {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": 4500,\n  \"features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 201\", function () { pm.response.to.have.status(201); });",
+                  "if (pm.response.code === 201 && body) {",
+                  "  pm.collectionVariables.set(\"subscriptionId\", String(body.id));",
+                  "  pm.collectionVariables.set(\"subscriptionName\", body.name);",
+                  "}",
+                  "pm.test(\"nace Activa\", function () { pm.expect(body && body.status).to.eql({ id: 1, name: \"Activa\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: crear otra suscripción para el choque de nombres",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "**Preparación.** Crea una segunda suscripción, necesaria para provocar el choque de nombres al renombrarla (caso 2.10). Guarda su identificador y su nombre.\n\n**Permiso requerido**: `subscriptions:write`. **Respuesta esperada**: **201**.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Prueba manual otra {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": 4500,\n  \"features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 201\", function () { pm.response.to.have.status(201); });",
+                  "if (pm.response.code === 201 && body) {",
+                  "  pm.collectionVariables.set(\"otherSubscriptionId\", String(body.id));",
+                  "  pm.collectionVariables.set(\"otherSubscriptionName\", body.name);",
+                  "}",
+                  "pm.test(\"nace Activa\", function () { pm.expect(body && body.status).to.eql({ id: 1, name: \"Activa\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list_subscriptions: 401 sin token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "**401 — sin token.** Se envía sin cabecera `Authorization`. La API pide iniciar sesión y responde con el desafío `WWW-Authenticate: Bearer`.\n\n**Cómo se arregla**: enviar un token válido de Auth0 (la colección lo hace sola en las demás peticiones).",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 401\", function () { pm.response.to.have.status(401); });",
+                  "pm.test(\"el código es unauthenticated\", function () { pm.expect(body && body.code).to.eql(\"unauthenticated\"); });",
+                  "pm.test(\"el mensaje está en español\", function () { pm.expect(body && body.message).to.eql(\"Debe iniciar sesión para usar esta operación.\"); });",
+                  "pm.test(\"incluye el desafío de autenticación\", function () { pm.expect(pm.response.headers.get(\"WWW-Authenticate\")).to.eql(\"Bearer\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list_subscriptions: 401 token inválido",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "**401 — token inválido.** Se envía un token inventado (`{{badToken}}`, distinto en cada envío). El API de usuarios lo rechaza y esta API responde 401 con el mismo código.\n\n**Cómo se arregla**: usar un token emitido por Auth0 para el *audience* correcto. Un token vencido responde 401 con el código `token_expired`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{badToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 401\", function () { pm.response.to.have.status(401); });",
+                  "pm.test(\"el código es invalid_token\", function () { pm.expect(body && body.code).to.eql(\"invalid_token\"); });",
+                  "pm.test(\"el mensaje está en español\", function () { pm.expect(body && body.message).to.eql(\"El token de acceso no es válido.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list_subscriptions: 403 persona sin permiso",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "**403 — sin permiso.** Se envía con el token de la **segunda aplicación**, registrada en el API de usuarios pero **sin** `subscriptions:read`. El mensaje nombra el permiso que falta.\n\n**Es opcional**: si no configuraste `plainClientId` y `plainClientSecret` en el entorno, la petición no se envía y la Consola lo explica (no cuenta como fallo).\n\n**Cómo se arregla**: dar a la persona un rol que tenga el permiso.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{plainToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 403\", function () { pm.response.to.have.status(403); });",
+                  "pm.test(\"el código es permission_denied\", function () { pm.expect(body && body.code).to.eql(\"permission_denied\"); });",
+                  "pm.test(\"el mensaje está en español\", function () { pm.expect(body && body.message).to.eql(\"No tiene permiso para realizar esta operación. Permiso requerido: subscriptions:read.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: 403 persona sin permiso no crea nada",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "**403 — sin permiso.** Igual que el caso anterior pero al **crear**: la segunda aplicación no tiene `subscriptions:write`, así que no se crea nada.\n\n**Es opcional**: sin segunda aplicación configurada se omite y lo explica.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Prueba manual sin permiso {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": 4500,\n  \"features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{plainToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 403\", function () { pm.response.to.have.status(403); });",
+                  "pm.test(\"el código es permission_denied\", function () { pm.expect(body && body.code).to.eql(\"permission_denied\"); });",
+                  "pm.test(\"el mensaje está en español\", function () { pm.expect(body && body.message).to.eql(\"No tiene permiso para realizar esta operación. Permiso requerido: subscriptions:write.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription: 404 identificador inexistente",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{nonexistentSubscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{nonexistentSubscriptionId}}"
+              ]
+            },
+            "description": "**404 — no existe.** Consulta un identificador que no existe (`2147483647`). Solo es una consulta: no modifica nada.\n\n**Cómo se arregla**: usar el identificador de una suscripción existente."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 404\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"el código es subscription_not_found\", function () { pm.expect(body && body.code).to.eql(\"subscription_not_found\"); });",
+                  "pm.test(\"el mensaje está en español\", function () { pm.expect(body && body.message).to.eql(\"No se encontró la suscripción con el identificador 2147483647.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription: 404 suscripción eliminada",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{deletedSubscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{deletedSubscriptionId}}"
+              ]
+            },
+            "description": "**404 — eliminada.** Consulta la última suscripción que esta colección eliminó: una suscripción eliminada (borrado lógico) se comporta como inexistente.\n\n**Requiere** haber eliminado una (carpeta 1, petición `delete_subscription: eliminar la suscripción de prueba`, con respuesta 204); si no, la petición no se envía y la Consola lo explica. Solo es una consulta."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 404\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"el código es subscription_not_found\", function () { pm.expect(body && body.code).to.eql(\"subscription_not_found\"); });",
+                  "pm.test(\"el mensaje nombra la suscripción eliminada\", function () {",
+                  "  pm.expect(body && body.message).to.eql(\"No se encontró la suscripción con el identificador \" + pm.collectionVariables.get(\"deletedSubscriptionId\") + \".\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: 409 nombre repetido",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "**409 — nombre repetido.** Intenta crear una suscripción con el nombre de la que ya existe (la de la preparación 2.1). Los nombres son únicos entre las suscripciones vigentes, sin distinguir mayúsculas.\n\n**Cómo se arregla**: elegir otro nombre. (El nombre de una suscripción eliminada queda libre.)",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{subscriptionName}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": 4500,\n  \"features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 409\", function () { pm.response.to.have.status(409); });",
+                  "pm.test(\"el código es subscription_name_already_exists\", function () { pm.expect(body && body.code).to.eql(\"subscription_name_already_exists\"); });",
+                  "pm.test(\"el mensaje nombra la suscripción repetida\", function () {",
+                  "  pm.expect(body && body.message).to.eql(\"Ya existe una suscripción con el nombre «\" + pm.collectionVariables.get(\"subscriptionName\") + \"».\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_subscription: 409 nombre de otra suscripción",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{otherSubscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{otherSubscriptionId}}"
+              ]
+            },
+            "description": "**409 — nombre de otra suscripción.** Intenta renombrar la segunda suscripción con el nombre de la primera.\n\n**Permiso requerido**: `subscriptions:update`. **Cómo se arregla**: elegir un nombre que no use otra suscripción vigente.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{subscriptionName}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 409\", function () { pm.response.to.have.status(409); });",
+                  "pm.test(\"el código es subscription_name_already_exists\", function () { pm.expect(body && body.code).to.eql(\"subscription_name_already_exists\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "change_subscription_status: 409 estatus repetido",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}",
+                "status"
+              ]
+            },
+            "description": "**409 — estatus repetido.** La suscripción de esta carpeta ya está **Activa** (`status_id` 1) y se le pide el mismo estatus.\n\n**Permiso requerido**: `subscriptions:update`. **Cómo se arregla**: pedir un estatus distinto del actual.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status_id\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 409\", function () { pm.response.to.have.status(409); });",
+                  "pm.test(\"el código es subscription_status_unchanged\", function () { pm.expect(body && body.code).to.eql(\"subscription_status_unchanged\"); });",
+                  "pm.test(\"el mensaje dice que ya tiene ese estatus\", function () { pm.expect(body && body.message).to.include(\"ya tiene el estatus Activa\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: 422 nombre ausente",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "**422 — datos no válidos: falta el nombre.** El cuerpo no trae `name`. La respuesta trae la lista `errors` con el campo y un mensaje en español. No se crea nada.\n\n**Cómo se arregla**: enviar un nombre (1 a 100 caracteres).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"description\": \"Sin nombre.\",\n  \"monthly_price\": 4500,\n  \"features\": [\n    \"Hasta 5 consultorios\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 422\", function () { pm.response.to.have.status(422); });",
+                  "pm.test(\"el código es validation_error\", function () { pm.expect(body && body.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"indica el campo y el mensaje en español\", function () { pm.expect(body && body.errors && body.errors[0]).to.eql({ field: \"name\", message: \"El nombre de la suscripción es obligatorio.\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: 422 precio negativo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "**422 — datos no válidos: precio negativo.** `monthly_price` debe ser un importe de 0 a 99 999 999,99 con hasta dos decimales. No se crea nada.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Prueba manual precio negativo {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": -1,\n  \"features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 422\", function () { pm.response.to.have.status(422); });",
+                  "pm.test(\"el código es validation_error\", function () { pm.expect(body && body.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"indica el campo y el mensaje en español\", function () { pm.expect(body && body.errors && body.errors[0]).to.eql({ field: \"monthly_price\", message: \"El precio mensual debe ser un importe de 0 a 99 999 999,99 con hasta dos decimales.\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: 422 precio con tres decimales",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "**422 — datos no válidos: tres decimales.** El precio admite hasta dos decimales; `10.125` se rechaza en lugar de redondearse. No se crea nada.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Prueba manual tres decimales {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": \"10.125\",\n  \"features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 422\", function () { pm.response.to.have.status(422); });",
+                  "pm.test(\"el código es validation_error\", function () { pm.expect(body && body.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"indica el campo y el mensaje en español\", function () { pm.expect(body && body.errors && body.errors[0]).to.eql({ field: \"monthly_price\", message: \"El precio mensual debe ser un importe de 0 a 99 999 999,99 con hasta dos decimales.\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: 422 lista de funciones nula",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "**422 — datos no válidos: `features` nulo.** Lo que incluye la suscripción debe ser una lista de textos (puede estar vacía), no `null`. No se crea nada.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Prueba manual funciones nulas {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": 4500,\n  \"features\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 422\", function () { pm.response.to.have.status(422); });",
+                  "pm.test(\"el código es validation_error\", function () { pm.expect(body && body.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"indica el campo y el mensaje en español\", function () { pm.expect(body && body.errors && body.errors[0]).to.eql({ field: \"features\", message: \"Lo que incluye la suscripción debe ser una lista de textos.\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_subscription: 422 campo no permitido",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "description": "**422 — campo no permitido.** Actualizar no admite cambiar el `status`: el estatus se cambia con su propia operación. La API rechaza los campos desconocidos en lugar de ignorarlos.\n\n**Permiso requerido**: `subscriptions:update`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": 2\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 422\", function () { pm.response.to.have.status(422); });",
+                  "pm.test(\"el código es validation_error\", function () { pm.expect(body && body.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"indica el campo y el mensaje en español\", function () { pm.expect(body && body.errors && body.errors[0]).to.eql({ field: \"status\", message: \"El campo «status» no está permitido.\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "change_subscription_status: 422 estatus no permitido",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}",
+                "status"
+              ]
+            },
+            "description": "**422 — estatus no permitido.** Esta operación admite 1 (Activa), 2 (Inactiva) y 3 (Bloqueada). El estatus 4 («Eliminada») solo se alcanza eliminando la suscripción.\n\n**Permiso requerido**: `subscriptions:update`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status_id\": 4\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 422\", function () { pm.response.to.have.status(422); });",
+                  "pm.test(\"el código es validation_error\", function () { pm.expect(body && body.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"indica el campo y el mensaje en español\", function () { pm.expect(body && body.errors && body.errors[0]).to.eql({ field: \"status_id\", message: \"El estatus debe ser uno de los que admite esta operación (1, 2 o 3).\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "delete_subscription: 503 no se puede comprobar el API de clínicas",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "description": "**503 — no se puede comprobar.** Antes de eliminar, la API pregunta al API de clínicas si la suscripción tiene clínicas. Si no puede saberlo, **no elimina nada** y responde 503 `clinics_check_unavailable` (una escritura destructiva falla cerrada).\n\n**Es lo esperado sin API de clínicas ni simulación.** Si levantaste la simulación de la carpeta 3, la API sí puede comprobarlo: responde **204** (la elimina) o **409** (tiene clínicas) y los títulos de las pruebas lo explican; para ver el 503 con la simulación, provoca un fallo con la carpeta 3.\n\n**Permiso requerido**: `subscriptions:delete`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "const code = pm.response.code;",
+                  "if (code === 204) {",
+                  "  pm.collectionVariables.set(\"deletedSubscriptionId\", pm.collectionVariables.get(\"subscriptionId\"));",
+                  "  pm.test(\"se eliminó (204): el API de clínicas (o su simulación) respondió y no hay clínicas; para ver el 503, apágala o provoca un fallo en la carpeta 3\", function () { pm.response.to.have.status(204); });",
+                  "} else if (code === 409) {",
+                  "  pm.test(\"se rechazó porque tiene clínicas asignadas (409 subscription_has_clinics): la simulación tiene conteos para esta suscripción\", function () {",
+                  "    pm.expect(body && body.code).to.eql(\"subscription_has_clinics\");",
+                  "  });",
+                  "} else if (code === 503) {",
+                  "  pm.test(\"no se pudo comprobar el API de clínicas (503 clinics_check_unavailable) y no se eliminó nada\", function () {",
+                  "    pm.response.to.have.status(503);",
+                  "    pm.expect(body && body.code).to.eql(\"clinics_check_unavailable\");",
+                  "    pm.expect(body && body.message).to.include(\"No se eliminó\");",
+                  "  });",
+                  "} else {",
+                  "  pm.test(\"respuesta inesperada (\" + code + \"): se esperaba 204, 409 o 503\", function () { throw new Error(\"estatus \" + code); });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "delete_subscription: limpiar la otra suscripción",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{otherSubscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{otherSubscriptionId}}"
+              ]
+            },
+            "description": "**Limpieza.** Elimina la segunda suscripción de prueba para no dejar vigentes los datos de esta carpeta.\n\n**Permiso requerido**: `subscriptions:delete`. **Respuestas esperadas**: **204** (eliminada) o **503** si no se puede comprobar el API de clínicas (ver el caso anterior)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "const code = pm.response.code;",
+                  "if (code === 204) {",
+                  "  pm.test(\"la otra suscripción se eliminó (204)\", function () { pm.response.to.have.status(204); });",
+                  "} else if (code === 409) {",
+                  "  pm.test(\"se rechazó porque tiene clínicas asignadas (409 subscription_has_clinics): la simulación tiene conteos para esta suscripción\", function () {",
+                  "    pm.expect(body && body.code).to.eql(\"subscription_has_clinics\");",
+                  "  });",
+                  "} else if (code === 503) {",
+                  "  pm.test(\"no se pudo comprobar el API de clínicas (503): es lo esperado sin API de clínicas ni simulación y no se eliminó nada\", function () {",
+                  "    pm.expect(body && body.code).to.eql(\"clinics_check_unavailable\");",
+                  "  });",
+                  "} else {",
+                  "  pm.test(\"respuesta inesperada (\" + code + \"): se esperaba 204, 409 o 503\", function () { throw new Error(\"estatus \" + code); });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Simulación de clínicas (solo local)",
+      "description": "**Carpeta opcional y solo para el entorno local.** El resto de la colección funciona sin ella.\n\nNo existe aún un API de clínicas real, así que esta API consulta una **simulación** (la de las pruebas automáticas) para saber cuántas clínicas tiene cada suscripción. Estas peticiones manejan esa simulación: fijan cuántas clínicas tiene una suscripción, provocan sus fallos y la reinician, para que veas el conteo, el rechazo de eliminar una suscripción con clínicas y qué pasa cuando el API de clínicas falla.\n\n**Cómo levantar la simulación** (puerto 8001, el que usa `CLINICS_API_BASE_URL` en el `.env`):\n\n`uv run uvicorn app:app --app-dir tests/stubs/clinics_api --port 8001`\n\n**Qué ocurre sin simulación ni API de clínicas** (no es un fallo de la colección): `clinics_count` sale `null` («no disponible») y eliminar responde **503** `clinics_check_unavailable`.\n\n**Avisos**\n- `counts` **reemplaza todos los conteos** de la simulación, no solo el de una suscripción.\n- La lista de fallos que admite `faults` (`mode`): `unavailable`, `unauthorized`, `forbidden`, `malformed`, `negative_count`, `unrequested_id`, `duplicate_id`, `not_json`, `redirect` y `slow`. `count` es cuántas respuestas fallan (ojo: antes de cada eliminación la colección consulta la suscripción para comprobar que es la suya, y esa consulta también cuenta).\n- En un entorno desplegado de pruebas no hay simulación: `clinicsStubUrl` va vacío y **cada petición de esta carpeta se omite sin fallar** (también las de la API, para no crear nada allí).",
+      "item": [
+        {
+          "name": "sim: reiniciar la simulación",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/reset",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "reset"
+              ]
+            },
+            "description": "Borra los conteos, los fallos y el registro de llamadas de la simulación de clínicas. Solo funciona en local: si `clinicsStubUrl` está vacío (entorno desplegado), la petición no se envía y la Consola lo explica.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"la simulación se reinició\", function () { pm.response.to.have.status(200); pm.expect(body && body.reset).to.eql(true); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: crear la suscripción para la simulación",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "Crea la suscripción sobre la que actúan las demás peticiones de esta carpeta y guarda su identificador y su nombre.\n\n**Permiso requerido**: `subscriptions:write`. **Respuesta esperada**: **201**.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Prueba manual simulación {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": 4500,\n  \"features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 201\", function () { pm.response.to.have.status(201); });",
+                  "if (pm.response.code === 201 && body) {",
+                  "  pm.collectionVariables.set(\"subscriptionId\", String(body.id));",
+                  "  pm.collectionVariables.set(\"subscriptionName\", body.name);",
+                  "}",
+                  "pm.test(\"nace Activa\", function () { pm.expect(body && body.status).to.eql({ id: 1, name: \"Activa\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "sim: fijar 3 clínicas a la suscripción de prueba",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/counts",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "counts"
+              ]
+            },
+            "description": "Le dice a la simulación que la suscripción de prueba tiene 3 clínicas asignadas. **Reemplaza todos los conteos** de la simulación. Solo funciona en local: si `clinicsStubUrl` está vacío (entorno desplegado), la petición no se envía y la Consola lo explica.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"{{subscriptionId}}\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"la simulación guardó 3 clínicas para la suscripción\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(body && body.counts[pm.collectionVariables.get(\"subscriptionId\")]).to.eql(3);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription: el detalle muestra 3 clínicas",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "description": "Consulta la suscripción: la API pregunta a la simulación y muestra el conteo.\n\n**Permiso requerido**: `subscriptions:read`. **Respuesta esperada**: **200** con `clinics_count` igual a **3**."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"el conteo de clínicas es 3\", function () { pm.expect(body && body.clinics_count).to.eql(3); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "delete_subscription: con clínicas asignadas se rechaza",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "description": "Intenta eliminar la suscripción mientras la simulación dice que tiene 3 clínicas: la API **lo rechaza** y la suscripción sigue existiendo.\n\n**Permiso requerido**: `subscriptions:delete`. **Respuesta esperada**: **409** `subscription_has_clinics`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"se rechaza porque tiene clínicas asignadas (409)\", function () { pm.response.to.have.status(409); });",
+                  "pm.test(\"el código es subscription_has_clinics\", function () { pm.expect(body && body.code).to.eql(\"subscription_has_clinics\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "sim: provocar un fallo del API de clínicas",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/faults",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "faults"
+              ]
+            },
+            "description": "Hace que las **tres siguientes** consultas de la API a la simulación fallen con «no disponible» (503): la de la petición 3.7, la comprobación previa que la colección hace antes de eliminar (consulta la suscripción para asegurarse de que es la suya) y la propia eliminación. Para otros fallos cambia `mode` (ver la lista en la descripción de la carpeta). Solo funciona en local: si `clinicsStubUrl` está vacío (entorno desplegado), la petición no se envía y la Consola lo explica.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mode\": \"unavailable\",\n  \"count\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"la simulación fallará tres veces\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(body).to.eql({ mode: \"unavailable\", count: 3 });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription: con la simulación fallando el conteo es null",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "description": "Con el API de clínicas fallando, **la consulta sigue funcionando**: la suscripción se devuelve igual y su conteo de clínicas sale `null` («no disponible»), nunca un 0 inventado.\n\n**Permiso requerido**: `subscriptions:read`. **Respuesta esperada**: **200** con `clinics_count` `null`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"la consulta sigue funcionando (200)\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"el conteo de clínicas es «no disponible» (null)\", function () { pm.expect(body && body.clinics_count).to.eql(null); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "delete_subscription: con la simulación fallando no se elimina",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "description": "Eliminar es una escritura destructiva: si la API **no puede comprobar** si hay clínicas, no elimina nada.\n\n**Permiso requerido**: `subscriptions:delete`. **Respuesta esperada**: **503** `clinics_check_unavailable`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"no se pudo comprobar el API de clínicas (503)\", function () { pm.response.to.have.status(503); });",
+                  "pm.test(\"el código es clinics_check_unavailable\", function () { pm.expect(body && body.code).to.eql(\"clinics_check_unavailable\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "sim: dejar la suscripción sin clínicas",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/counts",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "counts"
+              ]
+            },
+            "description": "Le dice a la simulación que la suscripción de prueba ya no tiene clínicas. **Reemplaza todos los conteos** de la simulación. Solo funciona en local: si `clinicsStubUrl` está vacío (entorno desplegado), la petición no se envía y la Consola lo explica.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"{{subscriptionId}}\": 0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"la simulación guardó 0 clínicas para la suscripción\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(body && body.counts[pm.collectionVariables.get(\"subscriptionId\")]).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "delete_subscription: sin clínicas se elimina",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "description": "Con la simulación respondiendo y sin clínicas asignadas, la suscripción **se elimina** (de forma lógica: pasa a «Eliminada»).\n\n**Permiso requerido**: `subscriptions:delete`. **Respuesta esperada**: **204**."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "if (pm.response.code === 204) {",
+                  "  pm.collectionVariables.set(\"deletedSubscriptionId\", pm.collectionVariables.get(\"subscriptionId\"));",
+                  "}",
+                  "pm.test(\"la suscripción se eliminó (204)\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "sim: ver las llamadas recibidas por la simulación",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/calls",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "calls"
+              ]
+            },
+            "description": "Muestra qué ha preguntado la API a la simulación (ruta, suscripciones consultadas y si llevaba token). Es informativa. Solo funciona en local: si `clinicsStubUrl` está vacío (entorno desplegado), la petición no se envía y la Consola lo explica.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"la simulación devuelve el registro de llamadas\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(body).to.be.an(\"array\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "sim: dejar la simulación limpia al terminar",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/reset",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "reset"
+              ]
+            },
+            "description": "Reinicia la simulación para no dejar conteos ni fallos pendientes que afecten a otras pruebas. Solo funciona en local: si `clinicsStubUrl` está vacío (entorno desplegado), la petición no se envía y la Consola lo explica.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"la simulación quedó limpia\", function () { pm.response.to.have.status(200); pm.expect(body && body.reset).to.eql(true); });"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (String(pm.environment.get(\"clinicsStubUrl\") || \"\").trim() === \"\") {",
+              "  const message = \"No se envió la petición: la variable «clinicsStubUrl» no tiene valor. Esta carpeta solo funciona en local, con la simulación de clínicas levantada en http://127.0.0.1:8001; en el entorno desplegado no se usa.\";",
+              "  console.error(\"[Colección manual] \" + message);",
+              "  pm.collectionVariables.set(\"accessProblem\", message);",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// ===========================================================================================",
+          "// Access script of the manual collection (runs before EVERY request).",
+          "//",
+          "// It makes sure the request carries the Auth0 token it needs: it asks Auth0 for one with client",
+          "// credentials (a Machine to Machine application), keeps it in collection variables (the local copy of",
+          "// the person, never the files), reuses it while it is valid and renews it 60 seconds before it expires.",
+          "// When it cannot leave the request ready it does NOT send it (`skipRequest`) and explains why, in",
+          "// Spanish, in the Postman Console and in the `accessProblem` variable.",
+          "//",
+          "// It never writes the client secret or a token to the console. It uses callbacks instead of a",
+          "// top-level `await` so it works in any version of the Postman app and in Newman.",
+          "// ===========================================================================================",
+          "",
+          "const SAFETY_MARGIN_MS = 60 * 1000;",
+          "const DEFAULT_LIFETIME_SECONDS = 86400;",
+          "",
+          "// Token variable -> where its credentials come from.",
+          "const IDENTITIES = {",
+          "  accessToken: {",
+          "    idVar: \"auth0ClientId\", secretVar: \"auth0ClientSecret\", optional: false,",
+          "    label: \"la aplicación de acceso\",",
+          "  },",
+          "  plainToken: {",
+          "    idVar: \"plainClientId\", secretVar: \"plainClientSecret\", optional: true,",
+          "    label: \"la segunda aplicación de acceso (sin permisos)\",",
+          "  },",
+          "};",
+          "",
+          "const fromEnv = function (name) {",
+          "  return String(pm.environment.get(name) || \"\").trim();",
+          "};",
+          "",
+          "// Ends the script. With a problem the request is not sent and the person is told why.",
+          "const finish = function (problem) {",
+          "  if (problem) {",
+          "    console.error(\"[Colección manual] \" + problem);",
+          "    pm.collectionVariables.set(\"accessProblem\", problem);",
+          "    pm.execution.skipRequest();",
+          "  } else {",
+          "    pm.collectionVariables.unset(\"accessProblem\");",
+          "  }",
+          "};",
+          "",
+          "// 2. Which identity does this request use? Without its own authentication it inherits the",
+          "//    collection's one (`pm.request.auth` is undefined in that case).",
+          "const auth = pm.request.auth;",
+          "let identity = \"accessToken\";",
+          "if (auth && auth.type === \"noauth\") {",
+          "  identity = null;",
+          "} else if (auth && auth.type === \"bearer\") {",
+          "  const configured = auth.bearer && auth.bearer.toObject ? auth.bearer.toObject().token : \"\";",
+          "  const match = /^\\{\\{(\\w+)\\}\\}$/.exec(String(configured || \"\").trim());",
+          "  identity = match ? match[1] : null;",
+          "}",
+          "",
+          "// 4. Token: reuse the stored one or ask Auth0 for a new one. Calls `done(problem | null)`.",
+          "const ensureToken = function (name, who, done) {",
+          "  const domain = fromEnv(\"auth0Domain\");",
+          "  const audience = fromEnv(\"auth0Audience\");",
+          "  const clientId = fromEnv(who.idVar);",
+          "  const secret = fromEnv(who.secretVar);",
+          "",
+          "  if (who.optional && (!clientId || !secret)) {",
+          "    return done(\"No se envió la petición (opcional): para usarla configura \" + who.idVar + \" y \" + who.secretVar",
+          "      + \" en el entorno con \" + who.label + \". Consulta el README, apartado «Persona sin permisos».\");",
+          "  }",
+          "  const missing = [];",
+          "  if (!domain) missing.push(\"auth0Domain\");",
+          "  if (!audience) missing.push(\"auth0Audience\");",
+          "  if (!clientId) missing.push(who.idVar);",
+          "  if (!secret) missing.push(who.secretVar);",
+          "  if (missing.length) {",
+          "    return done(\"No se pudo obtener el token: faltan valores en el entorno activo (\" + missing.join(\", \")",
+          "      + \"). Rellénalos; el secreto solo en tu copia local de la variable, nunca en un valor que se sincronice.\");",
+          "  }",
+          "  if (/[\\/:]/.test(domain.replace(/:\\d+$/, \"\"))) {",
+          "    return done(\"auth0Domain debe ir sin «https://» ni barras (por ejemplo, mi-tenant.us.auth0.com).\");",
+          "  }",
+          "",
+          "  // The key says which domain/audience/client the stored token was asked for: another one is discarded.",
+          "  const key = [domain, audience, clientId].join(\"|\");",
+          "  const stored = pm.collectionVariables.get(name);",
+          "  const expiresAt = Number(pm.collectionVariables.get(name + \"ExpiresAt\")) || 0;",
+          "  if (stored && pm.collectionVariables.get(name + \"Key\") === key && expiresAt - Date.now() > SAFETY_MARGIN_MS) {",
+          "    return done(null);",
+          "  }",
+          "",
+          "  pm.sendRequest({",
+          "    url: \"https://\" + domain + \"/oauth/token\",",
+          "    method: \"POST\",",
+          "    header: { \"Content-Type\": \"application/json\" },",
+          "    body: {",
+          "      mode: \"raw\",",
+          "      raw: JSON.stringify({",
+          "        grant_type: \"client_credentials\",",
+          "        client_id: clientId,",
+          "        client_secret: secret,",
+          "        audience: audience,",
+          "      }),",
+          "    },",
+          "  }, function (error, response) {",
+          "    if (error || !response) {",
+          "      return done(\"No se pudo obtener el token: Auth0 no respondió. Revisa auth0Domain («\" + domain",
+          "        + \"») y tu conexión a internet.\");",
+          "    }",
+          "    if (response.code === 401) {",
+          "      return done(\"No se pudo obtener el token: Auth0 rechazó las credenciales de \" + who.label",
+          "        + \". Revisa \" + who.idVar + \" y \" + who.secretVar + \".\");",
+          "    }",
+          "    if (response.code === 403) {",
+          "      return done(\"No se pudo obtener el token: Auth0 no autoriza a \" + who.label + \" para el destinatario «\" + audience",
+          "        + \"». Revisa auth0Audience (debe ser idéntico al identificador de la API de usuarios, incluida la barra final)\"",
+          "        + \" y que la aplicación esté autorizada para esa API en Auth0.\");",
+          "    }",
+          "    if (response.code === 429) {",
+          "      return done(\"No se pudo obtener el token: Auth0 limitó las solicitudes. Espera un minuto y vuelve a enviar.\");",
+          "    }",
+          "    let body = null;",
+          "    try { body = response.json(); } catch (parseError) { body = null; }",
+          "    if (response.code !== 200 || !body || typeof body.access_token !== \"string\" || body.access_token === \"\") {",
+          "      return done(\"No se pudo obtener el token: Auth0 respondió algo inesperado (HTTP \" + response.code",
+          "        + \"). Revisa auth0Domain y auth0Audience.\");",
+          "    }",
+          "    const lifetime = Number(body.expires_in) > 0 ? Number(body.expires_in) : DEFAULT_LIFETIME_SECONDS;",
+          "    pm.collectionVariables.set(name, body.access_token);",
+          "    pm.collectionVariables.set(name + \"ExpiresAt\", String(Date.now() + lifetime * 1000));",
+          "    pm.collectionVariables.set(name + \"Key\", key);",
+          "    return done(null);",
+          "  });",
+          "};",
+          "",
+          "// 1. Session data (the subscriptions this collection created) belongs to the API it was created",
+          "//    against: if the API address changes, forget it.",
+          "const SESSION_VARIABLES = [",
+          "  \"subscriptionId\", \"subscriptionName\", \"otherSubscriptionId\", \"otherSubscriptionName\", \"deletedSubscriptionId\",",
+          "];",
+          "const resetSessionDataOnApiChange = function () {",
+          "  const api = fromEnv(\"baseUrl\");",
+          "  if (pm.collectionVariables.get(\"sessionApi\") !== api) {",
+          "    SESSION_VARIABLES.forEach(function (name) { pm.collectionVariables.unset(name); });",
+          "    pm.collectionVariables.set(\"sessionApi\", api);",
+          "  }",
+          "};",
+          "",
+          "// The text where {{variables}} may appear: the URL and the raw body.",
+          "const requestTemplate = function () {",
+          "  const url = String(pm.request.url.toString());",
+          "  const body = pm.request.body && typeof pm.request.body.raw === \"string\" ? pm.request.body.raw : \"\";",
+          "  return url + \"\\n\" + body;",
+          "};",
+          "",
+          "// 3a. A unique suffix for the names this request creates. It is generated here (and not in a",
+          "//     pre-request script of the request) because this script runs first.",
+          "const generateNewSuffix = function () {",
+          "  if (requestTemplate().indexOf(\"{{newSuffix}}\") !== -1) {",
+          "    pm.collectionVariables.set(\"newSuffix\", Date.now().toString(36) + Math.random().toString(36).slice(2, 6));",
+          "  }",
+          "};",
+          "",
+          "// What to say when a variable used by the request has no value.",
+          "const MISSING_HINTS = {",
+          "  subscriptionId: \"Esta petición actúa solo sobre la suscripción que crea la colección: envía primero «create_subscription: crear la suscripción de prueba».\",",
+          "  otherSubscriptionId: \"Esta petición necesita la segunda suscripción de prueba: envía primero «create_subscription: crear otra suscripción para el choque de nombres» (carpeta 2).\",",
+          "  subscriptionName: \"Esta petición usa el nombre de la suscripción de prueba: envía primero «create_subscription: crear la suscripción de prueba».\",",
+          "  deletedSubscriptionId: \"Elimina primero la suscripción de la carpeta 1 (la petición «delete_subscription: eliminar la suscripción de prueba» debe responder 204).\",",
+          "  baseUrl: \"Elige un entorno (local o desplegado de pruebas) y rellena baseUrl.\",",
+          "  clinicsStubUrl: \"Esta carpeta solo funciona en local, con la simulación de clínicas levantada en http://127.0.0.1:8001; en el entorno desplegado no se usa.\",",
+          "};",
+          "",
+          "// 3b. Every {{variable}} of the URL and the body must have a value: otherwise the request would go",
+          "//     to an empty address or act on a subscription that was never created (or create one named",
+          "//     literally «{{subscriptionName}}»).",
+          "const checkUnresolvedVariables = function () {",
+          "  const names = Array.from(requestTemplate().matchAll(/\\{\\{(\\w+)\\}\\}/g), function (m) { return m[1]; });",
+          "  for (const name of names) {",
+          "    if (String(pm.variables.get(name) || \"\").trim() === \"\") {",
+          "      return \"No se envió la petición: la variable «\" + name + \"» no tiene valor. \"",
+          "        + (MISSING_HINTS[name] || \"Revisa el entorno activo y las peticiones anteriores de la carpeta.\");",
+          "    }",
+          "  }",
+          "  return null;",
+          "};",
+          "",
+          "// 5. Ownership: a request that modifies or deletes a subscription only goes out if the stored one",
+          "//    still exists and still has the name this collection gave it. After a reset of the test database",
+          "//    another person could have a different subscription under the same id.",
+          "const OWNED = [",
+          "  { idVar: \"subscriptionId\", nameVar: \"subscriptionName\", creator: \"create_subscription: crear la suscripción de prueba\" },",
+          "  { idVar: \"otherSubscriptionId\", nameVar: \"otherSubscriptionName\", creator: \"create_subscription: crear otra suscripción para el choque de nombres\" },",
+          "];",
+          "const verifyOwnership = function (done) {",
+          "  const method = String(pm.request.method || \"\").toUpperCase();",
+          "  const template = String(pm.request.url.toString());",
+          "  const targets = OWNED.filter(function (owned) { return template.indexOf(\"{{\" + owned.idVar + \"}}\") !== -1; });",
+          "  if ([\"PATCH\", \"PUT\", \"DELETE\"].indexOf(method) === -1 || targets.length === 0) { return done(null); }",
+          "",
+          "  const check = function (index) {",
+          "    if (index === targets.length) { return done(null); }",
+          "    const owned = targets[index];",
+          "    const id = pm.collectionVariables.get(owned.idVar);",
+          "    const name = pm.collectionVariables.get(owned.nameVar);",
+          "    if (!name) {",
+          "      return done(\"No se envió la petición: no hay un nombre guardado para la suscripción \" + id",
+          "        + \", así que no se puede asegurar que la creó la colección. Envía «\" + owned.creator + \"».\");",
+          "    }",
+          "    pm.sendRequest({",
+          "      url: fromEnv(\"baseUrl\") + \"/api/v1/subscriptions/\" + encodeURIComponent(id),",
+          "      method: \"GET\",",
+          "      header: { Authorization: \"Bearer \" + pm.collectionVariables.get(\"accessToken\") },",
+          "    }, function (error, response) {",
+          "      if (error || !response) {",
+          "        return done(\"No se envió la petición: no se pudo comprobar la suscripción \" + id + \" (la API no respondió).\");",
+          "      }",
+          "      if (response.code === 404) {",
+          "        return done(\"No se envió la petición: la suscripción \" + id + \" ya no existe en este entorno. Envía «\"",
+          "          + owned.creator + \"» para crear otra.\");",
+          "      }",
+          "      let found = null;",
+          "      try { found = response.json(); } catch (parseError) { found = null; }",
+          "      if (response.code !== 200 || !found) {",
+          "        return done(\"No se envió la petición: no se pudo comprobar la suscripción \" + id + \" (HTTP \" + response.code",
+          "          + \"). Revisa que la persona de acceso tenga el permiso subscriptions:read.\");",
+          "      }",
+          "      if (found.name !== name) {",
+          "        return done(\"No se envió la petición: la suscripción \" + id + \" ya no es la que creó la colección (otro nombre). \"",
+          "          + \"Para no tocar datos ajenos, envía «\" + owned.creator + \"» y vuelve a intentarlo.\");",
+          "      }",
+          "      return check(index + 1);",
+          "    });",
+          "  };",
+          "  check(0);",
+          "};",
+          "",
+          "resetSessionDataOnApiChange();",
+          "generateNewSuffix();",
+          "const problem = checkUnresolvedVariables();",
+          "if (problem) {",
+          "  finish(problem);",
+          "} else if (identity === \"badToken\") {",
+          "  // A made-up token to provoke the 401 «invalid token»; it is never a real one.",
+          "  pm.collectionVariables.set(\"badToken\", \"invalid-\" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10));",
+          "  finish(null);",
+          "} else if (IDENTITIES[identity]) {",
+          "  ensureToken(identity, IDENTITIES[identity], function (tokenProblem) {",
+          "    if (tokenProblem) { return finish(tokenProblem); }",
+          "    verifyOwnership(finish);",
+          "  });",
+          "} else {",
+          "  finish(null);",
+          "}"
+        ]
+      }
+    }
+  ]
+}

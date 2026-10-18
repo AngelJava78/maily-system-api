@@ -142,8 +142,152 @@ docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker
   clínicas (`:8013`). **No apuntes nunca la colección a un servicio con datos reales**: crea y elimina de
   forma lógica suscripciones, así que quedan filas «Eliminada».
 - **Resultado**: código de salida `0` si todo pasa y `1` si falla una comprobación o la pila no responde.
-- **Si la API cambia**: actualiza la colección en el mismo cambio; `tests/contract/test_postman_collection.py`
-  (parte de `uv run pytest`) falla nombrando las operaciones que faltan o sobran.
+- **Si la API cambia**: toda feature que añada, quite o cambie operaciones actualiza **las dos colecciones**
+  (esta y la [manual](#colección-manual-de-postman)) en el mismo cambio. `tests/contract/test_postman_collection.py`
+  y `tests/contract/test_manual_postman_collection.py` (parte de `uv run pytest`) fallan nombrando las
+  operaciones que faltan o sobran.
+
+## Colección manual de Postman
+
+Una colección **nueva e independiente** para probar a mano la API desde la aplicación de escritorio de Postman:
+las 6 operaciones de `/api/v1/subscriptions`, la documentación pública y los errores clave (401, 403, 404, 409,
+422 y 503), con datos de ejemplo y descripciones en español. **No se ejecuta con Newman ni en integración
+continua** (para eso está la anterior), no necesita iniciar sesión en Postman y solo habla con **Auth0** (para
+pedir el token) y con **la API que pruebas**. La persona **no pega nunca un token**: un script previo de la
+colección lo pide con *client credentials*, lo reutiliza y lo renueva 60 segundos antes de que venza.
+
+Está en `tests/postman/`: `collections/MailySoft-System-Manual.postman_collection.json` y los entornos
+`environments/manual-local.postman_environment.json` y `environments/manual-deployed-test.postman_environment.json`.
+
+### Qué necesitas antes (fuera de la colección)
+
+1. **Auth0**: una aplicación *Machine to Machine* autorizada para el *audience* del API de usuarios (el que verifica el
+   token). Los tokens de esa aplicación llevan un `sub` terminado en `@clients` (`<client_id>@clients`).
+2. **API de usuarios** (`mailySoft-usuarios`): ese `sub` registrado como usuario, con un rol que tenga
+   `subscriptions:read`, `subscriptions:write`, `subscriptions:update` y `subscriptions:delete`. El catálogo de ese API
+   ya trae los cuatro permisos, pero su `project-definition/bootstrap_admin.sql` solo asocia al *Administrator* los 12
+   de usuarios, roles y permisos: **hay que asociar los cuatro a un rol de la aplicación**. Ejemplo (se ejecuta en la
+   base de datos del API de usuarios, con `psql -v ON_ERROR_STOP=1 -v app_auth0_id='<client_id>@clients' -v
+   app_email=app-manual@clients.local -f -`; es idempotente):
+
+   ```sql
+   INSERT INTO users (auth0_id, email, first_name, paternal_last_name)
+   VALUES (:'app_auth0_id', lower(:'app_email'), 'Colección', 'Manual')
+   ON CONFLICT DO NOTHING;
+
+   INSERT INTO roles (name, description)
+   VALUES ('Subscriptions tester', 'Pruebas manuales de la API de suscripciones')
+   ON CONFLICT DO NOTHING;
+
+   INSERT INTO role_permissions (role_id, permission_id)
+   SELECT r.id, p.id
+   FROM roles r
+   JOIN permissions p ON p.name IN (
+       'subscriptions:read', 'subscriptions:write', 'subscriptions:update', 'subscriptions:delete'
+   )
+   WHERE r.name = 'Subscriptions tester'
+   ON CONFLICT DO NOTHING;
+
+   INSERT INTO user_roles (user_id, role_id)
+   SELECT u.id, r.id
+   FROM users u
+   JOIN roles r ON r.name = 'Subscriptions tester'
+   WHERE u.auth0_id = :'app_auth0_id'
+   ON CONFLICT DO NOTHING;
+   ```
+
+#### Persona sin permisos (opcional)
+
+Solo para los dos casos 403 de la carpeta de errores. Una **segunda aplicación** *Machine to Machine*, autorizada para el
+mismo *audience* y registrada en el API de usuarios **sin ningún rol**:
+
+```sql
+INSERT INTO users (auth0_id, email, first_name, paternal_last_name)
+VALUES (:'plain_auth0_id', lower(:'plain_email'), 'Colección', 'SinPermisos')
+ON CONFLICT DO NOTHING;
+```
+
+Su identificador y su secreto van en `plainClientId` y `plainClientSecret`. Sin ella, esas dos peticiones se omiten, lo
+explican en la Consola y **no cuentan como fallo**.
+
+### Base de datos dedicada a las pruebas manuales
+
+La colección crea y elimina (de forma lógica) suscripciones, así que la API que pruebes en local debe usar una base de
+datos **dedicada a pruebas**: no la de desarrollo (`maily_system`) ni la de pytest (`maily_system_test`, que pytest borra
+y recrea). Se crea una vez y se migra; Alembic y uvicorn leen `DATABASE_URL` del entorno antes que del `.env`:
+
+```powershell
+docker compose exec db psql -U postgres -c "CREATE DATABASE maily_system_manual"
+$env:DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5434/maily_system_manual"
+uv run alembic upgrade head
+uv run uvicorn src.main:app --port 8010      # en esta misma terminal
+```
+
+No uses `docker compose up api` para esto: esa API usa `maily_system`. (El script de `docker/postgres/init/` solo corre al
+crear el volumen, por eso la base se crea a mano.)
+
+### Levantar lo necesario en local
+
+- **La API** en `http://127.0.0.1:8010` (arriba), con `USERS_API_BASE_URL` (por defecto `http://localhost:8000`, el API de
+  usuarios real) y `CLINICS_API_BASE_URL` (`http://localhost:8001`) en su `.env`.
+- **La simulación de clínicas** (opcional, solo local), en el puerto 8001 que ya usa el `.env`:
+
+  ```powershell
+  uv run uvicorn app:app --app-dir tests/stubs/clinics_api --port 8001
+  ```
+
+  Sin ella ni API de clínicas, `clinics_count` sale `null` y eliminar responde 503: es lo esperado.
+
+### Importar y enviar la primera petición
+
+1. En Postman, *Import* → la colección y el entorno `manual-local`. No hace falta iniciar sesión.
+2. Elige el entorno «MailySoft System API - Manual - local (solo bases de datos de pruebas)».
+3. En el entorno rellena `auth0Domain` (sin `https://`), `auth0Audience` (idéntico al identificador del API de usuarios, con
+   su barra final si la tiene), `auth0ClientId` y `auth0ClientSecret`. **El secreto va solo en tu copia local de la
+   variable**, nunca en un valor que se sincronice ni en los archivos.
+4. Envía `0. Empezar → list_subscriptions: comprobar el acceso y ver el catálogo`: responde 200 sin que pegues ningún token.
+
+Después recorre `1. Ciclo de vida…` (en orden), `2. Casos de error` y, si levantaste la simulación, `3. Simulación de
+clínicas (solo local)`. Las peticiones que modifican o eliminan **solo actúan sobre lo que crea la propia colección**: antes
+de enviarlas comprueba que la suscripción guardada sigue existiendo y se llama como ella la creó.
+
+### Entorno desplegado de pruebas
+
+Importa `manual-deployed-test` y rellena `baseUrl` (la dirección de la API desplegada) y los valores de acceso. **No se edita
+ninguna petición.** Al cambiar de entorno la colección pide un token nuevo y descarta los identificadores guardados. La carpeta
+3 no funciona allí (no hay simulación) y se omite sola. Ese entorno **debe apuntar a una base de datos de pruebas dedicada**.
+
+### Si no pasa nada al pulsar «Enviar»
+
+La petición **no se envió** y el motivo está en la **Consola de Postman** (*Ver → Mostrar Consola de Postman*) y en la variable
+de colección `accessProblem`. Nunca sale una petición que exige token sin token.
+
+| Mensaje (resumen) | Qué hacer |
+|---|---|
+| A-01 «faltan valores en el entorno activo (…)» | Rellena en el entorno las variables que nombra; el secreto, en tu copia local |
+| A-02 «auth0Domain debe ir sin https://» | Escribe solo el dominio (`mi-tenant.us.auth0.com`) |
+| A-03 «Auth0 no respondió» | Revisa `auth0Domain` y tu conexión |
+| A-04 «Auth0 rechazó las credenciales» | Revisa `auth0ClientId` y `auth0ClientSecret` |
+| A-05 «Auth0 no autoriza a la aplicación para el destinatario» | `auth0Audience` debe ser idéntico al identificador de la API de usuarios, y la aplicación debe estar autorizada para esa API en Auth0 |
+| A-06 «Auth0 limitó las solicitudes» | Espera un minuto |
+| A-07 «Auth0 respondió algo inesperado» | Revisa `auth0Domain` y `auth0Audience` |
+| A-08 «(opcional) configura plainClientId y plainClientSecret» | Ver «Persona sin permisos»; si no la necesitas, ignóralo |
+| A-09 «la variable … no tiene valor» | Envía antes la petición que crea la suscripción de prueba (la Consola dice cuál), o rellena la variable del entorno |
+| A-10 «la suscripción … ya no existe en este entorno» | Crea otra con la petición que indica |
+| A-11 «no se pudo comprobar la suscripción» | La persona de acceso necesita `subscriptions:read`, o la API no respondió |
+| A-12 «no hay un nombre guardado» | Envía la petición que crea la suscripción de prueba |
+| A-13 «ya no es la que creó la colección» | Otra persona reutilizó ese identificador (p. ej. tras reiniciar la base de pruebas): crea otra suscripción |
+
+- **Todas las respuestas son 403**: la aplicación no está registrada en el API de usuarios o su rol no tiene los cuatro
+  permisos de suscripciones (ver «Qué necesitas antes»).
+- **Todo responde 503 con `authorization_unavailable`**: el API de usuarios no responde.
+
+### Advertencias
+
+- **Solo bases de datos de pruebas**, nunca datos reales. El borrado es lógico: cada recorrido deja filas «Eliminada».
+- **El secreto va solo en tu copia local.** Los archivos de la colección y de los entornos no contienen secretos ni tokens, y
+  `test_manual_postman_collection.py` lo comprueba por estructura.
+- La Consola de Postman registra la petición a Auth0, cuerpo incluido. Es local, pero **no compartas capturas de ella**.
 
 ## Estructura
 
@@ -166,9 +310,11 @@ src/
 alembic/versions/      # 0001 esquema, 0002 catálogo de estatus
 tests/unit/            # sin base de datos (DTOs, Services, seguridad, configuración, capas)
 tests/integration/     # PostgreSQL real (esquema, migraciones y Repositories)
-tests/contract/        # la API por HTTP, el documento OpenAPI, la cobertura de permisos y la colección
+tests/contract/        # la API por HTTP, el documento OpenAPI, la cobertura de permisos y las dos colecciones de Postman
+                       # (postman_support.py: apoyo compartido de esas pruebas)
 tests/stubs/           # simulaciones del API de usuarios y del API de clínicas
-tests/postman/         # colección, entornos y pila aislada de las pruebas de punta a punta (Newman)
+tests/postman/         # colección, entornos y pila aislada de las pruebas de punta a punta (Newman) y
+                       # colección y entornos de la colección manual
 project-definition/    # esquema de datos objetivo (DATA_SCHEMA.md)
 specs/                 # especificaciones de Spec Kit
 .specify/memory/constitution.md   # reglas del proyecto (capas, async, pruebas, migraciones, acceso)
