@@ -1,0 +1,11 @@
+{
+  "name": "maily-system-api-e2e",
+  "private": true,
+  "description": "Herramientas de desarrollo para ejecutar la colección de Postman; no forman parte del servicio.",
+  "scripts": {
+    "e2e": "newman run collections/MailySoft-System-Suscripciones.postman_collection.json -e environments/e2e.postman_environment.json -r cli,junit --reporter-junit-export reports/junit.xml --timeout-request 15000"
+  },
+  "devDependencies": {
+    "newman": "6.2.3"
+  }
+}

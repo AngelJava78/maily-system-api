@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Entorno y pruebas de punta a punta (MailySoft System API) ---
+.env.*
+!.env.example
+tests/postman/node_modules/
+tests/postman/reports/

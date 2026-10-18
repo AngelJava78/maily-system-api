@@ -35,6 +35,7 @@ Accept: application/json
 | `200` con cuerpo que no es JSON, sin `allowed` booleano o con otro `permission` | `503 authorization_unavailable` | No |
 | `503` (`authentication_unavailable`), cualquier otro `5xx`, `429` | `503 authorization_unavailable` | No |
 | Cualquier otro `4xx` (`403`, `404`, `422`…) | `503 authorization_unavailable` (y un registro de error en inglés con el estado, para detectar un contrato roto) | No |
+| Cualquier `3xx` (redirección: **no se sigue**) | `503 authorization_unavailable` | No |
 | Tiempo máximo agotado, conexión rechazada, error de red o de TLS | `503 authorization_unavailable` | No |
 
 **Falla cerrada**: cualquier caso no listado es `503 authorization_unavailable`. Nunca se ejecuta una
@@ -45,6 +46,8 @@ operación por duda.
 - **Reenvío**: la cabecera `Authorization` se reenvía sin modificar; no se reenvía ninguna otra cabecera
   de la petición original.
 - **Sin caché ni reintentos** (research R2): cada petición protegida produce exactamente una llamada.
+- **Sin redirecciones** (FR-024): el cliente no sigue redirecciones; una respuesta `3xx` cuenta como «no disponible» y el token jamás se envía a otra dirección.
+- **Transporte** (FR-024): si `USERS_API_BASE_URL` usa `http://` y el host no es `localhost`, `127.0.0.1`, `::1` ni un nombre sin punto, el arranque registra una advertencia que nombra la variable (nunca la dirección); no impide arrancar.
 - **Tiempo máximo total** de `USERS_API_TIMEOUT_SECONDS` (por defecto 5 s) con `asyncio.timeout` además
   del `Timeout` de `httpx`.
 - **Token**: nunca aparece en un registro, mensaje de error ni respuesta. Se rechaza localmente, sin

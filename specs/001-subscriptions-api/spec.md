@@ -36,6 +36,26 @@ el número de clínicas que la tienen y la lista de lo que incluye."
 - Q: ¿Cómo se describe lo que incluye un plan? → A: Solo como una lista de textos libres, tal como la
   muestra hoy el Front. No hay límites estructurados (de consultorios o de usuarios) que otros
   sistemas puedan aplicar de forma automática; si algún día se necesitan, se especificarán aparte.
+- Q: Si alguien sin permiso envía un cuerpo que ni siquiera es JSON válido, ¿responde «datos no
+  válidos» o «sin permiso»? → A: Se acepta una excepción única a FR-004: un cuerpo que no es JSON
+  legible se rechaza como «datos no válidos» aunque falte el permiso (no contiene datos que
+  proteger y la respuesta no revela nada). En todo lo demás el permiso se comprueba primero; la
+  desviación se justifica en la sección de complejidad del plan.
+- Q: ¿Debe el servicio negarse a usar direcciones `http://` para el API de usuarios y el de
+  clínicas, si les reenvía el token? → A: No se bloquea: se permite `http://`, pero al arrancar se
+  registra una advertencia si la dirección no es local ni de Docker (sin mostrar el token ni
+  credenciales), porque las redes privadas entre servicios suelen usar `http`.
+- Q: ¿El Front llamará a la API directamente desde el navegador o desde un servidor propio? → A:
+  Desde el navegador: se admite una lista configurable de sitios permitidos, desactivada por
+  defecto (sin lista, ningún sitio web), con `Authorization` y `Content-Type`, sin credenciales ni
+  comodines.
+- Q: Si dos personas editan a la vez la misma suscripción, ¿gana el último cambio o se detecta el
+  choque? → A: Gana el último cambio, sin versiones ni errores nuevos: cada actualización envía solo
+  los campos que cambian, así que dos ediciones de campos distintos se conservan las dos; si editan
+  el mismo campo, queda el valor del último en llegar.
+- Q: Si alguien añade a mano un estatus nuevo al catálogo, ¿cómo trata la API a las suscripciones
+  que lo tengan? → A: Como vigentes: aparecen en el catálogo y en las consultas con su estatus, se
+  pueden editar y solo pueden cambiarse a Activa, Inactiva o Bloqueada; solo «Eliminada» las oculta.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -256,6 +276,8 @@ catálogo; repetirlo con el API de clínicas inaccesible y comprobar que tambié
   que se le niegan todas las operaciones.
 - **Dos personas crean a la vez una suscripción con el mismo nombre**: solo una se crea; la otra
   recibe el rechazo de nombre en uso.
+- **Dos personas editan a la vez la misma suscripción**: gana el último cambio en llegar y no hay
+  error de conflicto; los campos distintos que cada una cambió se conservan ambos.
 - **Nombre con distinta capitalización o con espacios al inicio o al final**: «Pro», «pro» y
   « Pro » se consideran el mismo nombre; los textos se guardan sin espacios sobrantes.
 - **Precio cero**: es válido (planes de precio a cotizar o históricos); el motivo se explica en la
@@ -265,6 +287,9 @@ catálogo; repetirlo con el API de clínicas inaccesible y comprobar que tambié
   válido, nunca un error interno.
 - **Datos no reconocidos en la solicitud** (campos mal escritos o que no se pueden enviar): se
   rechaza toda la solicitud y no se cambia nada.
+- **Cuerpo que no es JSON legible** (por ejemplo `{oops`): se rechaza como datos no válidos, incluso
+  si la persona no tiene permiso o no se identificó; es la única excepción a FR-004. Un cuerpo
+  legible con datos inválidos sí se evalúa después del permiso.
 - **Catálogo vacío**: lista vacía, no error.
 - **Catálogo que crece más allá de lo previsto**: ver FR-006; pasar a paginar sería un cambio
   incompatible del contrato.
@@ -287,7 +312,8 @@ catálogo; repetirlo con el API de clínicas inaccesible y comprobar que tambié
   poder ampliarse sin rehacer las existentes.
 - **FR-004**: La comprobación MUST hacerse en cada petición, con los datos vigentes del API de
   usuarios (sin conservar decisiones anteriores), y MUST ocurrir antes de validar los datos de la
-  solicitud o de buscar la suscripción.
+  solicitud o de buscar la suscripción. **Única excepción**: un cuerpo que no es JSON legible se
+  rechaza como datos no válidos aunque falte el permiso (ver Edge Cases).
 - **FR-005**: Cuando no pueda decidirse el acceso (token rechazado, permiso denegado, API de usuarios
   sin respuesta o con respuesta inesperada), el servicio MUST rechazar la operación sin ejecutarla,
   distinguiendo en el mensaje entre «debe iniciar sesión», «no tiene permiso» y «servicio no
@@ -296,7 +322,8 @@ catálogo; repetirlo con el API de clínicas inaccesible y comprobar que tambié
 **Catálogo y consulta**
 
 - **FR-006**: El servicio MUST devolver en una sola consulta todas las suscripciones en estatus
-  Activa, Inactiva y Bloqueada, sin paginar, cada una con su estatus, y en un orden determinista:
+  Activa, Inactiva y Bloqueada (y en cualquier estatus añadido a mano al catálogo que no sea
+  Eliminada), sin paginar, cada una con su estatus, y en un orden determinista:
   por fecha de creación (la más antigua primero) y, a igualdad, por identificador. El catálogo
   esperado no supera 100 suscripciones y su máximo para devolverse completo es 500; si lo supera,
   el listado deberá paginarse, lo que es un cambio incompatible que se versiona.
@@ -356,9 +383,27 @@ catálogo; repetirlo con el API de clínicas inaccesible y comprobar que tambié
   internos de otros servicios.
 - **FR-022**: Los estatus MUST salir de un catálogo de estatus de suscripción —Activa, Inactiva,
   Bloqueada y Eliminada— que se administra a mano; quien consuma la API MUST basarse en el
-  identificador del estatus, no en su nombre.
+  identificador del estatus, no en su nombre. Una suscripción con un estatus añadido a mano MUST
+  tratarse como vigente (aparece en el catálogo y en las consultas con su estatus y puede
+  editarse) y solo puede cambiarse a Activa, Inactiva o Bloqueada; únicamente «Eliminada» la oculta.
 - **FR-023**: Cada operación MUST documentar en el contrato publicado de la API el permiso que
   exige y sus respuestas posibles.
+
+**Seguridad del reenvío del token**
+
+- **FR-024**: El token de la persona solo se reenvía al API de usuarios y al de clínicas, y MUST NOT
+  seguir redirecciones a otros servidores. Si la dirección de alguno de los dos usa `http://` (sin
+  cifrar) y no es local ni de la red de Docker, el servicio MUST registrar una advertencia al
+  arrancar, sin mostrar el token ni credenciales; no se impide arrancar, porque las redes privadas
+  entre servicios suelen usar `http`.
+
+**Acceso desde aplicaciones web**
+
+- **FR-025**: La API MUST poder llamarse desde el navegador de las aplicaciones web autorizadas
+  (el Front de administración). Los sitios permitidos se configuran con una lista; sin lista no se
+  permite ningún sitio web. Solo se admiten las cabeceras `Authorization` y `Content-Type`, sin
+  credenciales de navegador (cookies) ni comodines. Un sitio que no está en la lista no recibe
+  autorización del navegador para leer las respuestas.
 
 ### Key Entities
 
@@ -367,7 +412,8 @@ catálogo; repetirlo con el API de clínicas inaccesible y comprobar que tambié
   libres), un estatus, el número de
   clínicas (dato ajeno, solo lectura) y fechas de creación y de última modificación.
 - **Estatus de suscripción**: catálogo con Activa (disponible y ofrecida), Inactiva (retirada de la
-  oferta), Bloqueada (suspendida) y Eliminada (baja lógica, fuera de toda consulta).
+  oferta), Bloqueada (suspendida) y Eliminada (baja lógica, fuera de toda consulta); puede
+  ampliarse a mano con otros estatus, que se tratan como vigentes.
 - **Persona autenticada y permiso** *(externos, del API de usuarios)*: quien invoca la API y los
   permisos `subscriptions:*` que el API de usuarios le reconoce. Este servicio no los guarda.
 - **Clínica** *(externa, del API de clínicas)*: cliente que tiene asignada una suscripción. Este
@@ -430,5 +476,8 @@ catálogo; repetirlo con el API de clínicas inaccesible y comprobar que tambié
 - **Fuera de alcance**: asignar suscripciones a las clínicas, facturación y cobro, historial de
   precios o de cambios («quién» cambió qué), avisos a las clínicas cuando cambia un plan, gestión de
   cuentas de acceso (Auth0) y varios idiomas (todo el contenido es en español).
-- **Conservación**: los datos de las suscripciones eliminadas se conservan por auditoría; un borrado
-  definitivo, si algún día se exige, queda fuera de esta API.
+- **Conservación**: los datos de las suscripciones eliminadas se conservan por auditoría; un borrado definitivo, si algún día se exige, queda fuera de esta API.
+- **Número de clínicas al crear**: una suscripción recién creada se devuelve con 0 clínicas sin consultar al API de clínicas, porque todavía no puede tener ninguna (es un cero verdadero, no inventado).
+- **Actualización vacía**: una actualización que no trae ningún dato se rechaza como no válida («hay que enviar al menos un dato para modificar»).
+- **Condiciones normales (SC-001)**: el API de usuarios y el de clínicas responden en menos de 500 ms cada uno y el catálogo tiene hasta 500 suscripciones; el 95 % se mide sobre una serie de consultas seguidas.
+- **SC-007** es una comprobación manual: se cronometra el recorrido de la guía de validación.

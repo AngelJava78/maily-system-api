@@ -45,7 +45,7 @@ Accept: application/json
 | `delete_subscription` | `subscription_id=<id>`, tras comprobar que existe | `503 clinics_check_unavailable`; no se elimina |
 | `delete_subscription` con `clinics_count >= 1` | idem | `409 subscription_has_clinics`; no se elimina |
 
-«Falla» incluye cualquier respuesta que no sea `200` con el cuerpo descrito (por ejemplo `items` con un
+«Falla» incluye cualquier redirección (`3xx`, que **no se sigue**) y cualquier respuesta que no sea `200` con el cuerpo descrito (por ejemplo `items` con un
 `subscription_id` que no se pidió, un `clinics_count` no entero o negativo, o dos elementos con el mismo
 `subscription_id`): se trata como **no disponible**, nunca como cero.
 
@@ -57,6 +57,7 @@ Accept: application/json
   `401` o `403` es «no disponible» aquí.
 - **Tiempo máximo total** de `CLINICS_API_TIMEOUT_SECONDS` (por defecto 5 s); **sin reintentos**.
 - **Sin caché** del conteo.
+- **Sin redirecciones ni transporte inseguro silencioso** (FR-024): el cliente no sigue redirecciones (el token jamás se envía a otra dirección) y, si `CLINICS_API_BASE_URL` usa `http://` con un host que no es `localhost`, `127.0.0.1`, `::1` ni un nombre sin punto, el arranque registra una advertencia que nombra la variable (nunca la dirección); no impide arrancar.
 - **Errores**: ni el cuerpo ni la dirección del API de clínicas llegan al cliente; las fallas se registran
   (en inglés) con la operación y el estado, sin el token ni el cuerpo.
 - **Capas**: `src/integrations/clinics_api.py` (`ClinicsApiClient`) solo habla HTTP, valida la forma de

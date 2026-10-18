@@ -55,7 +55,7 @@ R4, R10 y R14 se ejecutaron ahí con un script desechable; sus resultados se cit
     **Falla cerrada**: jamás se ejecuta la operación.
 - Sin cabecera `Authorization`, con otro esquema que `Bearer`, o con un token de más de **8 192
   bytes**, la petición se rechaza localmente (`unauthenticated` / `invalid_token`) sin llamar al API
-  de usuarios. El tope evita reenviar cabeceras desmesuradas.
+  de usuarios. El tope evita reenviar cabeceras desmesuradas. El cliente **no sigue redirecciones** (`follow_redirects=False`): una respuesta `3xx` es «no disponible» y el token jamás viaja a otro servidor (FR-024); y el arranque advierte si una dirección usa `http://` no local (R14).
 - **Sin caché** de decisiones (Principio VIII y SC-003): una llamada por petición protegida. El costo
   es una ida y vuelta de red por petición; según la investigación de la spec 008 de la referencia, su
   consulta de permisos tarda 3,2 ms de media (8 clientes, 110 000 usuarios), así que el tiempo lo
@@ -100,10 +100,8 @@ R4, R10 y R14 se ejecutaron ahí con un script desechable; sus resultados se cit
   antes de validar ruta, consulta y cuerpo. Orden resultante: identidad → permiso → validación →
   existencia y reglas de negocio.
 - **Evidencia (script desechable)**: sin token y con cuerpo válido → `401`; sin token y con cuerpo
-  inválido (`monthly_price: -5`) → `401` (no `422`); con token y cuerpo inválido → `422`. **Limitación
-  conocida**: un cuerpo que no es JSON sintácticamente válido → `422` incluso sin token, porque
-  Starlette lo decodifica antes de las dependencias. Es la misma limitación que acepta la referencia
-  (precedencia 1 de su catálogo de errores); no revela datos y se documenta en el catálogo de errores.
+  inválido (`monthly_price: -5`) → `401` (no `422`); con token y cuerpo inválido → `422`. **Excepción aceptada (spec FR-004, clarificación del 2026-10-17)**: un cuerpo que no es JSON sintácticamente válido → `422` incluso sin token, porque
+  Starlette lo decodifica antes de las dependencias. Es la misma limitación que acepta la referencia (precedencia 1 de su catálogo de errores); no revela datos y se documenta en el catálogo de errores. La desviación respecto al Principio VIII se justifica en Complexity Tracking del plan; alternativas descartadas: leer el cuerpo a mano en las 3 rutas que lo reciben (se pierde el esquema de entrada en OpenAPI y la validación de Pydantic) o un middleware ASGI (no documenta el permiso).
 - **Motivo**: cumple la spec (historia 2, escenario 6) para todo lo que no sea JSON roto, sin código
   extra.
 
@@ -263,7 +261,7 @@ R4, R10 y R14 se ejecutaron ahí con un script desechable; sus resultados se cit
   compartido (con `limits` acotados), que cierra al terminar. Si falta una variable obligatoria el
   servicio **no arranca** y el mensaje nombra **solo las variables** que faltan o son inválidas, nunca
   sus valores (el `ValidationError` de Pydantic repite el valor recibido; se captura y se reescribe).
-  `create_app()` no abre conexiones ni lee variables, para poder importarla en las pruebas.
+  `create_app()` no abre conexiones ni exige variables (solo lee `CORS_ALLOWED_ORIGINS`, opcional), para poder importarla en las pruebas. El arranque registra una **advertencia** por cada dirección `http://` cuyo host no es `localhost`, `127.0.0.1`, `::1` ni un nombre sin punto (FR-024); la advertencia nombra la variable, nunca la dirección ni credenciales, y no impide arrancar porque las redes privadas entre servicios suelen usar `http` (clarificación del 2026-10-17).
 - **Tiempo máximo total** por llamada: `asyncio.timeout(n)` envolviendo la llamada de `httpx`
   (el `Timeout` de `httpx` limita cada fase por separado, no el total). Evidencia: `asyncio.timeout`
   lanza `TimeoutError` a los 0,1 s en el entorno de referencia.
@@ -303,7 +301,7 @@ R4, R10 y R14 se ejecutaron ahí con un script desechable; sus resultados se cit
 - **Decisión**: base de datos `maily_system` y de pruebas `maily_system_test` (el nombre debe terminar
   en `_test`; la suite se niega a ejecutarse si no, como en la referencia). Puertos por defecto
   distintos de los de la referencia para poder tener ambos servicios levantados en el mismo equipo:
-  PostgreSQL `5433` y API `8010`.
+  PostgreSQL `5434` y API `8010` (el `5433` ya lo ocupa la base de datos de `mailySoft-usuarios` en este equipo; se comprobó al implementar).
 - **Alternativas**: reutilizar 5432/8000 (choca con `mailySoft-usuarios`, que es justo el servicio al
   que este llama en local).
 
@@ -312,9 +310,7 @@ R4, R10 y R14 se ejecutaron ahí con un script desechable; sus resultados se cit
 - **Decisión**: variable opcional `CORS_ALLOWED_ORIGINS` (lista separada por comas); vacía = sin CORS.
   Si se define, `CORSMiddleware` con esos orígenes, métodos de la API y cabeceras `Authorization` y
   `Content-Type`, sin credenciales ni comodines.
-- **Motivo**: el Front es una aplicación de navegador (los pantallazos) y sin CORS no podría llamar a
-  la API; la referencia hizo lo mismo en su spec 008. Es una línea de configuración, desactivada por
-  defecto; se puede quitar sin tocar nada más si el Front llama por un servidor propio.
+- **Motivo**: es requisito de la spec (FR-025): el Front es una aplicación de navegador y, por clarificación del 2026-10-17, llama directamente a la API; sin CORS el navegador bloquearía las respuestas. Desactivada por defecto (sin lista, ningún sitio web). Se prueba en `tests/unit/test_main.py`.
 
 ## R19. Registros (logs) y secretos
 

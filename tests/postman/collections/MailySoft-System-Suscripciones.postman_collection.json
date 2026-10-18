@@ -1,0 +1,1550 @@
+{
+  "info": {
+    "name": "MailySoft System API — Suscripciones",
+    "description": "Pruebas de punta a punta de la API de suscripciones contra el servicio real y las dos simulaciones (API de usuarios y API de clínicas) de la pila aislada de pruebas.\n\n**Qué cubre**: las 6 operaciones de /api/v1/subscriptions y los errores clave (401, 403, 404, 409, 422 y 503). Complementa a pytest, que sigue siendo la puerta de calidad; no lo sustituye.\n\n**Autenticación**: todas las peticiones llevan un token Bearer (`{{accessToken}}`). El script previo de la colección registra, la primera vez, una persona administradora y una persona sin permisos en la simulación del API de usuarios (`{{usersStubUrl}}`); los tokens se generan al azar y quedan solo en variables de colección, nunca en este archivo.\n\n**Cómo está organizada**: cada carpeta crea sus propios datos con nombres únicos y los elimina al terminar (el borrado es lógico: quedan filas «Eliminada»). Las variables de colección empiezan vacías y las rellenan las peticiones de creación. Las carpetas 2 a 4 usan la suscripción que crea la 1: ejecute la colección completa.\n\n**Cómo ejecutarla**: levante la pila (`docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml up -d --wait api`) y ejecute `npm run e2e --prefix tests/postman`.\n\n**Advertencia**: no la apunte nunca a un servicio con datos reales.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Las personas de prueba se registran en la simulación del API de usuarios (`{{usersStubUrl}}`) la",
+          "// primera vez y quedan solo en variables de colección (en memoria): ningún token se escribe en este",
+          "// archivo. Cada token se genera al azar en cada ejecución.",
+          "const random = function () { return Date.now().toString(36) + Math.random().toString(36).slice(2, 10); };",
+          "const usersStubUrl = pm.environment.get(\"usersStubUrl\");",
+          "if (!pm.collectionVariables.get(\"accessToken\") && usersStubUrl) {",
+          "  const register = function (variable, prefix, permissions, next) {",
+          "    const token = prefix + random();",
+          "    pm.sendRequest({",
+          "      url: usersStubUrl + \"/__test__/tokens\",",
+          "      method: \"POST\",",
+          "      header: { \"Content-Type\": \"application/json\" },",
+          "      body: { mode: \"raw\", raw: JSON.stringify({ token: token, permissions: permissions }) }",
+          "    }, function (error, response) {",
+          "      if (error || response.code !== 200) {",
+          "        throw new Error(\"No se pudo registrar a la persona de prueba (\" + variable + \"). ¿Está levantada la pila de pruebas?\");",
+          "      }",
+          "      pm.collectionVariables.set(variable, token);",
+          "      if (next) { next(); }",
+          "    });",
+          "  };",
+          "  register(\"accessToken\", \"e2e-admin-\", [\"subscriptions:read\", \"subscriptions:write\", \"subscriptions:update\", \"subscriptions:delete\"], function () {",
+          "    register(\"plainToken\", \"e2e-plain-\", []);",
+          "  });",
+          "}",
+          "pm.variables.set(\"badToken\", \"e2e-invalid-\" + random());"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "suffix",
+      "value": ""
+    },
+    {
+      "key": "subscriptionId",
+      "value": ""
+    },
+    {
+      "key": "otherSubscriptionId",
+      "value": ""
+    },
+    {
+      "key": "otherName",
+      "value": ""
+    },
+    {
+      "key": "proName",
+      "value": ""
+    },
+    {
+      "key": "reusedId",
+      "value": ""
+    },
+    {
+      "key": "degradedId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Preparación",
+      "description": "Reinicia las dos simulaciones y comprueba que la API responde. Las personas de prueba se registran solas (script previo de la colección).",
+      "item": [
+        {
+          "name": "setup: reiniciar la simulación del API de usuarios",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{usersStubUrl}}/__test__/reset",
+              "host": [
+                "{{usersStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "reset"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "// Tras reiniciar se pierden los tokens: se vuelven a registrar en la siguiente petición.",
+                  "pm.collectionVariables.unset(\"accessToken\");",
+                  "pm.collectionVariables.unset(\"plainToken\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: reiniciar la simulación del API de clínicas",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/reset",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "reset"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: la API responde y las personas de prueba están registradas",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openapi.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openapi.json"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"la API publica su contrato\", function () { pm.expect(pm.response.json().info.title).to.eql(\"MailySoft System API\"); });",
+                  "pm.test(\"hay una persona administradora\", function () { pm.expect(pm.collectionVariables.get(\"accessToken\")).to.be.a(\"string\").and.not.empty; });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Catálogo",
+      "description": "Listar, crear y volver a listar. Crea su propia suscripción con un nombre único y la deja para las carpetas siguientes.",
+      "item": [
+        {
+          "name": "list_subscriptions: el catálogo responde con un arreglo",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"es un arreglo\", function () { pm.expect(pm.response.json()).to.be.an(\"array\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: crear «Pro»",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Pro {{suffix}}\", \"description\": \"Para clínicas en crecimiento.\", \"monthly_price\": 4500, \"features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"]}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"suffix\", Date.now().toString(36) + Math.random().toString(36).slice(2, 6));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "const subscription = pm.response.json();",
+                  "pm.test(\"nace Activa\", function () { pm.expect(subscription.status).to.eql({ id: 1, name: \"Activa\" }); });",
+                  "pm.test(\"el precio es una cadena con dos decimales\", function () { pm.expect(subscription.monthly_price).to.eql(\"4500.00\"); });",
+                  "pm.test(\"una suscripción nueva no tiene clínicas\", function () { pm.expect(subscription.clinics_count).to.eql(0); });",
+                  "pm.test(\"informa dónde quedó\", function () { pm.expect(pm.response.headers.get(\"Location\")).to.eql(\"/api/v1/subscriptions/\" + subscription.id); });",
+                  "pm.collectionVariables.set(\"subscriptionId\", String(subscription.id));",
+                  "pm.collectionVariables.set(\"proName\", subscription.name);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list_subscriptions: la suscripción creada aparece con su estatus",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const found = pm.response.json().find(function (s) { return String(s.id) === pm.collectionVariables.get(\"subscriptionId\"); });",
+                  "pm.test(\"aparece en el catálogo\", function () { pm.expect(found).to.exist; });",
+                  "pm.test(\"con su estatus Activa\", function () { pm.expect(found.status.name).to.eql(\"Activa\"); });",
+                  "pm.test(\"con 0 clínicas\", function () { pm.expect(found.clinics_count).to.eql(0); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Consultar y actualizar",
+      "description": "Detalle, cambio de precio, nombre repetido y campo no permitido. Usa la suscripción de la carpeta 1.",
+      "item": [
+        {
+          "name": "get_subscription: detalle de la suscripción",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"es la suscripción creada\", function () { pm.expect(String(pm.response.json().id)).to.eql(pm.collectionVariables.get(\"subscriptionId\")); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_subscription: cambiar solo el precio",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"monthly_price\": \"4700.00\"}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const subscription = pm.response.json();",
+                  "pm.test(\"el precio cambió\", function () { pm.expect(subscription.monthly_price).to.eql(\"4700.00\"); });",
+                  "pm.test(\"lo demás se conserva\", function () { pm.expect(subscription.name).to.eql(pm.collectionVariables.get(\"proName\")); });",
+                  "pm.test(\"las funciones se conservan\", function () { pm.expect(subscription.features).to.eql([\"Hasta 5 consultorios\", \"Usuarios ilimitados\"]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: crear otra suscripción para el choque de nombres",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Otra {{suffix}}\", \"monthly_price\": 100}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.collectionVariables.set(\"otherSubscriptionId\", String(pm.response.json().id));",
+                  "pm.collectionVariables.set(\"otherName\", pm.response.json().name);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_subscription: el nombre de otra suscripción se rechaza",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"{{otherName}}\"}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 409\", function () { pm.response.to.have.status(409); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código subscription_name_already_exists\", function () { pm.expect(error.code).to.eql(\"subscription_name_already_exists\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_subscription: un campo no permitido se rechaza",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status\": 2}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"el código es validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"indica el campo\", function () { pm.expect(error.errors[0]).to.eql({ field: \"status\", message: \"El campo «status» no está permitido.\" }); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Cambiar el estatus",
+      "description": "Activa → Inactiva → Bloqueada → Activa, estatus repetido y estatus no permitido.",
+      "item": [
+        {
+          "name": "change_subscription_status: pasar a Inactiva",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}",
+                "status"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status_id\": 2}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"estatus Inactiva\", function () { pm.expect(pm.response.json().status).to.eql({ id: 2, name: \"Inactiva\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription: el detalle muestra el nuevo estatus",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"estatus Inactiva\", function () { pm.expect(pm.response.json().status.id).to.eql(2); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "change_subscription_status: pasar a Bloqueada",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}",
+                "status"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status_id\": 3}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"estatus Bloqueada\", function () { pm.expect(pm.response.json().status).to.eql({ id: 3, name: \"Bloqueada\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "change_subscription_status: volver a Activa",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}",
+                "status"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status_id\": 1}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"estatus Activa\", function () { pm.expect(pm.response.json().status).to.eql({ id: 1, name: \"Activa\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "change_subscription_status: pedir el estatus que ya tiene se rechaza",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}",
+                "status"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status_id\": 1}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 409\", function () { pm.response.to.have.status(409); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código subscription_status_unchanged\", function () { pm.expect(error.code).to.eql(\"subscription_status_unchanged\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "change_subscription_status: Eliminada no se admite por esta vía",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}",
+                "status"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status_id\": 4}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "pm.test(\"indica el estatus\", function () { pm.expect(pm.response.json().errors[0].field).to.eql(\"status_id\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Eliminar",
+      "description": "Con clínicas se rechaza; sin clínicas se elimina y su nombre queda libre. Deja el catálogo limpio.",
+      "item": [
+        {
+          "name": "setup: la suscripción tiene 3 clínicas",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/counts",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "counts"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"{{subscriptionId}}\": 3}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "delete_subscription: con clínicas asignadas se rechaza",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 409\", function () { pm.response.to.have.status(409); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código subscription_has_clinics\", function () { pm.expect(error.code).to.eql(\"subscription_has_clinics\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: la suscripción ya no tiene clínicas",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/counts",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "counts"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "delete_subscription: sin clínicas se elimina",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 204\", function () { pm.response.to.have.status(204); });",
+                  "pm.test(\"sin contenido\", function () { pm.expect(pm.response.text()).to.eql(\"\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription: la eliminada ya no se encuentra",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 404\", function () { pm.response.to.have.status(404); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código subscription_not_found\", function () { pm.expect(error.code).to.eql(\"subscription_not_found\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: el nombre de la eliminada queda libre",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"{{proName}}\", \"monthly_price\": 4500}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.collectionVariables.set(\"reusedId\", String(pm.response.json().id));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "delete_subscription: limpiar la suscripción con el nombre reutilizado",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{reusedId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{reusedId}}"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 204\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "delete_subscription: limpiar la otra suscripción",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{otherSubscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{otherSubscriptionId}}"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 204\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Control de acceso",
+      "description": "Sin token, token inválido, persona sin permisos y API de usuarios caído. La documentación sigue pública.",
+      "item": [
+        {
+          "name": "list_subscriptions: sin token se pide iniciar sesión",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 401\", function () { pm.response.to.have.status(401); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código unauthenticated\", function () { pm.expect(error.code).to.eql(\"unauthenticated\"); });",
+                  "pm.test(\"mensaje en español\", function () { pm.expect(error.message).to.eql(\"Debe iniciar sesi\\u00f3n para usar esta operaci\\u00f3n.\"); });",
+                  "pm.test(\"incluye el desafío\", function () { pm.expect(pm.response.headers.get(\"WWW-Authenticate\")).to.eql(\"Bearer\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list_subscriptions: un token inválido se rechaza",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{badToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 401\", function () { pm.response.to.have.status(401); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código invalid_token\", function () { pm.expect(error.code).to.eql(\"invalid_token\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list_subscriptions: una persona sin permisos recibe 403",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{plainToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 403\", function () { pm.response.to.have.status(403); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código permission_denied\", function () { pm.expect(error.code).to.eql(\"permission_denied\"); });",
+                  "pm.test(\"mensaje en español\", function () { pm.expect(error.message).to.eql(\"No tiene permiso para realizar esta operaci\\u00f3n. Permiso requerido: subscriptions:read.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: una persona sin permisos no crea nada",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"No debe existir\", \"monthly_price\": 1}"
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{plainToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 403\", function () { pm.response.to.have.status(403); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código permission_denied\", function () { pm.expect(error.code).to.eql(\"permission_denied\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: el API de usuarios dejará de responder una vez",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{usersStubUrl}}/__test__/faults",
+              "host": [
+                "{{usersStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "faults"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\": \"unavailable\", \"count\": 1}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list_subscriptions: con el API de usuarios caído se rechaza",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 503\", function () { pm.response.to.have.status(503); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código authorization_unavailable\", function () { pm.expect(error.code).to.eql(\"authorization_unavailable\"); });",
+                  "pm.test(\"mensaje en español\", function () { pm.expect(error.message).to.eql(\"No se pudo verificar su permiso por ahora. Int\\u00e9ntelo de nuevo m\\u00e1s tarde.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "docs: la documentación es pública",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/docs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "docs"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Degradación de clínicas",
+      "description": "Con el API de clínicas caído el catálogo sigue respondiendo (con conteo no disponible) y eliminar se rechaza.",
+      "item": [
+        {
+          "name": "create_subscription: crear la suscripción de la carpeta",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Degradación {{suffix}}\", \"monthly_price\": 1}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"suffix\", Date.now().toString(36) + Math.random().toString(36).slice(2, 6));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.collectionVariables.set(\"degradedId\", String(pm.response.json().id));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: el API de clínicas dejará de responder dos veces",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/faults",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "faults"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\": \"unavailable\", \"count\": 2}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list_subscriptions: sigue respondiendo con el conteo no disponible",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const found = pm.response.json().find(function (s) { return String(s.id) === pm.collectionVariables.get(\"degradedId\"); });",
+                  "pm.test(\"la suscripción se devuelve\", function () { pm.expect(found).to.exist; });",
+                  "pm.test(\"el conteo no está disponible (nunca un cero inventado)\", function () { pm.expect(found.clinics_count).to.eql(null); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "delete_subscription: no se elimina si no se puede comprobar",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{degradedId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{degradedId}}"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 503\", function () { pm.response.to.have.status(503); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código clinics_check_unavailable\", function () { pm.expect(error.code).to.eql(\"clinics_check_unavailable\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: el API de clínicas vuelve",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/reset",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "reset"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "delete_subscription: con el API de clínicas sano se elimina",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{degradedId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{degradedId}}"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 204\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

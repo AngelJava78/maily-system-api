@@ -29,8 +29,8 @@ Superficie solo de pruebas (`/__test__/…`; nunca se publica fuera de la pila a
 | Llamada | Para qué |
 |---|---|
 | `POST /__test__/tokens` `{ "token": "...", "permissions": ["subscriptions:read"], "expired": false }` | Registra un token (opaco para la simulación) y los permisos de su persona |
-| `POST /__test__/faults` `{ "mode": "unavailable\|rate_limited\|forbidden\|not_found\|malformed\|wrong_permission\|not_json\|slow", "count": 1, "delay_seconds": 30 }` | Hace fallar las próximas `count` consultas: `503`, `429`, `403`, `404`, `200` sin `allowed`, `200` con otro `permission`, `200` que no es JSON o una respuesta que tarda `delay_seconds` (las pruebas de tiempo máximo usan 1 s con un tiempo máximo de 0,2 s) |
-| `GET /__test__/calls` | Peticiones recibidas: `permission` y si traían `Authorization` (para comprobar **una llamada por petición**, el permiso pedido y el reenvío del token) |
+| `POST /__test__/faults` `{ "mode": "unavailable\|rate_limited\|forbidden\|not_found\|unprocessable\|malformed\|wrong_permission\|not_json\|redirect\|slow\|unauthorized_unreadable\|unauthorized_unknown", "count": 1, "delay_seconds": 30 }` | Hace fallar las próximas `count` consultas: `503`, `429`, `403`, `404`, `200` sin `allowed`, `200` con otro `permission`, `422` (`unprocessable`), `200` que no es JSON, una redirección `307` a otra dirección (`redirect`), un `401` con cuerpo ilegible o con un código desconocido (`unauthorized_unreadable`, `unauthorized_unknown`) o una respuesta que tarda `delay_seconds` (las pruebas de tiempo máximo usan 1 s con un tiempo máximo de 0,2 s) |
+| `GET /__test__/calls` | Peticiones recibidas (también las de rutas inexistentes, para detectar redirecciones seguidas): `path`, `permission`, los nombres de las cabeceras (`header_names`) y si traían `Authorization` (para comprobar **una llamada por petición**, el permiso pedido y el reenvío del token) |
 | `POST /__test__/reset` | Borra tokens, fallos y llamadas |
 
 ### `tests/stubs/clinics_api/app.py` — simulación del API de clínicas
@@ -42,8 +42,8 @@ Superficie solo de pruebas (`/__test__/…`; nunca se publica fuera de la pila a
 | Llamada | Para qué |
 |---|---|
 | `POST /__test__/counts` `{ "1": 2, "6": 14 }` | Fija los conteos por suscripción (sustituye a los anteriores) |
-| `POST /__test__/faults` `{ "mode": "unavailable\|unauthorized\|forbidden\|malformed\|negative_count\|unrequested_id\|duplicate_id\|not_json\|slow", "count": 1, "delay_seconds": 30 }` | Hace fallar las próximas `count` consultas: `503`, `401`, `403`, `200` sin `items`, con un conteo negativo, con un `subscription_id` no pedido, con dos elementos del mismo id, que no es JSON o lenta |
-| `GET /__test__/calls` | Peticiones recibidas: `subscription_id` pedidos y la cabecera `Authorization` recibida (para comprobar que **se reenvió el token de la persona**) |
+| `POST /__test__/faults` `{ "mode": "unavailable\|unauthorized\|forbidden\|malformed\|negative_count\|unrequested_id\|duplicate_id\|not_json\|redirect\|slow", "count": 1, "delay_seconds": 30 }` | Hace fallar las próximas `count` consultas: `503`, `401`, `403`, `200` sin `items`, con un conteo negativo, con un `subscription_id` no pedido (`0`: si hubo filtro no se pidió y si no lo hubo no es un identificador válido), con dos elementos del mismo id, que no es JSON, una redirección `307` o lenta |
+| `GET /__test__/calls` | Peticiones recibidas (también las de rutas inexistentes, para detectar redirecciones seguidas): `path`, `subscription_id` pedidos y la cabecera `Authorization` recibida (para comprobar que **se reenvió el token de la persona**) |
 | `POST /__test__/reset` | Borra conteos, fallos y llamadas |
 
 ## 2. Pila de punta a punta (`tests/postman/docker-compose.e2e.yml`)
@@ -81,9 +81,18 @@ Postman usan una base de datos dedicada a pruebas). Requiere Docker Compose 2.24
 ## 3. Colección de Postman (`tests/postman/collections/MailySoft-System-Suscripciones.postman_collection.json`)
 
 Complementa a pytest (no lo sustituye) y se limita a **recorridos de punta a punta** y a los errores
-clave. Variables: `baseUrl` (API), `usersStubUrl`, `clinicsStubUrl`, `accessToken` (se rellena en la
-carpeta 0; el bloque Bearer solo referencia `{{accessToken}}`, que **no** es un secreto) y los
-identificadores que rellenan las peticiones de creación.
+clave. Variables del **entorno** (solo las direcciones): `baseUrl` (API), `usersStubUrl` y
+`clinicsStubUrl`. Variables de **colección** (empiezan vacías y las rellenan las peticiones):
+`accessToken` y `plainToken` (el script previo de la colección registra a las dos personas de prueba
+en la simulación con tokens generados al azar en cada ejecución; el bloque Bearer solo referencia
+`{{accessToken}}`, que **no** es un secreto) y los identificadores que rellenan las peticiones de
+creación. Nunca se declaran en el entorno: una variable de entorno tiene prioridad sobre la de
+colección del mismo nombre y taparía a la que se rellena al ejecutar.
+
+Convención de nombres: cada petición que ejercita una operación se llama
+`<operationId>: <descripción>`; las que preparan un escenario se llaman `setup: …` y la que comprueba
+la documentación pública, `docs: …` (no son operaciones). Las carpetas 2 a 4 usan la suscripción que crea
+la 1, así que se ejecuta la colección completa; la 5 y la 6 son autocontenidas.
 
 | Carpeta | Recorrido |
 |---|---|

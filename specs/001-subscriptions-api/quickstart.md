@@ -40,6 +40,7 @@ migraciones suben y bajan sin error. Las pruebas **eliminan y recrean el esquema
 | 6 (estatus) FR-016 | Cualquier dirección entre 1, 2 y 3; el mismo estatus → 409; 4 o desconocido → 422; con clínicas se permite | `tests/contract/test_subscriptions_api.py`; `tests/unit/test_subscription_service.py` |
 | 7 (eliminar) FR-017, FR-018, SC-009 | Sin clínicas → 204 y deja de verse; con clínicas → 409; con el API de clínicas caído o con respuesta inesperada → 503 y no cambia nada; no se puede actualizar ni cambiar de estatus después | `tests/contract/test_subscriptions_api.py`, `test_clinics_degradation.py`; `tests/unit/test_subscription_service.py` |
 | Errores FR-019 a FR-023, SC-008 | Formato uniforme y mensajes en español; el token nunca aparece en una respuesta ni en un registro; OpenAPI generado sin errores y con permiso en cada operación | `tests/unit/test_error_messages.py`; `tests/contract/test_openapi_contract.py` |
+| Reenvío del token y navegador (FR-024, FR-025) | Los clientes no siguen redirecciones (modo `redirect` de las simulaciones); advertencia al arrancar por una dirección `http://` no local, sin mostrar la dirección; CORS desactivado por defecto y, con lista, solo el sitio permitido y sin credenciales | `tests/contract/test_users_api_client.py`, `test_clinics_api_client.py`; `tests/unit/test_config.py`, `test_main.py` |
 | Capas (Principio I) | Ninguna capa importa lo que no debe (`ast`) | `tests/unit/test_layering.py` |
 | Configuración (Principio VIII/IX) | Falta una variable obligatoria → no arranca y nombra la variable sin mostrar valores | `tests/unit/test_config.py` |
 
@@ -100,7 +101,7 @@ externos. Con la pila del nivel 2 arriba:
 ```powershell
 npm ci --prefix tests/postman                              # instala Newman (una vez)
 npm run e2e --prefix tests/postman                         # colección completa: consola + tests/postman/reports/junit.xml
-npm run e2e --prefix tests/postman -- --folder "4. Eliminar"   # solo una carpeta
+npm run e2e --prefix tests/postman -- --folder "5. Control de acceso"   # solo una carpeta (las 2 a 4 usan lo que crea la 1)
 ```
 
 **Esperado**: código de salida `0` con todas las comprobaciones en verde (carpetas 0 a 6 de

@@ -1,0 +1,59 @@
+# Pila aislada para las pruebas de punta a punta: otro proyecto de Compose con su propia base de
+# datos desechable (sin puerto publicado), la API solo en 127.0.0.1 y las dos simulaciones (API de
+# usuarios y API de clínicas) en lugar de los servicios reales.
+#
+# Levantar:  docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml up -d --wait api
+# Desmontar: docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml down -v
+# Requiere Docker Compose 2.24 o superior (por `!override`).
+services:
+  db:
+    ports: !override []
+
+  # Simulación del API de usuarios: la imagen del proyecto ejecuta tests/stubs/users_api/app.py
+  # (no importa nada de `src/`). Su superficie `/__test__/` solo existe en esta pila.
+  users-api-stub:
+    build: .
+    command: ["uvicorn", "app:app", "--app-dir", "/stub", "--host", "0.0.0.0", "--port", "8080"]
+    volumes:
+      - ./tests/stubs/users_api:/stub:ro
+    ports:
+      - "127.0.0.1:${E2E_USERS_STUB_PORT:-8012}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__test__/calls', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 3s
+
+  # Simulación del API de clínicas: tests/stubs/clinics_api/app.py.
+  clinics-api-stub:
+    build: .
+    command: ["uvicorn", "app:app", "--app-dir", "/stub", "--host", "0.0.0.0", "--port", "8080"]
+    volumes:
+      - ./tests/stubs/clinics_api:/stub:ro
+    ports:
+      - "127.0.0.1:${E2E_CLINICS_STUB_PORT:-8013}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__test__/calls', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 3s
+
+  api:
+    depends_on:
+      users-api-stub:
+        condition: service_healthy
+      clinics-api-stub:
+        condition: service_healthy
+    environment:
+      USERS_API_BASE_URL: http://users-api-stub:8080
+      CLINICS_API_BASE_URL: http://clinics-api-stub:8080
+    ports: !override
+      - "127.0.0.1:${E2E_API_PORT:-8011}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 3s

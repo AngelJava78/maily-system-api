@@ -21,8 +21,7 @@ Enfoque técnico (decisiones y evidencia en [research.md](research.md)):
   reenvía el `Bearer` recibido a `GET /api/v1/authorization/check?permission=…` del API de usuarios, **una
   llamada por petición, sin caché ni reintentos**, con un tiempo máximo total de 5 s. `allowed: true` →
   sigue; `allowed: false` → 403; token rechazado → 401 con el mismo código; cualquier otra cosa → 503
-  (**falla cerrada**). La comprobación va antes de validar la solicitud (probado: sin token y con
-  cuerpo inválido responde 401). Cada ruta declara `x-required-permission` y una prueba recorre todas
+  (**falla cerrada**). La comprobación va antes de validar la solicitud (probado: sin token y con cuerpo inválido responde 401; **única excepción aceptada**, spec FR-004: un cuerpo que no es JSON legible responde 422, justificada en Complexity Tracking). Cada ruta declara `x-required-permission` y una prueba recorre todas
   las rutas (R2, R3, R4).
 - **Datos**: dos tablas, `subscription_statuses` (catálogo 1–4 cargado por migración) y
   `subscriptions` (precio `NUMERIC(10,2)`, `features text[]`, índice único parcial por `lower(name)`
@@ -40,7 +39,7 @@ Enfoque técnico (decisiones y evidencia en [research.md](research.md)):
   usadas por pytest (`ASGITransport`, ejercitando el código real de los clientes) y por la pila de
   Newman (R15, R16).
 - **Configuración**: `USERS_API_*`, `CLINICS_API_*` y `CORS_ALLOWED_ORIGINS` (opcional), validadas al
-  arrancar; el servicio no arranca si falta una obligatoria y el mensaje nunca muestra valores (R14).
+  arrancar; el servicio no arranca si falta una obligatoria y el mensaje nunca muestra valores (R14). Se advierte al arrancar si una dirección usa `http://` no local (FR-024), el token **nunca sigue redirecciones** y CORS (FR-025) está desactivado por defecto: solo se habilita con una lista de sitios (R18).
 
 ## Technical Context
 
@@ -70,8 +69,7 @@ de las consultas (SC-001), suponiendo que los otros APIs responden en < 500 ms; 
 
 **Constraints**: falla cerrada en el control de acceso (sin verificar no se deja pasar); efecto
 inmediato de bloqueos y cambios de permisos (sin caché de decisiones); cada llamada a otro API con tiempo
-máximo total de 5 s y sin reintentos; las lecturas **nunca** dependen del API de clínicas; el token no
-aparece en registros, respuestas ni mensajes; ninguna prueba automatizada llama a un API real; ninguna
+máximo total de 5 s y sin reintentos; las lecturas **nunca** dependen del API de clínicas; el token no aparece en registros, respuestas ni mensajes ni se reenvía a otro servidor por una redirección (FR-024); ninguna prueba automatizada llama a un API real; ninguna
 transacción abierta mientras se espera a otro servicio.
 
 **Scale/Scope**: 6 operaciones; 2 tablas; 2 migraciones; 12 códigos de error; 2 integraciones externas
@@ -91,17 +89,14 @@ transacción abierta mientras se espera a otro servicio.
 | V. Pruebas pytest | ✅ | ✅ Services con dobles; endpoints con cliente async; Repositories contra PostgreSQL 17; **ninguna prueba llama a un API real** (simulaciones que reproducen también los fallos); prueba que recorre las rutas; Postman complementa y no sustituye |
 | VI. Migraciones Alembic | ✅ | ✅ `0001` y `0002`, reversibles, async; datos del catálogo por migración; precio `NUMERIC(10,2)` (nunca `float`); baja lógica con catálogo de estatus; `project-definition/DATA_SCHEMA.md` **se crea en esta feature** con las marcas `-- [spec 001-subscriptions-api]` ([database-schema.sql](contracts/database-schema.sql), validado en PostgreSQL 17) |
 | VII. Idioma | ✅ | ✅ Identificadores, campos (`monthly_price`, `clinics_count`, `status_id`) y códigos en inglés; mensajes, OpenAPI y documentos en español; comentarios y docstrings en inglés |
-| VIII. Control de acceso delegado | ✅ | ✅ Token reenviado al API de usuarios, una consulta por petición, sin caché, falla cerrada; 401/403/503 según [users-api-integration.md](contracts/users-api-integration.md); dependencias en `src/security.py` que pasan por `AuthorizationService`; `BearerAuth` + `x-required-permission` en cada operación; el permiso se comprueba **antes** de validar (comprobado; **limitación conocida**: un JSON sintácticamente roto responde 422 antes que 401, igual que la referencia, R4); sin secretos ni tokens en registros |
+| VIII. Control de acceso delegado | ✅ | ✅ Token reenviado al API de usuarios, una consulta por petición, sin caché, falla cerrada; 401/403/503 según [users-api-integration.md](contracts/users-api-integration.md); dependencias en `src/security.py` que pasan por `AuthorizationService`; `BearerAuth` + `x-required-permission` en cada operación; el permiso se comprueba **antes** de validar (comprobado; **desviación justificada en Complexity Tracking**: un cuerpo que no es JSON legible responde 422 antes que 401/403, spec FR-004, R4); no se siguen redirecciones y se advierte de `http://` no local (FR-024); sin secretos ni tokens en registros |
 | IX. Integraciones | ✅ | ✅ El conteo de clínicas no se copia ni se guarda; tiempo máximo y sin reintentos; fallas traducidas a errores propios sin filtrar el cuerpo ni la dirección del otro servicio; las **lecturas** siguen disponibles sin el API de clínicas (`null`); **eliminar** falla cerrada (escritura destructiva); contratos consumidos documentados y con simulación |
 | Stack obligatorio | ✅ | ✅ Solo tecnologías de la tabla (httpx incluido); sin PyJWT ni Auth0; sin dependencias nuevas |
 | Configuración por entorno, sin secretos | ✅ | ✅ Variables validadas al arrancar; no hay secretos propios (la cadena de la base de datos viene de `.env`, que no se versiona); el mensaje de arranque nombra variables, nunca valores |
-| Docker y Compose | ✅ | ✅ `Dockerfile`, `docker-compose.yml` (`db`, `migrate`, `api`) y pila e2e aislada; puertos por defecto distintos de los de `mailySoft-usuarios` (5433 y 8010) |
+| Docker y Compose | ✅ | ✅ `Dockerfile`, `docker-compose.yml` (`db`, `migrate`, `api`) y pila e2e aislada; puertos por defecto distintos de los de `mailySoft-usuarios` (5434 y 8010) |
 | Flujo y puertas de calidad | ✅ | ✅ Este plan incluye el Constitution Check; estructura `src/`, `tests/`, `alembic/`; matriz de permisos y colección de Postman se actualizan con la API |
 
-**Resultado**: PASS contra los principios I a IX, sin violaciones y sin necesidad de enmendar la
-constitución. Dos limitaciones conocidas y aceptadas (no son violaciones): el JSON roto que responde
-422 antes que 401 (R4) y la carrera entre la comprobación de clínicas y la baja, que no puede ser atómica
-entre dos servicios (R7).
+**Resultado**: PASS contra los principios I a IX, sin necesidad de enmendar la constitución, con **una desviación justificada** (permiso antes de validar, salvo para un cuerpo que no es JSON legible; ver Complexity Tracking) y una limitación aceptada: la carrera entre la comprobación de clínicas y la baja, que no puede ser atómica entre dos servicios (R7).
 
 ## Puntos a confirmar fuera de este repositorio (no bloquean el plan)
 
@@ -112,8 +107,7 @@ entre dos servicios (R7).
    suscripciones Eliminadas ([clinics-api-integration.md](contracts/clinics-api-integration.md)).
    Mientras no exista, el conteo sale como «no disponible» y eliminar responde 503: comportamiento ya
    especificado.
-3. **CORS**: la variable opcional `CORS_ALLOWED_ORIGINS` existe porque el Front es de navegador (R18);
-   se puede quitar si el Front llama por un servidor propio.
+
 
 ## Project Structure
 
@@ -146,7 +140,7 @@ Todo es nuevo: el repositorio solo tiene `README.md`, `.gitignore` y la configur
 src/
 ├── __init__.py
 ├── main.py                       # create_app() sin efectos secundarios, lifespan (valida la configuración, crea/cierra el cliente HTTP), VERSION 1.0.0, DESCRIPTION y tags, CORS opcional, nivel de registro de httpx
-├── config.py                     # Settings (base de datos) e IntegrationSettings (URL y tiempos de los otros APIs, CORS); errores de arranque que nombran variables sin valores
+├── config.py                     # Settings (base de datos) e IntegrationSettings (URL y tiempos de los otros APIs, CORS); errores de arranque que nombran variables sin valores y advertencias de `http://` no local (FR-024)
 ├── dependencies.py               # raíz de composición: cliente HTTP compartido, UsersApiClient, ClinicsApiClient, Repository y Services
 ├── security.py                   # (Principio VIII) esquema BearerAuth, extracción del token, require_permission(nombre)
 ├── exceptions.py                 # AppError y los errores de identidad, permiso, suscripción y dependencias
@@ -156,7 +150,7 @@ src/
 │   ├── __init__.py
 │   ├── errors.py                 # excepciones propias (no son errores HTTP): UsersApiRejectedToken, UsersApiUnavailable, ClinicsApiUnavailable
 │   ├── users_api.py              # UsersApiClient.check_permission(token, permission) → bool
-│   └── clinics_api.py            # ClinicsApiClient.get_counts(subscription_ids | None) → dict[int, int]
+│   └── clinics_api.py            # ClinicsApiClient.get_counts(token, subscription_ids | None) → dict[int, int]
 ├── routers/
 │   ├── __init__.py
 │   ├── openapi_docs.py           # error_response, example_response y protected(permission): dependencia + x-required-permission + respuestas 401/403/503
@@ -204,6 +198,8 @@ tests/
 │   ├── test_authorization_service.py
 │   ├── test_security.py
 │   ├── test_config.py
+│   ├── test_main.py              # lifespan, advertencia de http y CORS (FR-024, FR-025)
+│   ├── fakes.py                  # dobles en memoria de los Repositories y de los clientes
 │   └── test_error_messages.py
 ├── integration/                  # PostgreSQL 17 real
 │   ├── test_migrations.py
@@ -232,7 +228,7 @@ project-definition/
 
 docker/postgres/init/01-create-test-db.sql   # crea la base de pruebas `maily_system_test`
 Dockerfile · docker-compose.yml · .dockerignore · alembic.ini · pyproject.toml · uv.lock
-.env.example                      # variables sin valores secretos (puertos 5433 y 8010 por defecto)
+.env.example                      # variables sin valores secretos (puertos 5434 y 8010 por defecto)
 .gitignore                        # (modificado) añade tests/postman/node_modules/ y tests/postman/reports/
 README.md                         # (modificado) qué incluye, puesta en marcha, pruebas, estructura
 ```
@@ -247,5 +243,8 @@ tocar los de suscripciones.
 
 > **Fill ONLY if Constitution Check has violations that must be justified**
 
-Sin violaciones: no hay nada que justificar. Las dos limitaciones conocidas (JSON roto y carrera de la
-baja) están descritas en el Constitution Check y en [research.md](research.md) (R4 y R7).
+| Violation | Why Needed | Simpler Alternative Rejected Because |
+|-----------|------------|-------------------------------------|
+| Principio VIII: el permiso se comprueba antes de validar la solicitud, **salvo** para un cuerpo que no es JSON legible (responde 422 antes que 401/403). Decisión de la persona responsable (spec, Clarifications y FR-004) | El servidor decodifica el cuerpo antes de resolver las dependencias de la ruta (verificado: sin token y con `{oops` responde 422). Un cuerpo ilegible no contiene datos que proteger y la respuesta no revela nada ni permite probar permisos | Leer el cuerpo a mano en las 3 rutas que lo reciben (crear, actualizar y cambiar el estatus) perdería el esquema de entrada en OpenAPI y la validación de Pydantic; un middleware ASGI no documenta el permiso en OpenAPI y esquiva la inyección de dependencias (R3, R4) |
+
+Limitación aceptada (no es una violación): la carrera entre la comprobación de clínicas y la baja, que no puede ser atómica entre dos servicios (R7).

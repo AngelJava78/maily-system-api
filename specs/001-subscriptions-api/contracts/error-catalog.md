@@ -86,9 +86,7 @@ es `null` (FR-009). Solo `delete_subscription` lo convierte en `clinics_check_un
 
 ## Precedencia (cuál se devuelve si hay varias causas)
 
-1. Cuerpo que no es JSON sintácticamente válido → `validation_error` 422 (**limitación conocida**: se
-   evalúa antes que la identidad porque Starlette lo decodifica antes de las dependencias; no revela
-   datos; ver research R4).
+1. Cuerpo que no es JSON sintácticamente válido → `validation_error` 422 (**única excepción aceptada**, spec FR-004: se evalúa antes que la identidad porque Starlette lo decodifica antes de las dependencias; no revela datos; ver research R4 y Complexity Tracking del plan).
 2. Identidad: `unauthenticated` → `invalid_token` / `token_expired`.
 3. Permiso: `permission_denied`; si el API de usuarios no responde, `authorization_unavailable`.
 4. Validación de ruta, consulta y cuerpo: `validation_error` 422.
