@@ -98,6 +98,16 @@ uv run alembic check                     # ¿los modelos coinciden con las migra
 Revertir `0002` borra el catálogo de estatus y falla si hay suscripciones que los usan; úsalo solo en
 bases de desarrollo.
 
+**Sin Alembic**: [`project-definition/create_database.sql`](project-definition/create_database.sql) crea
+todo el esquema (equivale a las migraciones `0001` y `0002`), carga los 4 estatus y registra la versión
+de Alembic, en una sola transacción. Úsalo en una base **propia** de este servicio (no en la de
+mailySoft-usuarios: comparten el nombre de `alembic_version` y de `set_updated_at()`; si ya existen, el
+script se detiene sin cambiar nada):
+
+```powershell
+psql -U postgres -d maily_system -v ON_ERROR_STOP=1 -f project-definition/create_database.sql
+```
+
 ## Pruebas
 
 Las pruebas usan un PostgreSQL real (`TEST_DATABASE_URL`) y **eliminan y recrean el esquema** de esa base,
