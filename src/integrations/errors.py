@@ -29,3 +29,10 @@ class ClinicsApiUnavailable(IntegrationError):
 
     def __init__(self) -> None:
         super().__init__("The clinics API did not answer as expected")
+
+
+class DashboardSourceUnavailable(IntegrationError):
+    """A dashboard data source did not answer as expected: that indicator is not available."""
+
+    def __init__(self) -> None:
+        super().__init__("The dashboard data source did not answer as expected")

@@ -2,7 +2,8 @@
 
 `Settings` holds the database; `IntegrationSettings` the addresses and time limits of the APIs this
 service depends on (FR-002, FR-009); `CorsSettings` the sites allowed to call the API from a browser
-(FR-025). The messages about a bad configuration name the variables, never their values.
+(FR-025); `DashboardSettings` the default number of recent clinics of the dashboard (spec 003). The
+messages about a bad configuration name the variables, never their values.
 """
 
 from functools import lru_cache
@@ -13,6 +14,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Hosts that are never reached through an untrusted network: no warning when they use plain http.
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+# The only values of DASHBOARD_RECENT_CLINICS_LIMIT (the default is 5).
+ALLOWED_RECENT_CLINICS_LIMITS = (3, 5, 10)
 
 
 class Settings(BaseSettings):
@@ -58,6 +62,26 @@ class CorsSettings(BaseSettings):
         return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
 
 
+class DashboardSettings(BaseSettings):
+    """Default number of recent clinics that the dashboard returns when no `limit` is sent."""
+
+    dashboard_recent_clinics_limit: int = 5
+
+    # An empty variable (docker-compose passes empty values when `.env` has none) counts as unset.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
+
+    @field_validator("dashboard_recent_clinics_limit", mode="before")
+    @classmethod
+    def _only_the_allowed_values(cls, value: object) -> int:
+        # The exact text "3", "5" or "10": no decimals, signs, zero padding or booleans. A value
+        # that comes from the environment is a string, so it cannot be a `Literal[3, 5, 10]`.
+        text = str(value).strip()
+        if text not in {str(allowed) for allowed in ALLOWED_RECENT_CLINICS_LIMITS}:
+            # The message never includes the value, like the other settings.
+            raise ValueError("Only 3, 5 or 10 are allowed")
+        return int(text)
+
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
@@ -73,15 +97,25 @@ def get_cors_settings() -> CorsSettings:
     return CorsSettings()
 
 
-def configuration_error_message(error: ValidationError) -> str:
-    """Spanish text for the operator: which variables are missing or invalid, never their values."""
+@lru_cache
+def get_dashboard_settings() -> DashboardSettings:
+    # Read once: changing the variable needs a restart of the service (FR-019).
+    return DashboardSettings()
+
+
+def configuration_error_message(*errors: ValidationError) -> str:
+    """Spanish text for the operator: which variables are missing or invalid, never their values.
+
+    Receives the errors of every configuration class that failed, so one message names them all.
+    """
     problems = []
-    for item in error.errors():
-        variable = str(item["loc"][0]).upper() if item["loc"] else "?"
-        if item["type"] == "missing":
-            problems.append(f"Falta la variable de entorno {variable}.")
-        else:
-            problems.append(f"La variable de entorno {variable} no es válida.")
+    for error in errors:
+        for item in error.errors():
+            variable = str(item["loc"][0]).upper() if item["loc"] else "?"
+            if item["type"] == "missing":
+                problems.append(f"Falta la variable de entorno {variable}.")
+            else:
+                problems.append(f"La variable de entorno {variable} no es válida.")
     return "Configuración incompleta o no válida. " + " ".join(problems)
 
 

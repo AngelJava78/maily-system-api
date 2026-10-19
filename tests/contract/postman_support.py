@@ -29,6 +29,11 @@ MANUAL_ENVIRONMENTS = {
 # `docs: ...` checks the public documentation and `sim: ...` drives the clinics simulation.
 MANUAL_HELPER_PREFIXES = {"docs", "sim"}
 
+# End-to-end collection of spec 003 (the dashboard; run by Newman against the same isolated stack).
+DASHBOARD_COLLECTION = POSTMAN / "collections" / "MailySoft-System-Dashboard.postman_collection.json"
+DASHBOARD_PREFIX = "/api/v1/dashboard"
+DASHBOARD_HELPER_PREFIXES = {"setup", "docs"}
+
 JWT_PATTERN = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.")
 BEARER_LITERAL_PATTERN = re.compile(r"Bearer [A-Za-z0-9._~+/=-]{8,}")
 # A value that looks like a key or a secret: 32 or more token characters and no spaces.
@@ -71,8 +76,19 @@ def scripts_of(item: dict, listen: str) -> str:
     )
 
 
-def operation_ids_of_the_api() -> set[str]:
+SUBSCRIPTIONS_PREFIX = "/api/v1/subscriptions"
+
+
+def operation_ids_of_the_api(path_prefix: str = SUBSCRIPTIONS_PREFIX) -> set[str]:
+    """The `operationId` of the paths that start with `path_prefix`.
+
+    By default, the subscriptions: the resource that the collections of specs 001 and 002 cover.
+    Pass `"/"` for every operation of the API.
+    """
     schema = create_app().openapi()
     return {
-        operation["operationId"] for item in schema["paths"].values() for operation in item.values()
+        operation["operationId"]
+        for path, item in schema["paths"].items()
+        if path.startswith(path_prefix)
+        for operation in item.values()
     }

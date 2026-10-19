@@ -2,7 +2,8 @@
 
 Every provider is `async def` so FastAPI does not run it in a thread. The Router only receives the
 Service; the Service receives its Repositories and API clients; the Repository receives the
-session.
+session. The dashboard has no Repository: its Service receives the data source (`build_dashboard_source`
+is the only place that says which one, today the fictitious one of phase 1).
 """
 
 from typing import Annotated
@@ -12,12 +13,15 @@ from fastapi import Depends, Request
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.config import get_integration_settings
+from src.config import get_dashboard_settings, get_integration_settings
 from src.database import get_session
 from src.integrations.clinics_api import ClinicsApiClient
+from src.integrations.dashboard_source import DashboardSource
+from src.integrations.dummy_dashboard_source import DummyDashboardSource
 from src.integrations.users_api import UsersApiClient
 from src.repositories.subscription_repository import SubscriptionRepository
 from src.services.authorization_service import AuthorizationService
+from src.services.dashboard_service import DashboardService
 from src.services.subscription_service import SubscriptionService
 
 
@@ -61,3 +65,22 @@ async def get_subscription_service(
     clinics_api: Annotated[ClinicsApiClient, Depends(get_clinics_api_client)],
 ) -> SubscriptionService:
     return SubscriptionService(repository, clinics_api)
+
+
+# Immutable and stateless, so one instance serves the whole application.
+_DASHBOARD_SOURCE = DummyDashboardSource()
+
+
+def build_dashboard_source() -> DashboardSource:
+    """The data source of the dashboard. Phase 1: the fictitious one (`is_dummy` is true)."""
+    return _DASHBOARD_SOURCE
+
+
+async def get_dashboard_source() -> DashboardSource:
+    return build_dashboard_source()
+
+
+async def get_dashboard_service(
+    source: Annotated[DashboardSource, Depends(get_dashboard_source)],
+) -> DashboardService:
+    return DashboardService(source, get_dashboard_settings().dashboard_recent_clinics_limit)

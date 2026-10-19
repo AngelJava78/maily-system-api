@@ -1,0 +1,1093 @@
+{
+  "info": {
+    "name": "MailySoft System API — Dashboard",
+    "description": "Pruebas de punta a punta del dashboard de plataforma («Panel de Maily») contra el servicio real y la simulación del API de usuarios de la pila aislada de pruebas.\n\n**Qué cubre**: la operación `get_dashboard` (`GET /api/v1/dashboard`) y sus casos clave: el resumen con la cantidad por defecto, `limit` válido (incluido el tope de 10), `limit` inválido (422), el orden y el desempate, y los errores 401, 403 y 503. Complementa a pytest, que sigue siendo la puerta de calidad; no lo sustituye. Los casos que dependen de cambiar la configuración o los datos del servicio (menos clínicas que el límite, ninguna clínica, el valor configurado, la falla de una fuente) los cubre pytest.\n\n**Solo lectura**: no crea ni cambia nada en la API, así que se puede repetir sin limpiar. Los datos son los ficticios de la Fase 1.\n\n**Autenticación**: las peticiones llevan un token Bearer (`{{accessToken}}`). El script previo de la colección registra, la primera vez, a tres personas en la simulación del API de usuarios (`{{usersStubUrl}}`): una con `dashboard:read`, una sin permisos y una con permisos de suscripciones. Los tokens se generan al azar y quedan solo en variables de colección, nunca en este archivo.\n\n**Cómo ejecutarla**: levante la pila aislada (`docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml up -d --wait api`) y ejecute `npm run e2e:dashboard` dentro de `tests/postman/`, con el entorno `e2e`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Las personas de prueba se registran en la simulación del API de usuarios (`{{usersStubUrl}}`) la",
+          "// primera vez y quedan solo en variables de colección (en memoria): ningún token se escribe en este",
+          "// archivo. Cada token se genera al azar en cada ejecución.",
+          "const random = function () { return Date.now().toString(36) + Math.random().toString(36).slice(2, 10); };",
+          "const usersStubUrl = pm.environment.get(\"usersStubUrl\");",
+          "if (!pm.collectionVariables.get(\"accessToken\") && usersStubUrl) {",
+          "  const register = function (variable, prefix, permissions, next) {",
+          "    const token = prefix + random();",
+          "    pm.sendRequest({",
+          "      url: usersStubUrl + \"/__test__/tokens\",",
+          "      method: \"POST\",",
+          "      header: { \"Content-Type\": \"application/json\" },",
+          "      body: { mode: \"raw\", raw: JSON.stringify({ token: token, permissions: permissions }) }",
+          "    }, function (error, response) {",
+          "      if (error || response.code !== 200) {",
+          "        throw new Error(\"No se pudo registrar a la persona de prueba (\" + variable + \"). ¿Está levantada la pila de pruebas?\");",
+          "      }",
+          "      pm.collectionVariables.set(variable, token);",
+          "      if (next) { next(); }",
+          "    });",
+          "  };",
+          "  register(\"accessToken\", \"e2e-dashboard-\", [\"dashboard:read\"], function () {",
+          "    register(\"plainToken\", \"e2e-plain-\", [], function () {",
+          "      register(\"subscriptionsToken\", \"e2e-subscriptions-\", [\"subscriptions:read\", \"subscriptions:write\", \"subscriptions:update\", \"subscriptions:delete\"]);",
+          "    });",
+          "  });",
+          "}",
+          "pm.variables.set(\"badToken\", \"e2e-invalid-\" + random());"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "firstBody",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Preparación",
+      "description": "Deja la simulación del API de usuarios en blanco y comprueba que la API responde y que las tres personas de prueba quedaron registradas. No crea nada en la API: el dashboard es de solo lectura.",
+      "item": [
+        {
+          "name": "setup: reiniciar la simulación del API de usuarios",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{usersStubUrl}}/__test__/reset",
+              "host": [
+                "{{usersStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "reset"
+              ]
+            },
+            "description": "Vacía la simulación del API de usuarios (`{{usersStubUrl}}`): personas, fallas programadas y llamadas. Después de reiniciar se descartan las tres personas de prueba; el script previo de la colección las registra de nuevo en la petición siguiente.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "// Tras reiniciar se pierden los tokens: se vuelven a registrar en la siguiente petición.",
+                  "pm.collectionVariables.unset(\"accessToken\");",
+                  "pm.collectionVariables.unset(\"plainToken\");",
+                  "pm.collectionVariables.unset(\"subscriptionsToken\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: la API responde y las personas de prueba están registradas",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openapi.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openapi.json"
+              ]
+            },
+            "description": "Descarga el contrato publicado (no pide token) y comprueba que incluye la operación `get_dashboard` y que el script previo registró a las tres personas: con `dashboard:read`, sin permisos y con permisos de suscripciones.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"la API publica su contrato\", function () { pm.expect(pm.response.json().info.title).to.eql(\"MailySoft System API\"); });",
+                  "pm.test(\"el contrato incluye get_dashboard\", function () { pm.expect(pm.response.json().paths[\"/api/v1/dashboard\"].get.operationId).to.eql(\"get_dashboard\"); });",
+                  "pm.test(\"hay tres personas de prueba\", function () {",
+                  "  [\"accessToken\", \"plainToken\", \"subscriptionsToken\"].forEach(function (name) {",
+                  "    pm.expect(pm.collectionVariables.get(name), name).to.be.a(\"string\").and.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Resumen",
+      "description": "El resumen general de la plataforma con la cantidad de clínicas por defecto (5) y con `limit`: orden, desempate por identificador, tope de 10 y determinismo. Los datos son los ficticios de la Fase 1; las comprobaciones de forma y de coherencia valen también para las fuentes reales.",
+      "item": [
+        {
+          "name": "get_dashboard: sin limit devuelve el resumen con 5 clínicas",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ]
+            },
+            "description": "Consulta el dashboard sin parámetros. Comprueba el estado 200, la cabecera `Cache-Control: no-store`, las 7 claves del contrato, los seis indicadores, los 5 datos de cada clínica reciente, el orden y la coherencia. Guarda el cuerpo para compararlo con la consulta siguiente."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"la respuesta no debe guardarse en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"tiene exactamente las 7 claves del contrato\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"active_clinics\", \"recent_clinics\", \"total_clinics\", \"total_doctors\", \"total_patients\", \"total_users\", \"trial_clinics\"]); });",
+                  "pm.test(\"los seis indicadores son enteros mayores o iguales a cero\", function () {",
+                  "  [\"total_clinics\", \"active_clinics\", \"trial_clinics\", \"total_doctors\", \"total_patients\", \"total_users\"].forEach(function (name) {",
+                  "    pm.expect(Number.isInteger(body[name]) && body[name] >= 0, name).to.be.true;",
+                  "  });",
+                  "});",
+                  "pm.test(\"cada clínica tiene solo id, name, created_at y status con sus formatos\", function () {",
+                  "  body.recent_clinics.forEach(function (clinic) {",
+                  "    pm.expect(Object.keys(clinic).sort()).to.eql([\"created_at\", \"id\", \"name\", \"status\"]);",
+                  "    pm.expect(clinic.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "    pm.expect(clinic.created_at).to.match(/^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$/);",
+                  "    pm.expect(Object.keys(clinic.status).sort()).to.eql([\"id\", \"name\"]);",
+                  "    pm.expect(Number.isInteger(clinic.status.id)).to.be.true;",
+                  "  });",
+                  "});",
+                  "pm.test(\"van de la clínica más nueva a la más antigua\", function () {",
+                  "  const dates = body.recent_clinics.map(function (clinic) { return clinic.created_at; });",
+                  "  pm.expect(dates).to.eql(dates.slice().sort().reverse());",
+                  "});",
+                  "pm.test(\"los indicadores son coherentes\", function () {",
+                  "  pm.expect(body.active_clinics + body.trial_clinics).to.be.at.most(body.total_clinics);",
+                  "  pm.expect(body.recent_clinics.length).to.be.at.most(body.total_clinics);",
+                  "  pm.expect(body.total_users).to.be.at.least(body.total_doctors);",
+                  "});",
+                  "pm.test(\"llegan 5 clínicas (el valor por defecto)\", function () { pm.expect(body.recent_clinics.length).to.eql(5); });",
+                  "pm.collectionVariables.set(\"firstBody\", pm.response.text());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: una segunda consulta devuelve exactamente lo mismo",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ]
+            },
+            "description": "Repite la consulta y compara el cuerpo con el de la anterior: los datos son deterministas."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"el cuerpo es idéntico al de la consulta anterior\", function () { pm.expect(pm.response.text()).to.eql(pm.collectionVariables.get(\"firstBody\")); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: limit=1 devuelve una clínica",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard?limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            },
+            "description": "Con `limit=1` llega solo la clínica más reciente."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"llegan las 1 más recientes, en orden\", function () { pm.expect(body.recent_clinics.map(function (c) { return c.id; })).to.eql([\"5457da22-336d-49d8-8876-4d7edb5586ae\"]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: limit=3 devuelve las 3 más recientes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard?limit=3",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "3"
+                }
+              ]
+            },
+            "description": "Con `limit=3` llegan las tres clínicas más recientes, en orden."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"llegan las 3 más recientes, en orden\", function () { pm.expect(body.recent_clinics.map(function (c) { return c.id; })).to.eql([\"5457da22-336d-49d8-8876-4d7edb5586ae\", \"7513bda5-dd0f-48a0-9053-383ac7ec2c92\", \"ca8b4382-8b86-4916-b3cb-002680986de3\"]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: limit=4 resuelve el empate por identificador",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard?limit=4",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "4"
+                }
+              ]
+            },
+            "description": "Dos clínicas tienen exactamente la misma fecha de creación. Con `limit=4` el corte cae en medio del empate y entra la de identificador menor (Dental Sonríe)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"llegan las 4 más recientes, en orden\", function () { pm.expect(body.recent_clinics.map(function (c) { return c.id; })).to.eql([\"5457da22-336d-49d8-8876-4d7edb5586ae\", \"7513bda5-dd0f-48a0-9053-383ac7ec2c92\", \"ca8b4382-8b86-4916-b3cb-002680986de3\", \"41902d77-45cb-451e-9e11-65c60e56ecf8\"]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: limit=10 devuelve 10 con el orden y el desempate",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard?limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Con `limit=10` llegan 10 clínicas, con estatus «Activa» y «En prueba». Las posiciones 4 y 5 tienen la misma fecha y van ordenadas por identificador ascendente."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"llegan las 10 más recientes, en orden\", function () { pm.expect(body.recent_clinics.map(function (c) { return c.id; })).to.eql([\"5457da22-336d-49d8-8876-4d7edb5586ae\", \"7513bda5-dd0f-48a0-9053-383ac7ec2c92\", \"ca8b4382-8b86-4916-b3cb-002680986de3\", \"41902d77-45cb-451e-9e11-65c60e56ecf8\", \"e042d32c-3886-4777-953c-68db1d969e0e\", \"ecb1488c-d9cf-4d3c-bb5f-dd8e9365339d\", \"820e815b-8a28-448e-bb4e-152c2f89a2ad\", \"dd5600ca-3d55-4f38-8c91-c843ec327e9c\", \"a3e85cc2-e5c9-4106-a055-5e7dcc32bf8b\", \"c9e9c89d-96b1-4aef-9373-98771c6557e6\"]); });",
+                  "pm.test(\"hay clínicas Activa y En prueba\", function () {",
+                  "  const statuses = body.recent_clinics.map(function (c) { return c.status.id + \":\" + c.status.name; });",
+                  "  pm.expect(statuses).to.include(\"1:Activa\");",
+                  "  pm.expect(statuses).to.include(\"2:En prueba\");",
+                  "});",
+                  "pm.test(\"las posiciones 4 y 5 comparten fecha y van por identificador ascendente\", function () {",
+                  "  const fourth = body.recent_clinics[3], fifth = body.recent_clinics[4];",
+                  "  pm.expect(fourth.created_at).to.eql(fifth.created_at);",
+                  "  pm.expect(fourth.id < fifth.id).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: limit=11 devuelve 10 sin error",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard?limit=11",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "11"
+                }
+              ]
+            },
+            "description": "Un `limit` mayor que 10 no se rechaza: se devuelve el máximo de 10 clínicas."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"llegan 10 clínicas\", function () { pm.expect(body.recent_clinics.length).to.eql(10); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: un limit enorme devuelve 10 sin error",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard?limit=999999999999999999999999999999",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "999999999999999999999999999999"
+                }
+              ]
+            },
+            "description": "Un entero de 30 cifras tampoco se rechaza: es mayor que 10 y se devuelven 10."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"llegan 10 clínicas\", function () { pm.expect(body.recent_clinics.length).to.eql(10); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. limit inválido (422)",
+      "description": "Un `limit` que no es un entero válido (menor que 1, texto, decimal, vacío o repetido) se rechaza con 422, el cuerpo uniforme de error y un mensaje en español que no repite el valor. Se evalúa solo cuando el acceso ya se concedió.",
+      "item": [
+        {
+          "name": "get_dashboard: limit=0 se rechaza",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard?limit=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": "Cero es menor que 1."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"el mensaje general está en español\", function () { pm.expect(error.message).to.eql(\"Hay datos no válidos en la solicitud.\"); });",
+                  "pm.test(\"un solo error, sobre limit y con su mensaje\", function () { pm.expect(error.errors).to.eql([{ field: \"limit\", message: \"El parámetro «limit» debe ser un número entero mayor o igual que 1.\" }]); });",
+                  "pm.test(\"no trae ningún dato del dashboard\", function () { pm.expect(error).to.not.have.any.keys(\"recent_clinics\", \"total_clinics\", \"total_users\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: limit=abc se rechaza",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard?limit=abc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "abc"
+                }
+              ]
+            },
+            "description": "Un texto no es un entero."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"el mensaje general está en español\", function () { pm.expect(error.message).to.eql(\"Hay datos no válidos en la solicitud.\"); });",
+                  "pm.test(\"un solo error, sobre limit y con su mensaje\", function () { pm.expect(error.errors).to.eql([{ field: \"limit\", message: \"El parámetro «limit» debe ser un número entero mayor o igual que 1.\" }]); });",
+                  "pm.test(\"no trae ningún dato del dashboard\", function () { pm.expect(error).to.not.have.any.keys(\"recent_clinics\", \"total_clinics\", \"total_users\"); });",
+                  "pm.test(\"no repite el valor enviado\", function () { pm.expect(pm.response.text()).to.not.include(\"abc\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: limit vacío se rechaza",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard?limit=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Un `limit` presente pero vacío es inválido."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"el mensaje general está en español\", function () { pm.expect(error.message).to.eql(\"Hay datos no válidos en la solicitud.\"); });",
+                  "pm.test(\"un solo error, sobre limit y con su mensaje\", function () { pm.expect(error.errors).to.eql([{ field: \"limit\", message: \"El parámetro «limit» debe ser un número entero mayor o igual que 1.\" }]); });",
+                  "pm.test(\"no trae ningún dato del dashboard\", function () { pm.expect(error).to.not.have.any.keys(\"recent_clinics\", \"total_clinics\", \"total_users\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: limit=5.5 se rechaza",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard?limit=5.5",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5.5"
+                }
+              ]
+            },
+            "description": "Un decimal no es un entero."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"el mensaje general está en español\", function () { pm.expect(error.message).to.eql(\"Hay datos no válidos en la solicitud.\"); });",
+                  "pm.test(\"un solo error, sobre limit y con su mensaje\", function () { pm.expect(error.errors).to.eql([{ field: \"limit\", message: \"El parámetro «limit» debe ser un número entero mayor o igual que 1.\" }]); });",
+                  "pm.test(\"no trae ningún dato del dashboard\", function () { pm.expect(error).to.not.have.any.keys(\"recent_clinics\", \"total_clinics\", \"total_users\"); });",
+                  "pm.test(\"no repite el valor enviado\", function () { pm.expect(pm.response.text()).to.not.include(\"5.5\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: limit repetido se rechaza",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard?limit=3&limit=5",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "3"
+                },
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            },
+            "description": "Si `limit` se envía dos veces no se adivina cuál vale: se rechaza."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"el mensaje general está en español\", function () { pm.expect(error.message).to.eql(\"Hay datos no válidos en la solicitud.\"); });",
+                  "pm.test(\"un solo error, sobre limit y con su mensaje\", function () { pm.expect(error.errors).to.eql([{ field: \"limit\", message: \"El parámetro «limit» debe ser un número entero mayor o igual que 1.\" }]); });",
+                  "pm.test(\"no trae ningún dato del dashboard\", function () { pm.expect(error).to.not.have.any.keys(\"recent_clinics\", \"total_clinics\", \"total_users\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Control de acceso",
+      "description": "Solo quien tiene el permiso `dashboard:read` consulta el dashboard. El permiso se comprueba antes de validar `limit` y, si el API de usuarios no responde, la petición se rechaza (falla cerrada).",
+      "item": [
+        {
+          "name": "get_dashboard: sin token se pide iniciar sesión",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ]
+            },
+            "description": "Sin token: 401 `unauthenticated`.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 401\", function () { pm.response.to.have.status(401); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código unauthenticated\", function () { pm.expect(error.code).to.eql(\"unauthenticated\"); });",
+                  "pm.test(\"mensaje en español\", function () { pm.expect(error.message).to.eql(\"Debe iniciar sesión para usar esta operación.\"); });",
+                  "pm.test(\"no trae ningún dato del dashboard\", function () { pm.expect(error).to.not.have.any.keys(\"recent_clinics\", \"total_clinics\", \"total_users\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: un token inválido se rechaza",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ]
+            },
+            "description": "Un token que el API de usuarios no conoce: 401 `invalid_token`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{badToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 401\", function () { pm.response.to.have.status(401); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código invalid_token\", function () { pm.expect(error.code).to.eql(\"invalid_token\"); });",
+                  "pm.test(\"mensaje en español\", function () { pm.expect(error.message).to.eql(\"El token de acceso no es válido.\"); });",
+                  "pm.test(\"no trae ningún dato del dashboard\", function () { pm.expect(error).to.not.have.any.keys(\"recent_clinics\", \"total_clinics\", \"total_users\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: una persona sin permisos recibe 403",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ]
+            },
+            "description": "Una persona autenticada sin permisos: 403 `permission_denied`, y el mensaje nombra el permiso `dashboard:read`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{plainToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 403\", function () { pm.response.to.have.status(403); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código permission_denied\", function () { pm.expect(error.code).to.eql(\"permission_denied\"); });",
+                  "pm.test(\"mensaje en español\", function () { pm.expect(error.message).to.eql(\"No tiene permiso para realizar esta operación. Permiso requerido: dashboard:read.\"); });",
+                  "pm.test(\"no trae ningún dato del dashboard\", function () { pm.expect(error).to.not.have.any.keys(\"recent_clinics\", \"total_clinics\", \"total_users\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: los permisos de suscripciones no autorizan el dashboard",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ]
+            },
+            "description": "Una persona con los cuatro permisos de suscripciones pero sin `dashboard:read`: 403. Cada permiso autoriza solo su operación.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{subscriptionsToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 403\", function () { pm.response.to.have.status(403); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código permission_denied\", function () { pm.expect(error.code).to.eql(\"permission_denied\"); });",
+                  "pm.test(\"mensaje en español\", function () { pm.expect(error.message).to.eql(\"No tiene permiso para realizar esta operación. Permiso requerido: dashboard:read.\"); });",
+                  "pm.test(\"no trae ningún dato del dashboard\", function () { pm.expect(error).to.not.have.any.keys(\"recent_clinics\", \"total_clinics\", \"total_users\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: el permiso se comprueba antes que limit",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard?limit=abc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "abc"
+                }
+              ]
+            },
+            "description": "Una persona sin permisos que además envía un `limit` inválido recibe 403, no 422: el acceso se decide primero.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{plainToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 403\", function () { pm.response.to.have.status(403); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código permission_denied\", function () { pm.expect(error.code).to.eql(\"permission_denied\"); });",
+                  "pm.test(\"mensaje en español\", function () { pm.expect(error.message).to.eql(\"No tiene permiso para realizar esta operación. Permiso requerido: dashboard:read.\"); });",
+                  "pm.test(\"no trae ningún dato del dashboard\", function () { pm.expect(error).to.not.have.any.keys(\"recent_clinics\", \"total_clinics\", \"total_users\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: el API de usuarios dejará de responder una vez",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{usersStubUrl}}/__test__/faults",
+              "host": [
+                "{{usersStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "faults"
+              ]
+            },
+            "description": "Programa en la simulación del API de usuarios una falla (`unavailable`) que afectará a la siguiente consulta de permiso.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\": \"unavailable\", \"count\": 1}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: con el API de usuarios caído se rechaza antes de validar limit",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard?limit=abc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "abc"
+                }
+              ]
+            },
+            "description": "Con el API de usuarios caído la petición se rechaza (503, falla cerrada) aunque el `limit` también sea inválido: no se valida nada antes del permiso."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 503\", function () { pm.response.to.have.status(503); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código authorization_unavailable\", function () { pm.expect(error.code).to.eql(\"authorization_unavailable\"); });",
+                  "pm.test(\"mensaje en español\", function () { pm.expect(error.message).to.eql(\"No se pudo verificar su permiso por ahora. Inténtelo de nuevo más tarde.\"); });",
+                  "pm.test(\"no trae ningún dato del dashboard\", function () { pm.expect(error).to.not.have.any.keys(\"recent_clinics\", \"total_clinics\", \"total_users\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_dashboard: con el API de usuarios sano vuelve a responder",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dashboard"
+              ]
+            },
+            "description": "La falla programada ya se consumió: la misma persona vuelve a consultar el dashboard."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"tiene las 7 claves del contrato\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"active_clinics\", \"recent_clinics\", \"total_clinics\", \"total_doctors\", \"total_patients\", \"total_users\", \"trial_clinics\"]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "docs: el contrato publicado declara el permiso y el parámetro limit",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openapi.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openapi.json"
+              ]
+            },
+            "description": "El contrato publicado (no pide token) declara que `get_dashboard` exige `dashboard:read` y que `limit` es un entero de al menos 1.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const operation = pm.response.json().paths[\"/api/v1/dashboard\"].get;",
+                  "pm.test(\"declara el permiso dashboard:read\", function () { pm.expect(operation[\"x-required-permission\"]).to.eql(\"dashboard:read\"); });",
+                  "pm.test(\"declara el parámetro limit como entero de al menos 1\", function () {",
+                  "  const limit = operation.parameters.find(function (p) { return p.name === \"limit\"; });",
+                  "  pm.expect(limit.schema.type).to.eql(\"integer\");",
+                  "  pm.expect(limit.schema.minimum).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

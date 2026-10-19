@@ -1,0 +1,331 @@
+openapi: 3.1.0
+info:
+  title: MailySoft System API — Dashboard de plataforma
+  version: 1.0.0
+  description: |
+    Contrato de la operación que alimenta la pantalla de resumen general «Panel de Maily» (spec
+    003-platform-dashboard). Es **un fragmento** del contrato publicado de la API: la aplicación lo genera
+    en `/openapi.json` junto con las operaciones de suscripciones (spec 001), cuyo contrato no cambia.
+
+    - Solo lectura. Sin caché: la respuesta 200 declara `Cache-Control: no-store`.
+    - Exige un token de acceso y el permiso `dashboard:read`, que decide el API de usuarios en cada
+      petición. El permiso se comprueba **antes** de validar `limit`.
+    - En la Fase 1 los datos son ficticios y deterministas; el contrato no cambia cuando existan las
+      fuentes reales. Si en el futuro una fuente falla, el valor afectado llega como `null` (nunca como
+      un cero inventado) y el resto se sigue devolviendo.
+    - No expone información personal de pacientes, doctores ni usuarios.
+servers:
+  - url: http://localhost:8010
+    description: Entorno local (docker compose)
+security:
+  - BearerAuth: []
+tags:
+  - name: dashboard
+    description: Resumen general de la plataforma de Maily («Panel de Maily»). Solo lectura.
+paths:
+  /api/v1/dashboard:
+    get:
+      tags: [dashboard]
+      operationId: get_dashboard
+      summary: Consultar el resumen general de la plataforma
+      description: |
+        Devuelve, en una sola consulta, seis indicadores de la plataforma y las clínicas más recientes.
+
+        - `active_clinics` y `trial_clinics` no se solapan (una clínica tiene un solo estatus) y su suma no
+          supera `total_clinics`, que incluye también las clínicas en otros estatus.
+        - `total_doctors`, `total_patients` y `total_users` cuentan toda la plataforma. Todo doctor es un
+          usuario, así que `total_users` no es menor que `total_doctors`; los pacientes no son usuarios.
+        - `recent_clinics` va de la clínica más nueva a la más antigua (por `created_at` y, a igualdad de
+          fecha, por `id` ascendente). La lista está acotada a 10 elementos y **no se pagina**.
+        - La cantidad la fija `limit`; sin él rige el valor por defecto del servicio
+          (`DASHBOARD_RECENT_CLINICS_LIMIT`: 3, 5 o 10; 5 si no se configura).
+        - Cualquiera de los siete valores puede ser `null` si su fuente de datos falla (no ocurre con los
+          datos ficticios de la Fase 1). Un `0` o una lista vacía significan que la fuente respondió que no
+          hay datos.
+
+        Permiso requerido: `dashboard:read`.
+      x-required-permission: dashboard:read
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: |
+            Cantidad de clínicas recientes que se devuelven: un entero de 1 a 10 escrito solo con dígitos.
+            Un valor mayor que 10 **no se rechaza**: se devuelven 10. Sin `limit` rige el valor por defecto
+            del servicio. Se rechaza con 422 un valor menor que 1, que no sea un entero (texto, decimales,
+            notación científica, signo), vacío o repetido.
+          schema:
+            type: integer
+            minimum: 1
+            examples: [5]
+      responses:
+        "200":
+          description: Resumen de la plataforma.
+          headers:
+            Cache-Control:
+              description: La respuesta no debe guardarse en caché.
+              schema:
+                type: string
+              example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardRead"
+              examples:
+                por_defecto:
+                  summary: Sin `limit` (valor por defecto 5)
+                  value:
+                    total_clinics: 12
+                    active_clinics: 8
+                    trial_clinics: 3
+                    total_doctors: 37
+                    total_patients: 1284
+                    total_users: 52
+                    recent_clinics:
+                      - id: 5457da22-336d-49d8-8876-4d7edb5586ae
+                        name: Clínica Santa Aurora
+                        created_at: "2026-10-15T16:20:00Z"
+                        status: { id: 2, name: En prueba }
+                      - id: 7513bda5-dd0f-48a0-9053-383ac7ec2c92
+                        name: Consultorio Del Valle
+                        created_at: "2026-10-12T09:05:00Z"
+                        status: { id: 2, name: En prueba }
+                      - id: ca8b4382-8b86-4916-b3cb-002680986de3
+                        name: Centro Médico Horizonte
+                        created_at: "2026-10-09T18:40:00Z"
+                        status: { id: 1, name: Activa }
+                      - id: 41902d77-45cb-451e-9e11-65c60e56ecf8
+                        name: Dental Sonríe
+                        created_at: "2026-10-08T15:00:00Z"
+                        status: { id: 2, name: En prueba }
+                      - id: e042d32c-3886-4777-953c-68db1d969e0e
+                        name: Clínica San Rafael
+                        created_at: "2026-10-08T15:00:00Z"
+                        status: { id: 1, name: Activa }
+                sin_clinicas:
+                  summary: La plataforma no tiene datos
+                  value:
+                    total_clinics: 0
+                    active_clinics: 0
+                    trial_clinics: 0
+                    total_doctors: 0
+                    total_patients: 0
+                    total_users: 0
+                    recent_clinics: []
+                fuente_de_doctores_caida:
+                  summary: La fuente de doctores no respondió (futuro)
+                  value:
+                    total_clinics: 12
+                    active_clinics: 8
+                    trial_clinics: 3
+                    total_doctors: null
+                    total_patients: 1284
+                    total_users: 52
+                    recent_clinics: []
+        "401":
+          description: >-
+            No hay token, venció o no es válido. No se devuelve ningún dato. La respuesta incluye la
+            cabecera `WWW-Authenticate`.
+          headers:
+            WWW-Authenticate:
+              description: Esquema de autenticación esperado.
+              schema:
+                type: string
+              example: Bearer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                sin_token:
+                  value:
+                    code: unauthenticated
+                    message: Debe iniciar sesión para usar esta operación.
+                vencido:
+                  value:
+                    code: token_expired
+                    message: Su sesión venció. Inicie sesión de nuevo.
+                no_valido:
+                  value:
+                    code: invalid_token
+                    message: El token de acceso no es válido.
+        "403":
+          description: >-
+            La persona está autenticada pero no tiene el permiso `dashboard:read` (tener permisos de
+            suscripciones no basta). No se devuelve ningún dato y no se valida `limit`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                sin_permiso:
+                  value:
+                    code: permission_denied
+                    message: "No tiene permiso para realizar esta operación. Permiso requerido: dashboard:read."
+        "422":
+          description: >-
+            `limit` no es válido (menor que 1, que no es un entero, vacío o repetido). Solo se evalúa
+            cuando el acceso ya se concedió.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                limit_invalido:
+                  value:
+                    code: validation_error
+                    message: Hay datos no válidos en la solicitud.
+                    errors:
+                      - field: limit
+                        message: "El parámetro «limit» debe ser un número entero mayor o igual que 1."
+        "503":
+          description: >-
+            No se pudo verificar el permiso por ahora (el API de usuarios no responde o respondió algo
+            inesperado): la petición se rechaza y se puede reintentar más tarde (falla cerrada).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                no_disponible:
+                  value:
+                    code: authorization_unavailable
+                    message: No se pudo verificar su permiso por ahora. Inténtelo de nuevo más tarde.
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Token de acceso emitido por Auth0. Este servicio no lo verifica: lo reenvía al API de usuarios.
+  schemas:
+    DashboardRead:
+      type: object
+      description: >-
+        Resumen general de la plataforma. Los siete campos siempre están presentes; cada uno vale `null` si
+        su fuente de datos falló.
+      required:
+        - total_clinics
+        - active_clinics
+        - trial_clinics
+        - total_doctors
+        - total_patients
+        - total_users
+        - recent_clinics
+      properties:
+        total_clinics:
+          type: [integer, "null"]
+          minimum: 0
+          description: Total de clínicas de la plataforma, en cualquier estatus.
+          examples: [12]
+        active_clinics:
+          type: [integer, "null"]
+          minimum: 0
+          description: Clínicas activas.
+          examples: [8]
+        trial_clinics:
+          type: [integer, "null"]
+          minimum: 0
+          description: Clínicas con periodo de prueba.
+          examples: [3]
+        total_doctors:
+          type: [integer, "null"]
+          minimum: 0
+          description: Total de doctores de toda la plataforma.
+          examples: [37]
+        total_patients:
+          type: [integer, "null"]
+          minimum: 0
+          description: Total de pacientes de toda la plataforma.
+          examples: [1284]
+        total_users:
+          type: [integer, "null"]
+          minimum: 0
+          description: Total de usuarios de toda la plataforma (incluye a los doctores).
+          examples: [52]
+        recent_clinics:
+          type:
+            - array
+            - "null"
+          maxItems: 10
+          items:
+            $ref: "#/components/schemas/RecentClinicRead"
+          description: >-
+            Las clínicas más recientes, de la más nueva a la más antigua. Lista vacía si no hay clínicas;
+            `null` solo si su fuente falló.
+    RecentClinicRead:
+      type: object
+      description: Datos básicos de una clínica reciente.
+      required: [id, name, created_at, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Identificador de la clínica.
+        name:
+          type: string
+          description: Nombre de la clínica.
+          examples: [Clínica Santa Aurora]
+        created_at:
+          type: string
+          format: date-time
+          description: Fecha y hora de creación, en ISO 8601 con zona horaria UTC.
+          examples: ["2026-10-15T16:20:00Z"]
+        status:
+          $ref: "#/components/schemas/ClinicStatusRead"
+    ClinicStatusRead:
+      type: object
+      description: Estatus de una clínica, tomado del catálogo de estatus de clínicas.
+      required: [id, name]
+      properties:
+        id:
+          type: integer
+          description: Identificador del estatus (estable; es en lo que debe basarse quien consume la API).
+          examples: [1]
+        name:
+          type: string
+          description: Nombre del estatus, en español (puede cambiar).
+          examples: [Activa]
+    ErrorResponse:
+      type: object
+      description: Formato uniforme de todos los errores (el mismo de la API de suscripciones).
+      required: [code, message]
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+          description: Mensaje en español, sin detalles técnicos.
+        errors:
+          type: array
+          description: "Solo en `validation_error`: un elemento por dato con problema."
+          items:
+            $ref: "#/components/schemas/FieldError"
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+          examples: [limit]
+        message:
+          type: string
+    ErrorCode:
+      type: string
+      description: Código estable del error (en inglés). Esta feature no añade códigos nuevos.
+      enum:
+        - unauthenticated
+        - token_expired
+        - invalid_token
+        - permission_denied
+        - authorization_unavailable
+        - subscription_not_found
+        - subscription_name_already_exists
+        - subscription_status_unchanged
+        - subscription_has_clinics
+        - clinics_check_unavailable
+        - validation_error
+        - internal_error

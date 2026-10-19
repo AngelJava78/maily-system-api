@@ -33,6 +33,31 @@ la documentación interactiva está en `/docs`).
 - **Errores**: todos con el mismo formato (`code`, `message` y, en las validaciones, `errors`) y mensajes
   en español ([catálogo](specs/001-subscriptions-api/contracts/error-catalog.md)).
 
+### Dashboard de plataforma («Panel de Maily»)
+
+Spec [`003-platform-dashboard`](specs/003-platform-dashboard/spec.md): una operación de **solo lectura**
+que alimenta la pantalla de resumen general del administrador de plataforma (contrato en
+[`openapi-dashboard.yaml`](specs/003-platform-dashboard/contracts/openapi-dashboard.yaml)).
+
+| Operación | Método y ruta | Permiso |
+|---|---|---|
+| `get_dashboard` | `GET /api/v1/dashboard` | `dashboard:read` |
+
+- **Qué devuelve**, en una sola consulta: `total_clinics`, `active_clinics`, `trial_clinics`,
+  `total_doctors`, `total_patients`, `total_users` y `recent_clinics` (cada una con `id`, `name`,
+  `created_at` en UTC y `status`). Solo datos agregados: nada personal. La respuesta lleva
+  `Cache-Control: no-store`.
+- **`limit`** (opcional): de 1 a 10 clínicas recientes, de la más nueva a la más antigua (a igualdad de
+  fecha, por `id`). Más de 10 **no** es un error: devuelve 10. Sin `limit` rige el valor por defecto
+  (`DASHBOARD_RECENT_CLINICS_LIMIT`: 3, 5 o 10; 5 si no se configura). Un `limit` que no sea un entero
+  válido (menor que 1, decimal, vacío o repetido) se rechaza con 422, **después** de comprobar el permiso.
+- **Datos ficticios (Fase 1)**: las clínicas, los doctores, los pacientes y los usuarios pertenecen a otros
+  APIs que aún no existen. Mientras tanto la API devuelve datos ficticios y deterministas, que **no** se
+  guardan en la base de datos, y **al arrancar registra un aviso** para que nadie los lleve a producción sin
+  darse cuenta. Cuando existan las fuentes reales solo cambia de dónde salen los datos: el contrato no.
+- **`null` significa «no disponible»**: si una fuente falla, solo su valor llega como `null` (nunca un cero
+  inventado) y el resto del dashboard se devuelve con 200. Un `0` o un `[]` solo dicen que no hay datos.
+
 > **Importante**: sin las direcciones del API de usuarios y del de clínicas el servicio **no arranca**, y si
 > el API de usuarios no responde, **todas** las operaciones devuelven 503 (la documentación sigue
 > pública). Para desarrollar sin esos servicios, usa las simulaciones de la pila de pruebas de punta a
@@ -56,9 +81,10 @@ Copia `.env.example` a `.env` (no se versiona). Variables del servicio:
 | `USERS_API_TIMEOUT_SECONDS` | no | `5` | Tiempo máximo total de cada llamada (mayor que 0, hasta 30) |
 | `CLINICS_API_TIMEOUT_SECONDS` | no | `5` | Ídem, para el API de clínicas |
 | `CORS_ALLOWED_ORIGINS` | no | vacía | Sitios web del Front que pueden llamar desde el navegador (lista separada por comas); vacía = ninguno |
+| `DASHBOARD_RECENT_CLINICS_LIMIT` | no | `5` | Clínicas recientes del dashboard cuando no se envía `limit`: solo `3`, `5` o `10` (cualquier otro valor impide arrancar). Un cambio requiere reiniciar |
 
-El arranque valida la configuración y, si falta una variable obligatoria, se niega a iniciar y nombra la
-variable (nunca su valor).
+El arranque valida la configuración y, si falta una variable obligatoria o una opcional no es válida, se
+niega a iniciar y nombra la variable (nunca su valor).
 
 **Seguridad de las direcciones**: a esas dos direcciones se reenvía el token de la persona. Usa `https://`
 salvo en local o en la red de Docker: con una dirección `http://` no local el servicio arranca pero
@@ -119,33 +145,45 @@ docker compose up -d db
 uv run pytest                            # suite completa
 ```
 
-Guía de validación con el mapa historia → pruebas:
-[`specs/001-subscriptions-api/quickstart.md`](specs/001-subscriptions-api/quickstart.md).
+Las pruebas del dashboard **no necesitan PostgreSQL ni Docker** (la operación no usa la base de datos):
+
+```powershell
+uv run pytest -k dashboard
+```
+
+Guías de validación con el mapa historia → pruebas:
+[`specs/001-subscriptions-api/quickstart.md`](specs/001-subscriptions-api/quickstart.md) (suscripciones) y
+[`specs/003-platform-dashboard/quickstart.md`](specs/003-platform-dashboard/quickstart.md) (dashboard).
 
 ## Pruebas de punta a punta (Postman)
 
-Una colección de Postman recorre las 6 operaciones y los errores clave (401, 403, 404, 409, 422 y 503)
-contra el servicio real y las dos simulaciones. **Complementa a pytest, que sigue siendo la puerta de
-calidad; no lo sustituye.** No necesita cuenta de Postman ni envía nada a servicios externos. Vive en
-`tests/postman/` y se ejecuta con [Newman](https://github.com/postmanlabs/newman).
+Hay **dos colecciones automáticas** para Newman, una por recurso, que recorren la API real contra las
+simulaciones de sus dependencias: la de **suscripciones** (las 6 operaciones y los errores clave: 401, 403,
+404, 409, 422 y 503) y la del **dashboard** (`get_dashboard`: el resumen, `limit`, el orden y los errores 401,
+403, 422 y 503; es de solo lectura). **Complementan a pytest, que sigue siendo la puerta de calidad; no lo
+sustituyen.** No necesitan cuenta de Postman ni envían nada a servicios externos. Viven en `tests/postman/` y
+se ejecutan con [Newman](https://github.com/postmanlabs/newman).
 
 ```powershell
 npm ci --prefix tests/postman            # instala Newman (una vez)
 docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml up -d --wait api
-npm run e2e --prefix tests/postman       # colección completa: consola + tests/postman/reports/junit.xml
+npm run e2e --prefix tests/postman       # suscripciones: consola + tests/postman/reports/junit.xml
 npm run e2e --prefix tests/postman -- --folder "5. Control de acceso"   # solo una carpeta (las 2 a 4 usan lo que crea la 1)
+npm run e2e:dashboard --prefix tests/postman   # dashboard → tests/postman/reports/junit-dashboard.xml
+npm run e2e:all --prefix tests/postman         # las dos, una tras otra
 docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml down -v
 ```
 
 - **Pila aislada**: el proyecto `maily-system-e2e` tiene su propia base de datos desechable (sin puerto
   publicado), la API en `127.0.0.1:8011` y las simulaciones del API de usuarios (`:8012`) y del de
   clínicas (`:8013`). **No apuntes nunca la colección a un servicio con datos reales**: crea y elimina de
-  forma lógica suscripciones, así que quedan filas «Eliminada».
+  forma lógica suscripciones, así que quedan filas «Eliminada» (la del dashboard no escribe nada).
 - **Resultado**: código de salida `0` si todo pasa y `1` si falla una comprobación o la pila no responde.
-- **Si la API cambia**: toda feature que añada, quite o cambie operaciones actualiza **las dos colecciones**
-  (esta y la [manual](#colección-manual-de-postman)) en el mismo cambio. `tests/contract/test_postman_collection.py`
-  y `tests/contract/test_manual_postman_collection.py` (parte de `uv run pytest`) fallan nombrando las
-  operaciones que faltan o sobran.
+- **Si la API cambia**: cada recurso tiene su colección y toda feature que añada, quite o cambie operaciones
+  actualiza la de su recurso (y, si es de suscripciones, también la [manual](#colección-manual-de-postman))
+  en el mismo cambio. `test_postman_collection.py`, `test_manual_postman_collection.py` y
+  `test_dashboard_postman_collection.py` (parte de `uv run pytest`) fallan nombrando las operaciones que
+  faltan o sobran, y esta última comprueba además que **las tres colecciones juntas cubren toda la API**.
 
 ## Colección manual de Postman
 
@@ -303,18 +341,20 @@ src/
 ├── routers/           # endpoints HTTP: solo validan, llaman a un Service y serializan
 ├── services/          # reglas de negocio y autorización
 ├── repositories/      # acceso a datos (únicas consultas SQL)
-├── integrations/      # clientes del API de usuarios y del API de clínicas
+├── integrations/      # clientes del API de usuarios y del de clínicas, y el puerto de datos del dashboard
+│                      # (`dashboard_source.py`) con su fuente ficticia de la Fase 1
 ├── dtos/              # esquemas de entrada y salida (Pydantic)
 ├── database/          # engine y sesiones async
 └── models/            # modelos SQLAlchemy (sin lógica de negocio)
 alembic/versions/      # 0001 esquema, 0002 catálogo de estatus
 tests/unit/            # sin base de datos (DTOs, Services, seguridad, configuración, capas)
 tests/integration/     # PostgreSQL real (esquema, migraciones y Repositories)
-tests/contract/        # la API por HTTP, el documento OpenAPI, la cobertura de permisos y las dos colecciones de Postman
-                       # (postman_support.py: apoyo compartido de esas pruebas)
+tests/contract/        # la API por HTTP, el documento OpenAPI, la cobertura de permisos y las tres colecciones de Postman
+                       # (postman_support.py: apoyo compartido; conftest.py: fixtures del dashboard, sin base de datos)
+tests/dashboard_support.py   # fuente de datos doble y ayudas de las pruebas del dashboard
 tests/stubs/           # simulaciones del API de usuarios y del API de clínicas
-tests/postman/         # colección, entornos y pila aislada de las pruebas de punta a punta (Newman) y
-                       # colección y entornos de la colección manual
+tests/postman/         # colecciones (suscripciones y dashboard), entornos y pila aislada de las pruebas de
+                       # punta a punta (Newman) y colección y entornos de la colección manual
 project-definition/    # esquema de datos objetivo (DATA_SCHEMA.md)
 specs/                 # especificaciones de Spec Kit
 .specify/memory/constitution.md   # reglas del proyecto (capas, async, pruebas, migraciones, acceso)

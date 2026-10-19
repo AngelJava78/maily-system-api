@@ -43,6 +43,8 @@ services:
       CLINICS_API_BASE_URL: ${CLINICS_API_BASE_URL:-}
       CLINICS_API_TIMEOUT_SECONDS: ${CLINICS_API_TIMEOUT_SECONDS:-}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      # Clínicas recientes del dashboard cuando no se envía `limit`: 3, 5 o 10 (vacía = 5).
+      DASHBOARD_RECENT_CLINICS_LIMIT: ${DASHBOARD_RECENT_CLINICS_LIMIT:-}
     command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "${API_PORT:-8010}:8000"

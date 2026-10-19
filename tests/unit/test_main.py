@@ -103,7 +103,9 @@ async def test_docker_and_https_addresses_do_not_warn(monkeypatch, caplog):
         async with lifespan(app):
             pass
 
-    assert caplog.text == ""
+    # Only the plain-http address warnings are meant to be absent; the start-up notice about the
+    # dummy data of the dashboard (spec 003, FR-024) is expected.
+    assert "BASE_URL" not in caplog.text
 
 
 # --- CORS (FR-025) ---

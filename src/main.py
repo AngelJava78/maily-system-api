@@ -17,13 +17,22 @@ from pydantic import ValidationError
 from src.config import (
     configuration_error_message,
     get_cors_settings,
+    get_dashboard_settings,
     get_integration_settings,
     insecure_url_warnings,
 )
+from src.dependencies import build_dashboard_source
 from src.error_handlers import register_error_handlers
-from src.routers import subscriptions
+from src.routers import dashboard, subscriptions
 
 logger = logging.getLogger(__name__)
+
+# Logged at every start-up while the dashboard answers fictitious data (FR-024), so it does not reach
+# production unnoticed. It names no address, token or secret.
+DUMMY_DASHBOARD_NOTICE = (
+    "The dashboard is returning DUMMY data (phase 1): the clinics, doctors, patients and users are "
+    "fictitious and must be replaced by the real sources before production"
+)
 
 TITLE = "MailySoft System API"
 VERSION = "1.0.0"
@@ -39,6 +48,11 @@ asignan a las clínicas.
 - Todos los errores tienen el mismo formato (`code`, `message` y, en las validaciones, `errors`) y
   sus mensajes están en español.
 - `clinics_count` lo aporta el API de clínicas en cada lectura; si no está disponible vale `null`.
+
+El **dashboard de plataforma** (`GET /api/v1/dashboard`, «Panel de Maily») es de solo lectura y no
+se guarda en caché: devuelve en una sola consulta seis indicadores y las clínicas más recientes (sin
+paginar, hasta 10). Si una fuente de datos falla, su valor llega como `null`, nunca como un cero
+inventado. En la Fase 1 sus datos son ficticios.
 """
 
 OPENAPI_TAGS = [
@@ -49,22 +63,37 @@ OPENAPI_TAGS = [
             "paginar."
         ),
     },
+    {
+        "name": "dashboard",
+        "description": (
+            "Resumen general de la plataforma de Maily («Panel de Maily»). Solo lectura; los datos "
+            "de la Fase 1 son ficticios."
+        ),
+    },
 ]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Validate the configuration, warn about insecure addresses and own the shared HTTP client."""
-    try:
-        settings = get_integration_settings()
-    except ValidationError as error:
-        message = configuration_error_message(error)
+    # Every configuration is loaded before giving up, so one message names all the wrong variables.
+    errors = []
+    for load in (get_integration_settings, get_dashboard_settings):
+        try:
+            load()
+        except ValidationError as error:
+            errors.append(error)
+    if errors:
+        message = configuration_error_message(*errors)
         logger.error(message)
         # `from None`: the validation error repeats the values that were received.
         raise RuntimeError(message) from None
+    settings = get_integration_settings()
 
     for warning in insecure_url_warnings(settings):
         logger.warning(warning)
+    if build_dashboard_source().is_dummy:
+        logger.warning(DUMMY_DASHBOARD_NOTICE)
 
     client = httpx.AsyncClient(
         limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
@@ -87,6 +116,7 @@ def create_app() -> FastAPI:
     )
     register_error_handlers(app)
     app.include_router(subscriptions.router)
+    app.include_router(dashboard.router)
     # `httpx` logs every URL at INFO level; only warnings are wanted.
     logging.getLogger("httpx").setLevel(logging.WARNING)
 

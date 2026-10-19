@@ -1,8 +1,8 @@
 """Every route declares its permission and every operation obeys the users API (SC-002).
 
 Principles V and VIII: a route that has no declared permission and is not one of the public
-documentation routes fails this test; and each of the six real operations is checked one by one
-against the simulation of the users API.
+documentation routes fails this test; and each real operation is checked one by one against the
+simulation of the users API.
 """
 
 from typing import Any
@@ -13,7 +13,8 @@ from fastapi.routing import APIRoute
 from src.main import create_app
 from tests.helpers import TEST_TOKEN, Api
 
-# contracts/permission-matrix.md
+# The permission matrix: contracts/permission-matrix.md of spec 001 (the six subscriptions) plus the
+# row of spec 003 (the dashboard).
 EXPECTED_PERMISSIONS = {
     "list_subscriptions": "subscriptions:read",
     "get_subscription": "subscriptions:read",
@@ -21,6 +22,7 @@ EXPECTED_PERMISSIONS = {
     "update_subscription": "subscriptions:update",
     "change_subscription_status": "subscriptions:update",
     "delete_subscription": "subscriptions:delete",
+    "get_dashboard": "dashboard:read",
 }
 PUBLIC_ROUTES = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 ALL_PERMISSIONS = sorted(set(EXPECTED_PERMISSIONS.values()))
@@ -34,6 +36,7 @@ REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
     "update_subscription": ("PATCH", f"{URL}/1", {"name": "Cambio"}),
     "change_subscription_status": ("PATCH", f"{URL}/1/status", {"status_id": 2}),
     "delete_subscription": ("DELETE", f"{URL}/1", None),
+    "get_dashboard": ("GET", "/api/v1/dashboard", None),
 }
 
 

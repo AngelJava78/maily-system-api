@@ -40,9 +40,12 @@ def test_the_document_is_generated_openapi_3_with_the_version_of_the_contract(sc
 
 
 def test_it_has_exactly_the_six_operations_of_the_contract(schema):
+    # The six operations of the subscriptions. The dashboard operation is checked in
+    # test_dashboard_openapi.py.
     found = {
         operation_id: (method, path)
         for operation_id, (method, path, _) in operations_of(schema).items()
+        if path.startswith("/api/v1/subscriptions")
     }
 
     assert found == {oid: (m, p) for oid, (m, p, _, _) in OPERATIONS.items()}

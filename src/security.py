@@ -20,6 +20,9 @@ SUBSCRIPTIONS_WRITE = "subscriptions:write"
 SUBSCRIPTIONS_UPDATE = "subscriptions:update"
 SUBSCRIPTIONS_DELETE = "subscriptions:delete"
 
+# Permission of the dashboard operation (specs/003-platform-dashboard/contracts/permission-matrix.md).
+DASHBOARD_READ = "dashboard:read"
+
 bearer_scheme = HTTPBearer(
     scheme_name="BearerAuth",
     bearerFormat="JWT",

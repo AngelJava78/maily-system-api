@@ -85,6 +85,14 @@ _FEATURE_ITEM_MESSAGE = (
 )
 _STATUS_REQUIRED_MESSAGE = "El estatus es obligatorio y debe ser un número entero."
 
+# --- Validation messages of the dashboard (spec 003, contracts/error-catalog.md) ---
+
+# One text for every invalid `limit` (below 1, not an integer, empty or repeated): it never repeats
+# the value that was received.
+DASHBOARD_LIMIT_INVALID_MESSAGE = (
+    "El parámetro «limit» debe ser un número entero mayor o igual que 1."
+)
+
 # (field, kind) -> message. The kinds are `required`, `too_long`, `too_many`, `not_text`,
 # `not_list` and `invalid` (see `_KINDS` in `src/error_handlers.py`).
 # Messages shared by every resource; today the only resource has its own block below.
@@ -108,5 +116,8 @@ VALIDATION_MESSAGES: dict[str, dict[tuple[str, str], str]] = {
         ("subscription_id", "invalid"): (
             "El identificador de la suscripción debe ser un número entero positivo."
         ),
+    },
+    "dashboard": {
+        ("limit", "invalid"): DASHBOARD_LIMIT_INVALID_MESSAGE,
     },
 }
