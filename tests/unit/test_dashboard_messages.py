@@ -32,7 +32,7 @@ def test_each_resource_keeps_its_own_messages():
 
 
 def test_no_error_code_was_added():
-    assert len(ErrorCode) == 12
+    assert len(ErrorCode) == 15  # spec 004 added 3 module-related codes; reviewed, no dashboard impact
     assert ErrorCode.VALIDATION_ERROR.value == "validation_error"
 
 

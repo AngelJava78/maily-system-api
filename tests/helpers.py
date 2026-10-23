@@ -29,6 +29,9 @@ ALL_PERMISSIONS = (
     "subscriptions:write",
     "subscriptions:update",
     "subscriptions:delete",
+    # Needed in the users API to validate modules on create/update (contracts/permission-matrix.md);
+    # not one of this service's own permissions.
+    "modules:read",
 )
 
 
@@ -141,9 +144,12 @@ class Api:
         )
         assert response.status_code == 200
 
-    async def users_fault(self, mode: str, count: int = 1, delay: float = 30) -> None:
+    async def users_fault(
+        self, mode: str, count: int = 1, delay: float = 30, operation: str = "check"
+    ) -> None:
         response = await self.users_stub.post(
-            "/__test__/faults", json={"mode": mode, "count": count, "delay_seconds": delay}
+            "/__test__/faults",
+            json={"mode": mode, "count": count, "delay_seconds": delay, "operation": operation},
         )
         assert response.status_code == 200
 
@@ -165,8 +171,16 @@ async def insert_subscription(
     *,
     name: str = "Plan",
     monthly_price: str | Decimal = "100.00",
+    annual_price: str | Decimal = "1000.00",
+    trial_days: int = 0,
+    self_service: bool = False,
+    module_keys: Iterable[str] = ("patients",),
     description: str | None = None,
-    features: Iterable[str] = (),
+    other_features: Iterable[str] = (),
+    consulting_rooms_limit: int = 1,
+    doctors_limit: int = 1,
+    assistants_limit: int = 1,
+    new_patients_per_year_limit: int = 100,
     status_id: int = 1,
     created_at: datetime | None = None,
 ) -> int:
@@ -179,7 +193,15 @@ async def insert_subscription(
         "name": name,
         "description": description,
         "monthly_price": Decimal(str(monthly_price)),
-        "features": list(features),
+        "annual_price": Decimal(str(annual_price)),
+        "trial_days": trial_days,
+        "self_service": self_service,
+        "module_keys": sorted(module_keys),
+        "other_features": list(other_features),
+        "consulting_rooms_limit": consulting_rooms_limit,
+        "doctors_limit": doctors_limit,
+        "assistants_limit": assistants_limit,
+        "new_patients_per_year_limit": new_patients_per_year_limit,
         "status_id": status_id,
     }
     if created_at is not None:

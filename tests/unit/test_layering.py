@@ -2,7 +2,7 @@
 
 It walks every module of `src/` with `ast`, so it also covers the ones that later features add.
 The composition root and the shared vocabulary (`main`, `dependencies`, `security`, `exceptions`,
-`error_handlers`, `messages` and `config`) sit outside these rules.
+`error_handlers`, `messages`, `config` and `clinic_modules`) sit outside these rules.
 """
 
 import ast
@@ -78,6 +78,7 @@ ROOT_MODULES = {
     "error_handlers",
     "messages",
     "config",
+    "clinic_modules",
 }
 
 

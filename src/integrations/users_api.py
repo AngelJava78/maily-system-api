@@ -15,6 +15,11 @@ from src.integrations.errors import UsersApiRejectedToken, UsersApiUnavailable
 logger = logging.getLogger(__name__)
 
 CHECK_PATH = "/api/v1/authorization/check"
+MODULES_PATH = "/api/v1/modules"
+# type_id 2 = Clinic (1 is System); status_id 1 = Active. Both sent explicitly even though
+# status_id 1 is that API's own default, so this contract does not depend on that default staying
+# the same (contracts/users-api-integration.md).
+MODULES_PARAMS = {"type_id": 2, "status_id": 1}
 _REJECTION_CODES = {"unauthenticated", "token_expired", "invalid_token"}
 
 
@@ -66,6 +71,48 @@ class UsersApiClient:
         ):
             raise UsersApiUnavailable
         return data["allowed"]
+
+    async def list_clinic_module_keys(self, token: str) -> frozenset[str]:
+        """The `key` of every active, clinic-type module the users API knows about.
+
+        Called only when creating or updating a subscription's modules (never on a read): research
+        R5. Raises `UsersApiRejectedToken` when the users API refuses the token and
+        `UsersApiUnavailable` for anything else that is not a valid answer (same exceptions as
+        `check_permission`: this is the same external API).
+        """
+        try:
+            async with asyncio.timeout(self._timeout):
+                response = await self._http.get(
+                    f"{self._base_url}{MODULES_PATH}",
+                    params=MODULES_PARAMS,
+                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                )
+        except (httpx.HTTPError, TimeoutError) as error:
+            logger.warning("Users API modules request failed (%s)", type(error).__name__)
+            raise UsersApiUnavailable from None
+
+        status = response.status_code
+        if status == 401:
+            raise UsersApiRejectedToken(self._rejection_code(response))
+        if status != 200:
+            if 400 <= status < 500:
+                logger.error("Users API answered an unexpected status %s for modules", status)
+            else:
+                logger.warning("Users API answered status %s for modules", status)
+            raise UsersApiUnavailable
+
+        try:
+            data = response.json()
+        except ValueError:
+            raise UsersApiUnavailable from None
+        if not isinstance(data, list):
+            raise UsersApiUnavailable
+        keys: set[str] = set()
+        for item in data:
+            if not isinstance(item, dict) or not isinstance(item.get("key"), str) or not item["key"]:
+                raise UsersApiUnavailable
+            keys.add(item["key"])
+        return frozenset(keys)
 
     @staticmethod
     def _rejection_code(response: httpx.Response) -> str:

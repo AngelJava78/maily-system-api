@@ -1,7 +1,8 @@
-"""The OpenAPI document that the application publishes (Principle IV, FR-023).
+"""The OpenAPI document that the application publishes (Principle IV, FR-034).
 
-It is checked against the contract of `specs/001-subscriptions-api/contracts/openapi-subscriptions.yaml`
-(the list of operations is fixed here: no YAML library is part of the stack).
+It is checked against the contract of
+`specs/004-correct-subscriptions-api/contracts/openapi-subscriptions.yaml` (the list of operations
+is fixed here: no YAML library is part of the stack).
 """
 
 import pytest
@@ -35,7 +36,7 @@ def operations_of(schema: dict) -> dict[str, tuple[str, str, dict]]:
 
 def test_the_document_is_generated_openapi_3_with_the_version_of_the_contract(schema):
     assert schema["openapi"].startswith("3.")
-    assert schema["info"]["version"] == "1.0.0"
+    assert schema["info"]["version"] == "2.0.0"
     assert schema["info"]["title"] == "MailySoft System API"
 
 
@@ -106,9 +107,9 @@ def test_the_schemas_of_the_contract_exist(schema):
         assert name in schemas, name
 
 
-def test_the_error_codes_are_the_twelve_of_the_catalog(schema):
+def test_the_error_codes_are_the_fifteen_of_the_catalog(schema):
     assert set(schema["components"]["schemas"]["ErrorCode"]["enum"]) == {c.value for c in ErrorCode}
-    assert len(ErrorCode) == 12
+    assert len(ErrorCode) == 15
 
 
 def test_the_price_is_published_as_a_string(schema):

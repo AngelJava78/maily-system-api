@@ -14,40 +14,102 @@ from pydantic import (
 
 from src.dtos.status import StatusRead
 from src.messages import (
+    SUBSCRIPTION_ANNUAL_PRICE_REQUIRED_MESSAGE,
+    SUBSCRIPTION_ASSISTANTS_LIMIT_INVALID_MESSAGE,
+    SUBSCRIPTION_CONSULTING_ROOMS_LIMIT_INVALID_MESSAGE,
+    SUBSCRIPTION_DOCTORS_LIMIT_INVALID_MESSAGE,
     SUBSCRIPTION_EMPTY_UPDATE_MESSAGE,
-    SUBSCRIPTION_FEATURES_NOT_LIST_MESSAGE,
+    SUBSCRIPTION_MODULE_KEYS_NOT_VALID_MESSAGE,
     SUBSCRIPTION_NAME_REQUIRED_MESSAGE,
+    SUBSCRIPTION_NEW_PATIENTS_PER_YEAR_LIMIT_INVALID_MESSAGE,
+    SUBSCRIPTION_OTHER_FEATURES_NOT_LIST_MESSAGE,
     SUBSCRIPTION_PRICE_REQUIRED_MESSAGE,
+    SUBSCRIPTION_SELF_SERVICE_INVALID_MESSAGE,
     SUBSCRIPTION_STATUS_NOT_ALLOWED_MESSAGE,
+    SUBSCRIPTION_TRIAL_DAYS_INVALID_MESSAGE,
 )
+
+# One item of what a subscription includes beyond its modules: 1 to 150 characters once trimmed.
+FeatureText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
+
+# A key of the clinic-module catalog the users API owns (src/clinic_modules.py); never the module's
+# display name. Same pattern that API itself requires of a module `key` (contracts/users-api-integration.md).
+ModuleKeyText = Annotated[
+    str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z][a-z0-9_]*$", max_length=50)
+]
 
 
 class SubscriptionRead(BaseModel):
-    """A subscription as the API shows it (FR-008): with its status and its clinics count."""
+    """A subscription as the API shows it (FR-008): status, modules, limits and clinics count."""
 
     model_config = ConfigDict(
         from_attributes=True,
-        json_schema_extra={"description": "Una suscripción (plan) con su estatus."},
+        json_schema_extra={
+            "description": "Una suscripción (plan) con su estatus, sus módulos y sus límites."
+        },
     )
 
     id: int = Field(ge=1, description="Identificador de la suscripción.", examples=[1])
-    name: str = Field(description="Nombre de la suscripción.", examples=["Pro"])
+    name: str = Field(description="Nombre de la suscripción.", examples=["Profesional"])
     description: str | None = Field(
         description="Descripción de la suscripción, o `null` si no tiene.",
         examples=["Para clínicas en crecimiento."],
     )
     monthly_price: Decimal = Field(
         description=(
-            "Precio mensual en pesos mexicanos, con dos decimales (cadena para no perder "
+            "Precio mensual en pesos mexicanos sin IVA, con dos decimales (cadena para no perder "
             "precisión)."
         ),
-        examples=["4500.00"],
+        examples=["1299.00"],
     )
-    features: list[str] = Field(
+    annual_price: Decimal = Field(
         description=(
-            "Lo que incluye el plan, en el orden en que se guardó. Es texto informativo."
+            "Precio anual en pesos mexicanos sin IVA, con dos decimales. Independiente del precio "
+            "mensual (sin proporción obligatoria)."
         ),
-        examples=[["Hasta 5 consultorios", "Usuarios ilimitados"]],
+        examples=["12990.00"],
+    )
+    trial_days: int = Field(
+        ge=0,
+        le=3650,
+        description="Días de prueba del plan. `0` = sin periodo de prueba.",
+        examples=[14],
+    )
+    self_service: bool = Field(
+        description=(
+            "Si la suscripción está en autoconsumo (visible y contratable por su cuenta en el "
+            "portal de MailySoft)."
+        ),
+        examples=[True],
+    )
+    module_keys: list[str] = Field(
+        description=(
+            "Claves de los módulos de clínica que incluye, ordenadas alfabéticamente. Siempre "
+            "incluye «patients». El nombre de cada módulo se consulta directamente en la API de "
+            "usuarios."
+        ),
+        examples=[["clinical_records", "patients", "scheduling"]],
+    )
+    other_features: list[str] = Field(
+        description=(
+            "Otras funcionalidades del plan que no son módulos (soporte, capacitación…), en el "
+            "orden en que se guardaron."
+        ),
+        examples=[["Soporte por correo y WhatsApp"]],
+    )
+    consulting_rooms_limit: int = Field(
+        ge=0, le=1_000_000, description="Techo de consultorios que puede dar de alta la clínica."
+    )
+    doctors_limit: int = Field(
+        ge=0, le=1_000_000, description="Techo de doctores que puede dar de alta la clínica."
+    )
+    assistants_limit: int = Field(
+        ge=0, le=1_000_000, description="Techo de asistentes que puede dar de alta la clínica."
+    )
+    new_patients_per_year_limit: int = Field(
+        ge=0,
+        le=1_000_000,
+        description="Techo de pacientes nuevos que puede registrar la clínica cada año.",
     )
     status: StatusRead = Field(
         description=(
@@ -69,18 +131,14 @@ class SubscriptionRead(BaseModel):
         description="Fecha y hora de la última modificación (con zona horaria)."
     )
 
-    @field_serializer("monthly_price")
+    @field_serializer("monthly_price", "annual_price")
     def _two_decimals(self, value: Decimal) -> str:
         # What was accepted without zeros ("4500") is always shown with two decimals ("4500.00").
         return format(value.quantize(Decimal("0.01")), "f")
 
 
-# One item of what a subscription includes: 1 to 150 characters once trimmed.
-FeatureText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
-
-
 class SubscriptionCreate(BaseModel):
-    """Data to create a subscription (FR-011 to FR-013); unknown fields are rejected (FR-019)."""
+    """Data to create a subscription (FR-011 to FR-024); unknown fields are rejected (FR-030)."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -97,7 +155,7 @@ class SubscriptionCreate(BaseModel):
             "Nombre de la suscripción (1 a 100 caracteres, sin contar espacios al inicio y al "
             "final). No puede repetirse (sin distinguir mayúsculas) entre las no eliminadas."
         ),
-        examples=["Pro"],
+        examples=["Profesional"],
     )
     description: str | None = Field(
         default=None,
@@ -116,15 +174,60 @@ class SubscriptionCreate(BaseModel):
             "Precio mensual en pesos mexicanos, de 0 a 99999999.99, con hasta dos decimales "
             "(número o cadena)."
         ),
-        examples=["4500.00"],
+        examples=["1299.00"],
     )
-    features: list[FeatureText] = Field(
+    annual_price: Decimal = Field(
+        ge=0,
+        max_digits=10,
+        decimal_places=2,
+        description=(
+            "Precio anual en pesos mexicanos, de 0 a 99999999.99, con hasta dos decimales "
+            "(número o cadena). Obligatorio e independiente del precio mensual."
+        ),
+        examples=["12990.00"],
+    )
+    trial_days: int = Field(
+        default=0,
+        ge=0,
+        le=3650,
+        description="Días de prueba. `0` = sin periodo de prueba (valor por defecto si se omite).",
+        examples=[14],
+    )
+    self_service: bool = Field(
+        default=False,
+        description=(
+            "Si queda en autoconsumo en el portal de MailySoft. Por defecto, en falso (no aparece "
+            "hasta que se active a propósito)."
+        ),
+        examples=[True],
+    )
+    module_keys: list[ModuleKeyText] = Field(
+        default_factory=list,
+        max_length=50,
+        description=(
+            "Claves de los módulos de clínica, además de «patients» (que siempre se incluye "
+            "aunque no se envíe). Se validan contra la API de usuarios y contra sus dependencias."
+        ),
+        examples=[["scheduling", "reminders"]],
+    )
+    other_features: list[FeatureText] = Field(
         default_factory=list,
         max_length=20,
         description=(
-            "Lo que incluye el plan: hasta 20 textos de 1 a 150 caracteres. Puede estar vacía."
+            "Otras funcionalidades del plan que no son módulos: hasta 20 textos de 1 a 150 "
+            "caracteres. Puede estar vacía."
         ),
-        examples=[["Hasta 5 consultorios", "Usuarios ilimitados"]],
+        examples=[["Soporte por correo y WhatsApp"]],
+    )
+    consulting_rooms_limit: int = Field(
+        ge=0, le=1_000_000, description="Techo de consultorios. Obligatorio."
+    )
+    doctors_limit: int = Field(ge=0, le=1_000_000, description="Techo de doctores. Obligatorio.")
+    assistants_limit: int = Field(
+        ge=0, le=1_000_000, description="Techo de asistentes. Obligatorio."
+    )
+    new_patients_per_year_limit: int = Field(
+        ge=0, le=1_000_000, description="Techo de pacientes nuevos al año. Obligatorio."
     )
 
     @field_validator("description")
@@ -134,7 +237,7 @@ class SubscriptionCreate(BaseModel):
 
 
 class SubscriptionUpdate(BaseModel):
-    """Changes to a subscription (FR-015): only the fields that are sent are modified."""
+    """Changes to a subscription (FR-026): only the fields that are sent are modified."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -166,16 +269,58 @@ class SubscriptionUpdate(BaseModel):
         max_digits=10,
         decimal_places=2,
         description="Nuevo precio mensual (mismo formato que al crear). No puede ser nulo.",
-        examples=["4700.00"],
+        examples=["1399.00"],
     )
-    features: list[FeatureText] | None = Field(
+    annual_price: Decimal | None = Field(
+        default=None,
+        ge=0,
+        max_digits=10,
+        decimal_places=2,
+        description="Nuevo precio anual (mismo formato que al crear). No puede ser nulo.",
+        examples=["13990.00"],
+    )
+    trial_days: int | None = Field(
+        default=None,
+        ge=0,
+        le=3650,
+        description="Nuevos días de prueba. No puede ser nulo.",
+        examples=[30],
+    )
+    self_service: bool | None = Field(
+        default=None, description="Nuevo autoconsumo. No puede ser nulo.", examples=[True]
+    )
+    module_keys: list[ModuleKeyText] | None = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "Nuevo conjunto completo de módulos (sustituye al anterior; «patients» se conserva "
+            "aunque no se envíe). No puede ser nulo."
+        ),
+        examples=[["scheduling", "reminders"]],
+    )
+    other_features: list[FeatureText] | None = Field(
         default=None,
         max_length=20,
         description=(
-            "Nueva lista completa de lo que incluye (sustituye a la anterior). `[]` la vacía. No "
-            "puede ser nula."
+            "Nueva lista completa de otras funcionalidades (sustituye a la anterior). `[]` la "
+            "vacía. No puede ser nula."
         ),
-        examples=[["Hasta 5 consultorios"]],
+        examples=[["Soporte por correo y WhatsApp"]],
+    )
+    consulting_rooms_limit: int | None = Field(
+        default=None, ge=0, le=1_000_000, description="Nuevo techo de consultorios. No puede ser nulo."
+    )
+    doctors_limit: int | None = Field(
+        default=None, ge=0, le=1_000_000, description="Nuevo techo de doctores. No puede ser nulo."
+    )
+    assistants_limit: int | None = Field(
+        default=None, ge=0, le=1_000_000, description="Nuevo techo de asistentes. No puede ser nulo."
+    )
+    new_patients_per_year_limit: int | None = Field(
+        default=None,
+        ge=0,
+        le=1_000_000,
+        description="Nuevo techo de pacientes nuevos al año. No puede ser nulo.",
     )
 
     # The validators below only run for a field that is in the body, so a `null` that was sent on
@@ -195,11 +340,67 @@ class SubscriptionUpdate(BaseModel):
             raise ValueError(SUBSCRIPTION_PRICE_REQUIRED_MESSAGE)
         return value
 
-    @field_validator("features")
+    @field_validator("annual_price")
     @classmethod
-    def features_cannot_be_null(cls, value: list[str] | None) -> list[str]:
-        if value is None:  # the column is NOT NULL: an empty list is how the features are cleared
-            raise ValueError(SUBSCRIPTION_FEATURES_NOT_LIST_MESSAGE)
+    def annual_price_cannot_be_null(cls, value: Decimal | None) -> Decimal:
+        if value is None:
+            raise ValueError(SUBSCRIPTION_ANNUAL_PRICE_REQUIRED_MESSAGE)
+        return value
+
+    @field_validator("trial_days")
+    @classmethod
+    def trial_days_cannot_be_null(cls, value: int | None) -> int:
+        if value is None:
+            raise ValueError(SUBSCRIPTION_TRIAL_DAYS_INVALID_MESSAGE)
+        return value
+
+    @field_validator("self_service")
+    @classmethod
+    def self_service_cannot_be_null(cls, value: bool | None) -> bool:
+        if value is None:
+            raise ValueError(SUBSCRIPTION_SELF_SERVICE_INVALID_MESSAGE)
+        return value
+
+    @field_validator("module_keys")
+    @classmethod
+    def module_keys_cannot_be_null(cls, value: list[str] | None) -> list[str]:
+        if value is None:  # the column is NOT NULL: [] is how the extra modules are cleared
+            raise ValueError(SUBSCRIPTION_MODULE_KEYS_NOT_VALID_MESSAGE)
+        return value
+
+    @field_validator("other_features")
+    @classmethod
+    def other_features_cannot_be_null(cls, value: list[str] | None) -> list[str]:
+        if value is None:  # the column is NOT NULL: [] is how other_features is cleared
+            raise ValueError(SUBSCRIPTION_OTHER_FEATURES_NOT_LIST_MESSAGE)
+        return value
+
+    @field_validator("consulting_rooms_limit")
+    @classmethod
+    def consulting_rooms_limit_cannot_be_null(cls, value: int | None) -> int:
+        if value is None:
+            raise ValueError(SUBSCRIPTION_CONSULTING_ROOMS_LIMIT_INVALID_MESSAGE)
+        return value
+
+    @field_validator("doctors_limit")
+    @classmethod
+    def doctors_limit_cannot_be_null(cls, value: int | None) -> int:
+        if value is None:
+            raise ValueError(SUBSCRIPTION_DOCTORS_LIMIT_INVALID_MESSAGE)
+        return value
+
+    @field_validator("assistants_limit")
+    @classmethod
+    def assistants_limit_cannot_be_null(cls, value: int | None) -> int:
+        if value is None:
+            raise ValueError(SUBSCRIPTION_ASSISTANTS_LIMIT_INVALID_MESSAGE)
+        return value
+
+    @field_validator("new_patients_per_year_limit")
+    @classmethod
+    def new_patients_per_year_limit_cannot_be_null(cls, value: int | None) -> int:
+        if value is None:
+            raise ValueError(SUBSCRIPTION_NEW_PATIENTS_PER_YEAR_LIMIT_INVALID_MESSAGE)
         return value
 
     @field_validator("description")
@@ -216,7 +417,7 @@ class SubscriptionUpdate(BaseModel):
 
 
 class SubscriptionStatusChange(BaseModel):
-    """The status a subscription moves to (FR-016); deleting has its own operation."""
+    """The status a subscription moves to (FR-027); deleting has its own operation."""
 
     model_config = ConfigDict(
         extra="forbid",

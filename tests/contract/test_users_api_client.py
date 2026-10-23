@@ -18,9 +18,16 @@ TOKEN = "SECRET-TOKEN-123"
 PERMISSION = "subscriptions:read"
 
 
-async def add_fault(stub: httpx.AsyncClient, mode: str, count: int = 1, delay: float = 30) -> None:
+async def add_fault(
+    stub: httpx.AsyncClient,
+    mode: str,
+    count: int = 1,
+    delay: float = 30,
+    operation: str = "check",
+) -> None:
     response = await stub.post(
-        "/__test__/faults", json={"mode": mode, "count": count, "delay_seconds": delay}
+        "/__test__/faults",
+        json={"mode": mode, "count": count, "delay_seconds": delay, "operation": operation},
     )
     assert response.status_code == 200
 
@@ -167,3 +174,91 @@ async def test_the_token_never_appears_in_an_exception_or_in_the_logs(
     assert "another-secret-token" not in str(rejected.value)
     assert TOKEN not in caplog.text
     assert "another-secret-token" not in caplog.text
+
+
+# --- list_clinic_module_keys (contracts/users-api-integration.md, operación 2) ---
+
+
+async def test_it_returns_exactly_the_nine_clinic_module_keys(users_stub, users_api_client):
+    await grant(users_stub, TOKEN, [PERMISSION, "modules:read"])
+
+    keys = await users_api_client.list_clinic_module_keys(TOKEN)
+
+    assert keys == {
+        "patients",
+        "scheduling",
+        "reminders",
+        "clinical_records",
+        "clinical_record_templates",
+        "prescriptions",
+        "finance",
+        "reports",
+        "billing",
+    }
+
+
+async def test_the_system_type_modules_are_never_included(users_stub, users_api_client):
+    await grant(users_stub, TOKEN, [PERMISSION, "modules:read"])
+
+    keys = await users_api_client.list_clinic_module_keys(TOKEN)
+
+    assert not keys & {"users", "roles", "permissions", "modules"}
+
+
+async def test_an_unrecognised_token_is_a_rejection(users_stub, users_api_client):
+    with pytest.raises(UsersApiRejectedToken):
+        await users_api_client.list_clinic_module_keys("unknown-token")
+
+
+async def test_a_token_without_modules_read_is_unavailable_not_a_silent_empty_catalog(
+    users_stub, users_api_client
+):
+    # Documented risk (contracts/permission-matrix.md): a role with subscriptions:write/update but
+    # not modules:read gets a 403 here, which this client reports as "unavailable", never as an
+    # empty (and therefore misleadingly "valid") module catalog.
+    await grant(users_stub, TOKEN, [PERMISSION])  # no "modules:read"
+
+    with pytest.raises(UsersApiUnavailable):
+        await users_api_client.list_clinic_module_keys(TOKEN)
+
+
+@pytest.mark.parametrize("mode", ["unavailable", "not_json", "malformed", "redirect", "forbidden"])
+async def test_a_modules_fault_makes_it_unavailable(users_stub, users_api_client, mode):
+    await grant(users_stub, TOKEN, [PERMISSION, "modules:read"])
+    await add_fault(users_stub, mode, operation="modules")
+
+    with pytest.raises(UsersApiUnavailable):
+        await users_api_client.list_clinic_module_keys(TOKEN)
+
+
+async def test_a_fault_registered_for_check_does_not_affect_modules(users_stub, users_api_client):
+    await grant(users_stub, TOKEN, [PERMISSION, "modules:read"])
+    await add_fault(users_stub, "unavailable", operation="check")
+
+    # No se consume el fallo de "check": list_clinic_module_keys sigue funcionando.
+    keys = await users_api_client.list_clinic_module_keys(TOKEN)
+    assert "patients" in keys
+
+    # El fallo de "check" sigue pendiente para check_permission.
+    with pytest.raises(UsersApiUnavailable):
+        await users_api_client.check_permission(TOKEN, PERMISSION)
+
+
+async def test_a_fault_registered_for_modules_does_not_affect_check(users_stub, users_api_client):
+    await grant(users_stub, TOKEN, [PERMISSION, "modules:read"])
+    await add_fault(users_stub, "unavailable", operation="modules")
+
+    assert await users_api_client.check_permission(TOKEN, PERMISSION) is True
+
+
+async def test_list_clinic_module_keys_asks_for_type_clinic_and_active_status(
+    users_stub, users_api_client
+):
+    await grant(users_stub, TOKEN, [PERMISSION, "modules:read"])
+
+    await users_api_client.list_clinic_module_keys(TOKEN)
+
+    recorded = await calls(users_stub)
+    modules_calls = [call for call in recorded if call["path"] == "/api/v1/modules"]
+    assert len(modules_calls) == 1
+    assert modules_calls[0]["authorization"] == f"Bearer {TOKEN}"

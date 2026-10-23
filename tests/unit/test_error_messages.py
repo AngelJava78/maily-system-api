@@ -20,8 +20,11 @@ from src.exceptions import (
     AuthorizationUnavailableError,
     ClinicsCheckUnavailableError,
     InvalidTokenError,
+    ModuleCheckUnavailableError,
     PermissionDeniedError,
     SubscriptionHasClinicsError,
+    SubscriptionModuleNotFoundError,
+    SubscriptionModulePrerequisiteMissingError,
     SubscriptionNameAlreadyExistsError,
     SubscriptionNotFoundError,
     SubscriptionStatusUnchangedError,
@@ -55,6 +58,16 @@ EXPECTED_MESSAGES = {
         "No se pudo comprobar si la suscripción con el identificador {subscription_id} tiene "
         "clínicas asignadas. No se eliminó; inténtelo de nuevo más tarde."
     ),
+    ErrorCode.SUBSCRIPTION_MODULE_NOT_FOUND: (
+        "La API de usuarios no reconoce el módulo «{module_key}» como un módulo de clínica vigente."
+    ),
+    ErrorCode.SUBSCRIPTION_MODULE_PREREQUISITE_MISSING: (
+        "El módulo «{module_key}» exige el módulo «{prerequisite_key}», que no está incluido."
+    ),
+    ErrorCode.MODULE_CHECK_UNAVAILABLE: (
+        "No se pudo comprobar los módulos de la suscripción por ahora. No se guardó ningún cambio; "
+        "inténtelo de nuevo más tarde."
+    ),
     ErrorCode.VALIDATION_ERROR: "Hay datos no válidos en la solicitud.",
     ErrorCode.INTERNAL_ERROR: "Ocurrió un error inesperado. Inténtelo de nuevo más tarde.",
 }
@@ -63,7 +76,7 @@ BEARER = {"WWW-Authenticate": "Bearer"}
 BEARER_INVALID = {"WWW-Authenticate": 'Bearer error="invalid_token"'}
 
 
-def test_the_error_codes_are_exactly_the_twelve_of_the_catalog():
+def test_the_error_codes_are_exactly_the_fifteen_of_the_catalog():
     assert {code.value for code in ErrorCode} == {
         "unauthenticated",
         "token_expired",
@@ -75,6 +88,9 @@ def test_the_error_codes_are_exactly_the_twelve_of_the_catalog():
         "subscription_status_unchanged",
         "subscription_has_clinics",
         "clinics_check_unavailable",
+        "subscription_module_not_found",
+        "subscription_module_prerequisite_missing",
+        "module_check_unavailable",
         "validation_error",
         "internal_error",
     }
@@ -136,6 +152,27 @@ def test_every_code_has_the_exact_message_of_the_catalog(code: ErrorCode):
             "No se pudo comprobar si la suscripción con el identificador 1 tiene clínicas "
             "asignadas. No se eliminó; inténtelo de nuevo más tarde.",
         ),
+        (
+            SubscriptionModuleNotFoundError("billing"),
+            ErrorCode.SUBSCRIPTION_MODULE_NOT_FOUND,
+            422,
+            None,
+            "La API de usuarios no reconoce el módulo «billing» como un módulo de clínica vigente.",
+        ),
+        (
+            SubscriptionModulePrerequisiteMissingError("billing", "finance"),
+            ErrorCode.SUBSCRIPTION_MODULE_PREREQUISITE_MISSING,
+            409,
+            None,
+            "El módulo «billing» exige el módulo «finance», que no está incluido.",
+        ),
+        (
+            ModuleCheckUnavailableError(),
+            ErrorCode.MODULE_CHECK_UNAVAILABLE,
+            503,
+            None,
+            None,
+        ),
     ],
     ids=lambda value: value.__class__.__name__ if isinstance(value, Exception) else None,
 )
@@ -164,9 +201,19 @@ class _Create(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str | None = Field(default=None, max_length=500)
     monthly_price: Decimal = Field(ge=0, max_digits=10, decimal_places=2)
-    features: list[
+    annual_price: Decimal = Field(ge=0, max_digits=10, decimal_places=2)
+    trial_days: int = Field(default=0, ge=0, le=3650)
+    self_service: bool = False
+    module_keys: list[
+        Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]*$", max_length=50)]
+    ] = Field(default_factory=list, max_length=50)
+    other_features: list[
         Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
     ] = Field(default_factory=list, max_length=20)
+    consulting_rooms_limit: int = Field(ge=0, le=1_000_000)
+    doctors_limit: int = Field(ge=0, le=1_000_000)
+    assistants_limit: int = Field(ge=0, le=1_000_000)
+    new_patients_per_year_limit: int = Field(ge=0, le=1_000_000)
 
 
 class _Status(BaseModel):
@@ -194,7 +241,15 @@ class _Update(BaseModel):
         return self
 
 
-VALID = {"name": "Pro", "monthly_price": 100}
+VALID = {
+    "name": "Pro",
+    "monthly_price": 100,
+    "annual_price": 1000,
+    "consulting_rooms_limit": 1,
+    "doctors_limit": 1,
+    "assistants_limit": 1,
+    "new_patients_per_year_limit": 100,
+}
 
 
 def translated(model: type[BaseModel], payload: dict[str, Any]) -> list[tuple[str, str]]:
@@ -212,6 +267,22 @@ NOT_LIST = "Lo que incluye la suscripción debe ser una lista de textos."
 ELEMENT = "Cada elemento de lo que incluye la suscripción debe tener de 1 a 150 caracteres."
 STATUS_REQUIRED = "El estatus es obligatorio y debe ser un número entero."
 STATUS_NOT_ALLOWED = "El estatus debe ser uno de los que admite esta operación (1, 2 o 3)."
+ANNUAL_PRICE_REQUIRED = "El precio anual es obligatorio."
+ANNUAL_PRICE_INVALID = (
+    "El precio anual debe ser un importe de 0 a 99 999 999,99 con hasta dos decimales."
+)
+TRIAL_DAYS_INVALID = "Los días de prueba deben ser un número entero de 0 a 3650."
+SELF_SERVICE_INVALID = "El autoconsumo debe ser verdadero o falso."
+MODULE_KEY_INVALID = "Cada módulo debe identificarse con una clave válida."
+TOO_MANY_MODULES = "No se pueden pedir más de 50 módulos."
+CONSULTING_ROOMS_LIMIT_INVALID = (
+    "El límite de consultorios debe ser un número entero de 0 a 1 000 000."
+)
+DOCTORS_LIMIT_INVALID = "El límite de doctores debe ser un número entero de 0 a 1 000 000."
+ASSISTANTS_LIMIT_INVALID = "El límite de asistentes debe ser un número entero de 0 a 1 000 000."
+NEW_PATIENTS_PER_YEAR_LIMIT_INVALID = (
+    "El límite de pacientes nuevos al año debe ser un número entero de 0 a 1 000 000."
+)
 
 
 @pytest.mark.parametrize(
@@ -241,19 +312,69 @@ STATUS_NOT_ALLOWED = "El estatus debe ser uno de los que admite esta operación 
         ({"name": "Pro", "monthly_price": "4500.555"}, "monthly_price", PRICE_INVALID),
         ({"name": "Pro", "monthly_price": "abc"}, "monthly_price", PRICE_INVALID),
         ({"name": "Pro", "monthly_price": 100000000}, "monthly_price", PRICE_INVALID),
-        ({**VALID, "features": "abc"}, "features", NOT_LIST),
-        ({**VALID, "features": None}, "features", NOT_LIST),
-        ({**VALID, "features": [1]}, "features", NOT_LIST),
+        ({**VALID, "other_features": "abc"}, "other_features", NOT_LIST),
+        ({**VALID, "other_features": None}, "other_features", NOT_LIST),
+        ({**VALID, "other_features": [1]}, "other_features", NOT_LIST),
         (
-            {**VALID, "features": [f"f{n}" for n in range(21)]},
-            "features",
+            {**VALID, "other_features": [f"f{n}" for n in range(21)]},
+            "other_features",
             "Lo que incluye la suscripción no puede tener más de 20 elementos.",
         ),
-        ({**VALID, "features": [""]}, "features", ELEMENT),
-        ({**VALID, "features": ["  "]}, "features", ELEMENT),
-        ({**VALID, "features": ["e" * 151]}, "features", ELEMENT),
+        ({**VALID, "other_features": [""]}, "other_features", ELEMENT),
+        ({**VALID, "other_features": ["  "]}, "other_features", ELEMENT),
+        ({**VALID, "other_features": ["e" * 151]}, "other_features", ELEMENT),
         ({**VALID, "status": 1}, "status", "El campo «status» no está permitido."),
         ({**VALID, "clinics_count": 2}, "clinics_count", "El campo «clinics_count» no está permitido."),
+        ({k: v for k, v in VALID.items() if k != "annual_price"}, "annual_price", ANNUAL_PRICE_REQUIRED),
+        ({**VALID, "annual_price": None}, "annual_price", ANNUAL_PRICE_REQUIRED),
+        ({**VALID, "annual_price": -1}, "annual_price", ANNUAL_PRICE_INVALID),
+        ({**VALID, "annual_price": "4500.555"}, "annual_price", ANNUAL_PRICE_INVALID),
+        ({**VALID, "trial_days": -1}, "trial_days", TRIAL_DAYS_INVALID),
+        ({**VALID, "trial_days": 3651}, "trial_days", TRIAL_DAYS_INVALID),
+        ({**VALID, "trial_days": 1.5}, "trial_days", TRIAL_DAYS_INVALID),
+        ({**VALID, "self_service": "yes-please"}, "self_service", SELF_SERVICE_INVALID),
+        ({**VALID, "module_keys": "abc"}, "module_keys", MODULE_KEY_INVALID),
+        ({**VALID, "module_keys": ["Scheduling"]}, "module_keys", MODULE_KEY_INVALID),
+        ({**VALID, "module_keys": ["123"]}, "module_keys", MODULE_KEY_INVALID),
+        ({**VALID, "module_keys": [1]}, "module_keys", MODULE_KEY_INVALID),
+        (
+            {**VALID, "module_keys": [f"m{n}" for n in range(51)]},
+            "module_keys",
+            TOO_MANY_MODULES,
+        ),
+        (
+            {k: v for k, v in VALID.items() if k != "consulting_rooms_limit"},
+            "consulting_rooms_limit",
+            CONSULTING_ROOMS_LIMIT_INVALID,
+        ),
+        ({**VALID, "consulting_rooms_limit": -1}, "consulting_rooms_limit", CONSULTING_ROOMS_LIMIT_INVALID),
+        (
+            {**VALID, "consulting_rooms_limit": 1_000_001},
+            "consulting_rooms_limit",
+            CONSULTING_ROOMS_LIMIT_INVALID,
+        ),
+        (
+            {k: v for k, v in VALID.items() if k != "doctors_limit"},
+            "doctors_limit",
+            DOCTORS_LIMIT_INVALID,
+        ),
+        ({**VALID, "doctors_limit": -1}, "doctors_limit", DOCTORS_LIMIT_INVALID),
+        (
+            {k: v for k, v in VALID.items() if k != "assistants_limit"},
+            "assistants_limit",
+            ASSISTANTS_LIMIT_INVALID,
+        ),
+        ({**VALID, "assistants_limit": -1}, "assistants_limit", ASSISTANTS_LIMIT_INVALID),
+        (
+            {k: v for k, v in VALID.items() if k != "new_patients_per_year_limit"},
+            "new_patients_per_year_limit",
+            NEW_PATIENTS_PER_YEAR_LIMIT_INVALID,
+        ),
+        (
+            {**VALID, "new_patients_per_year_limit": -1},
+            "new_patients_per_year_limit",
+            NEW_PATIENTS_PER_YEAR_LIMIT_INVALID,
+        ),
     ],
 )
 def test_the_validation_errors_of_a_subscription_have_the_catalog_messages(payload, field, message):

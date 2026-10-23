@@ -37,10 +37,25 @@ class SubscriptionRepository:
         return list((await self._session.scalars(statement)).all())
 
     async def create(
-        self, name: str, description: str | None, monthly_price: Decimal, features: list[str]
+        self,
+        name: str,
+        description: str | None,
+        monthly_price: Decimal,
+        *,
+        annual_price: Decimal,
+        trial_days: int,
+        self_service: bool,
+        module_keys: list[str],
+        other_features: list[str],
+        consulting_rooms_limit: int,
+        doctors_limit: int,
+        assistants_limit: int,
+        new_patients_per_year_limit: int,
     ) -> Subscription:
         """Insert an active subscription and commit (the unique index decides name conflicts).
 
+        `module_keys` MUST already be the final, validated set (including 'patients'); this layer
+        does not know about modules, only persists what the Service already resolved.
         A repeated name raises `UniqueViolationError`; any other failure is re-raised as it is.
         """
         statement = (
@@ -49,7 +64,15 @@ class SubscriptionRepository:
                 name=name,
                 description=description,
                 monthly_price=monthly_price,
-                features=features,
+                annual_price=annual_price,
+                trial_days=trial_days,
+                self_service=self_service,
+                module_keys=module_keys,
+                other_features=other_features,
+                consulting_rooms_limit=consulting_rooms_limit,
+                doctors_limit=doctors_limit,
+                assistants_limit=assistants_limit,
+                new_patients_per_year_limit=new_patients_per_year_limit,
             )
             .returning(Subscription.id)
         )

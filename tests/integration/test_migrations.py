@@ -63,3 +63,52 @@ async def test_downgrading_only_the_seed_leaves_the_status_table_empty(
 
     assert {"subscription_statuses", "subscriptions"} <= await tables(engine)
     assert await fetch_all(engine, "SELECT id FROM subscription_statuses") == []
+
+
+async def columns(engine: AsyncEngine, table: str) -> set[str]:
+    return await names(
+        engine,
+        f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}'",
+    )
+
+
+async def test_upgrade_to_0003_adds_the_new_subscription_columns(
+    migrator: Migrator, engine: AsyncEngine, restore_head
+):
+    await migrator.downgrade("base")
+    await migrator.upgrade("head")
+
+    subscription_columns = await columns(engine, "subscriptions")
+    assert subscription_columns >= {
+        "annual_price",
+        "trial_days",
+        "self_service",
+        "module_keys",
+        "other_features",
+        "consulting_rooms_limit",
+        "doctors_limit",
+        "assistants_limit",
+        "new_patients_per_year_limit",
+    }
+    assert "features" not in subscription_columns
+
+
+async def test_downgrade_to_0002_removes_the_new_subscription_columns(
+    migrator: Migrator, engine: AsyncEngine, restore_head
+):
+    await migrator.upgrade("head")
+    await migrator.downgrade("0002")
+
+    subscription_columns = await columns(engine, "subscriptions")
+    assert "features" in subscription_columns
+    assert not subscription_columns & {
+        "annual_price",
+        "trial_days",
+        "self_service",
+        "module_keys",
+        "other_features",
+        "consulting_rooms_limit",
+        "doctors_limit",
+        "assistants_limit",
+        "new_patients_per_year_limit",
+    }

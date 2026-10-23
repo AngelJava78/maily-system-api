@@ -10,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.helpers import assert_pg_error
 
-INSERT = "INSERT INTO subscriptions (name, monthly_price, status_id) VALUES (:name, :price, :status)"
+INSERT = """
+INSERT INTO subscriptions (
+    name, monthly_price, annual_price, consulting_rooms_limit, doctors_limit, assistants_limit,
+    new_patients_per_year_limit, status_id
+) VALUES (:name, :price, 1, 1, 1, 1, 100, :status)
+"""
 
 
 async def add(session: AsyncSession, name: str, price: str = "100", status: int = 1) -> None:
@@ -42,23 +47,88 @@ async def test_each_restriction_rejects_its_invalid_row(
     assert_pg_error(error, sqlstate, constraint=constraint)
 
 
-async def test_more_than_twenty_features_are_rejected(db_session: AsyncSession):
-    features = [f"f{n}" for n in range(21)]
+# Valores base que satisfacen todas las columnas obligatorias nuevas (sin DEFAULT); cada prueba
+# sustituye solo la que quiere poner fuera de rango.
+BASE_COLUMNS: dict[str, object] = {
+    "monthly_price": Decimal("1"),
+    "annual_price": Decimal("1"),
+    "consulting_rooms_limit": 1,
+    "doctors_limit": 1,
+    "assistants_limit": 1,
+    "new_patients_per_year_limit": 100,
+}
 
-    with pytest.raises(DBAPIError) as error:
-        await db_session.execute(
-            text("INSERT INTO subscriptions (name, monthly_price, features) VALUES ('Muchas', 1, :f)"),
-            {"f": features},
-        )
 
-    assert_pg_error(error, "23514", constraint="subscriptions_features_check")
-
-
-async def test_twenty_features_are_accepted(db_session: AsyncSession):
-    await db_session.execute(
-        text("INSERT INTO subscriptions (name, monthly_price, features) VALUES ('Veinte', 1, :f)"),
-        {"f": [f"f{n}" for n in range(20)]},
+async def insert_with(session: AsyncSession, name: str, **overrides: object) -> None:
+    values = {**BASE_COLUMNS, **overrides, "name": name}
+    columns = ", ".join(values)
+    placeholders = ", ".join(f":{column}" for column in values)
+    await session.execute(
+        text(f"INSERT INTO subscriptions ({columns}) VALUES ({placeholders})"), values
     )
+
+
+async def test_more_than_twenty_other_features_are_rejected(db_session: AsyncSession):
+    with pytest.raises(DBAPIError) as error:
+        await insert_with(db_session, "Muchas", other_features=[f"f{n}" for n in range(21)])
+
+    assert_pg_error(error, "23514", constraint="subscriptions_other_features_check")
+
+
+async def test_twenty_other_features_are_accepted(db_session: AsyncSession):
+    await insert_with(db_session, "Veinte", other_features=[f"f{n}" for n in range(20)])
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "constraint"),
+    [
+        ("annual_price", Decimal("-1"), "subscriptions_annual_price_check"),
+        ("trial_days", -1, "subscriptions_trial_days_check"),
+        ("trial_days", 3651, "subscriptions_trial_days_check"),
+        ("consulting_rooms_limit", -1, "subscriptions_consulting_rooms_limit_check"),
+        ("consulting_rooms_limit", 1000001, "subscriptions_consulting_rooms_limit_check"),
+        ("doctors_limit", -1, "subscriptions_doctors_limit_check"),
+        ("doctors_limit", 1000001, "subscriptions_doctors_limit_check"),
+        ("assistants_limit", -1, "subscriptions_assistants_limit_check"),
+        ("assistants_limit", 1000001, "subscriptions_assistants_limit_check"),
+        ("new_patients_per_year_limit", -1, "subscriptions_new_patients_per_year_limit_check"),
+        ("new_patients_per_year_limit", 1000001, "subscriptions_new_patients_per_year_limit_check"),
+    ],
+)
+async def test_each_new_column_rejects_a_value_outside_its_range(
+    db_session: AsyncSession, column: str, value: object, constraint: str
+):
+    with pytest.raises(DBAPIError) as error:
+        await insert_with(db_session, "Fuera de rango", **{column: value})
+
+    assert_pg_error(error, "23514", constraint=constraint)
+
+
+async def test_trial_days_zero_and_the_default_are_accepted(db_session: AsyncSession):
+    await insert_with(db_session, "Sin prueba", trial_days=0)
+    await insert_with(db_session, "Por defecto")  # trial_days toma su DEFAULT (0)
+
+
+async def test_module_keys_without_patients_is_rejected(db_session: AsyncSession):
+    with pytest.raises(DBAPIError) as error:
+        await insert_with(db_session, "Sin pacientes", module_keys=["scheduling"])
+
+    assert_pg_error(error, "23514", constraint="subscriptions_module_keys_check")
+
+
+async def test_module_keys_with_patients_is_accepted(db_session: AsyncSession):
+    await insert_with(db_session, "Con pacientes", module_keys=["patients", "scheduling"])
+
+
+async def test_module_keys_defaults_to_patients_only(db_session: AsyncSession):
+    await insert_with(db_session, "Por defecto de módulos")
+
+    value = (
+        await db_session.execute(
+            text("SELECT module_keys FROM subscriptions WHERE name = 'Por defecto de módulos'")
+        )
+    ).scalar_one()
+    assert value == ["patients"]
 
 
 @pytest.mark.parametrize(("first", "second"), [("Pro", "pro"), ("Básico", "BÁSICO"), ("Pro", "PRO")])

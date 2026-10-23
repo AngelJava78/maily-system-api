@@ -1,12 +1,13 @@
-"""Simulation of the users API (specs/001-subscriptions-api/contracts/e2e-stubs.md, section 1).
+"""Simulation of the users API (specs/004-correct-subscriptions-api/contracts/e2e-stubs.md).
 
 Self-contained: it imports nothing from `src/` and uses no relative imports, because the end-to-end
 stack runs it with `uvicorn app:app --app-dir /stub`. The state lives in memory and is lost with the
 process. Every fault body carries the marker `SECRETO-INTERNO` so the tests can check that the details
 of another service never reach the clients of the subscriptions API.
 
-It imitates the operation the subscriptions API consumes (`GET /api/v1/authorization/check`) and
-offers a test-only surface under `/__test__/`.
+It imitates the two operations the subscriptions API consumes (`GET /api/v1/authorization/check` and
+`GET /api/v1/modules`) and offers a test-only surface under `/__test__/`. The nine clinic-module keys
+mirror `src/clinic_modules.py`, duplicated here on purpose: this module must not import from `src/`.
 """
 
 import asyncio
@@ -35,6 +36,51 @@ FAULT_MODES = (
     "unauthorized_unreadable",
     "unauthorized_unknown",
 )
+FAULT_OPERATIONS = ("check", "modules")
+
+# Mirrors src/clinic_modules.py's nine proposed keys (research R2); duplicated because this stub
+# must not import from src/.
+CLINIC_MODULE_NAMES = {
+    "patients": "Pacientes",
+    "scheduling": "Agenda y citas",
+    "reminders": "Recordatorios",
+    "clinical_records": "Expediente clínico",
+    "clinical_record_templates": "Plantillas de expediente",
+    "prescriptions": "Recetas",
+    "finance": "Finanzas",
+    "reports": "Reportes",
+    "billing": "Facturación",
+}
+# The four protected system-type modules of mailySoft-usuarios spec 013, used to prove the
+# type_id=2 filter excludes them.
+SYSTEM_MODULE_NAMES = {
+    "users": "Usuarios",
+    "roles": "Roles",
+    "permissions": "Permisos",
+    "modules": "Módulos",
+}
+SYSTEM_TYPE = {"id": 1, "name": "Sistema"}
+CLINIC_TYPE = {"id": 2, "name": "Clínica"}
+ACTIVE_STATUS = {"id": 1, "name": "Activo"}
+
+
+def default_modules() -> list[dict[str, Any]]:
+    """A fresh seed: the nine clinic modules first, then the four protected system modules."""
+    modules = []
+    next_id = 1
+    for key, name in {**CLINIC_MODULE_NAMES, **SYSTEM_MODULE_NAMES}.items():
+        is_clinic = key in CLINIC_MODULE_NAMES
+        modules.append(
+            {
+                "id": next_id,
+                "key": key,
+                "name": name,
+                "status": dict(ACTIVE_STATUS),
+                "type": dict(CLINIC_TYPE if is_clinic else SYSTEM_TYPE),
+            }
+        )
+        next_id += 1
+    return modules
 
 
 class TokenIn(BaseModel):
@@ -47,6 +93,7 @@ class FaultIn(BaseModel):
     mode: str
     count: int = 1
     delay_seconds: float = 30
+    operation: str = "check"
 
 
 class _RecordCalls:
@@ -74,12 +121,17 @@ class _RecordCalls:
 
 def create_stub_app() -> FastAPI:
     app = FastAPI(title="Users API (stub)")
-    state: dict[str, Any] = {"tokens": {}, "faults": [], "calls": []}
+    state: dict[str, Any] = {
+        "tokens": {},
+        "faults": [],
+        "calls": [],
+        "modules": default_modules(),
+    }
     app.add_middleware(_RecordCalls, state=state)
 
-    def take_fault() -> dict[str, Any] | None:
+    def take_fault(operation: str) -> dict[str, Any] | None:
         for fault in state["faults"]:
-            if fault["remaining"] > 0:
+            if fault["operation"] == operation and fault["remaining"] > 0:
                 fault["remaining"] -= 1
                 return fault
         return None
@@ -89,7 +141,7 @@ def create_stub_app() -> FastAPI:
 
     @app.get("/api/v1/authorization/check")
     async def check(request: Request, permission: str | None = None):
-        fault = take_fault()
+        fault = take_fault("check")
         if fault is not None:
             mode = fault["mode"]
             if mode == "unavailable":
@@ -129,6 +181,45 @@ def create_stub_app() -> FastAPI:
             return error(422, "validation_error")
         return {"permission": permission, "allowed": permission in entry["permissions"]}
 
+    @app.get("/api/v1/modules")
+    async def list_modules(request: Request, type_id: int | None = None, status_id: int | None = None):
+        fault = take_fault("modules")
+        if fault is not None:
+            mode = fault["mode"]
+            if mode == "unavailable":
+                return error(503, "authentication_unavailable")
+            if mode == "forbidden":
+                return error(403, "forbidden")
+            if mode == "malformed":
+                return JSONResponse({"detail": MARKER})
+            if mode == "not_json":
+                return PlainTextResponse(MARKER, status_code=200)
+            if mode == "redirect":
+                return RedirectResponse("http://evil.test/steal", status_code=307)
+            if mode == "slow":
+                await asyncio.sleep(fault["delay_seconds"])
+
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() != "bearer" or not token.strip():
+            return error(401, "unauthenticated")
+        entry = state["tokens"].get(token.strip())
+        if entry is None:
+            return error(401, "invalid_token")
+        if entry["expired"]:
+            return error(401, "token_expired")
+        if "modules:read" not in entry["permissions"]:
+            # Mirrors the real API: modules:read is a separate permission from subscriptions:*
+            # (contracts/permission-matrix.md). A token without it gets a 403 here, which the
+            # subscriptions API turns into module_check_unavailable (never a silent "no modules").
+            return error(403, "forbidden")
+
+        modules = state["modules"]
+        if type_id is not None:
+            modules = [module for module in modules if module["type"]["id"] == type_id]
+        if status_id is not None:
+            modules = [module for module in modules if module["status"]["id"] == status_id]
+        return modules
+
     @app.post("/__test__/tokens")
     async def register_token(body: TokenIn):
         state["tokens"][body.token] = {
@@ -141,20 +232,33 @@ def create_stub_app() -> FastAPI:
     async def add_fault(body: FaultIn):
         if body.mode not in FAULT_MODES:
             return JSONResponse({"detail": f"unknown mode {body.mode!r}"}, status_code=422)
+        if body.operation not in FAULT_OPERATIONS:
+            return JSONResponse({"detail": f"unknown operation {body.operation!r}"}, status_code=422)
         state["faults"].append(
-            {"mode": body.mode, "remaining": body.count, "delay_seconds": body.delay_seconds}
+            {
+                "mode": body.mode,
+                "remaining": body.count,
+                "delay_seconds": body.delay_seconds,
+                "operation": body.operation,
+            }
         )
-        return {"mode": body.mode, "count": body.count}
+        return {"mode": body.mode, "count": body.count, "operation": body.operation}
 
     @app.get("/__test__/calls")
     async def calls():
         return state["calls"]
+
+    @app.post("/__test__/modules/reset")
+    async def reset_modules():
+        state["modules"] = default_modules()
+        return {"reset": True}
 
     @app.post("/__test__/reset")
     async def reset():
         state["tokens"].clear()
         state["faults"].clear()
         state["calls"].clear()
+        state["modules"] = default_modules()
         return {"reset": True}
 
     return app

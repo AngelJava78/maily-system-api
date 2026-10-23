@@ -56,6 +56,9 @@ _KINDS = {
     "decimal_max_digits": "invalid",
     "decimal_whole_digits": "invalid",
     "finite_number": "invalid",
+    "string_pattern_mismatch": "invalid",
+    "bool_parsing": "invalid",
+    "bool_type": "invalid",
 }
 
 

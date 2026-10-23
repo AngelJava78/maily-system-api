@@ -32,7 +32,19 @@ URL = "/api/v1/subscriptions"
 REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
     "list_subscriptions": ("GET", URL, None),
     "get_subscription": ("GET", f"{URL}/1", None),
-    "create_subscription": ("POST", URL, {"name": "Nueva", "monthly_price": 1}),
+    "create_subscription": (
+        "POST",
+        URL,
+        {
+            "name": "Nueva",
+            "monthly_price": 1,
+            "annual_price": 10,
+            "consulting_rooms_limit": 1,
+            "doctors_limit": 1,
+            "assistants_limit": 1,
+            "new_patients_per_year_limit": 1,
+        },
+    ),
     "update_subscription": ("PATCH", f"{URL}/1", {"name": "Cambio"}),
     "change_subscription_status": ("PATCH", f"{URL}/1/status", {"status_id": 2}),
     "delete_subscription": ("DELETE", f"{URL}/1", None),

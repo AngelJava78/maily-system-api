@@ -63,8 +63,9 @@ async def get_subscription_repository(
 async def get_subscription_service(
     repository: Annotated[SubscriptionRepository, Depends(get_subscription_repository)],
     clinics_api: Annotated[ClinicsApiClient, Depends(get_clinics_api_client)],
+    users_api: Annotated[UsersApiClient, Depends(get_users_api_client)],
 ) -> SubscriptionService:
-    return SubscriptionService(repository, clinics_api)
+    return SubscriptionService(repository, clinics_api, users_api)
 
 
 # Immutable and stateless, so one instance serves the whole application.

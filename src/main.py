@@ -35,14 +35,18 @@ DUMMY_DASHBOARD_NOTICE = (
 )
 
 TITLE = "MailySoft System API"
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 DESCRIPTION = """\
 Servicio REST de MailySoft. Su primer dominio es el catálogo de **suscripciones** (planes) que se
-asignan a las clínicas.
+asignan a las clínicas: precio mensual y anual, días de prueba, autoconsumo, módulos de clínica,
+límites de la clínica y otras funcionalidades.
 
 - Cada suscripción tiene un estatus tomado de un catálogo (1 Activa, 2 Inactiva, 3 Bloqueada,
   4 Eliminada). Se devuelve como un objeto con `id` y `name`; quien consume la API debe basarse en
   el `id`: el nombre puede cambiar. Las suscripciones eliminadas no aparecen.
+- `module_keys` son claves de un catálogo de módulos de tipo Clínica que es propiedad de la API de
+  usuarios, no de este servicio; esta API solo guarda y valida las claves (nunca su nombre ni su
+  descripción) y siempre incluye `patients`.
 - **Todas las operaciones exigen un token de acceso y un permiso**, que decide el API de usuarios
   en cada petición. La documentación no exige token.
 - Todos los errores tienen el mismo formato (`code`, `message` y, en las validaciones, `errors`) y

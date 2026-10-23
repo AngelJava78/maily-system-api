@@ -10,8 +10,11 @@ from src.messages import (
     AUTHORIZATION_UNAVAILABLE_MESSAGE,
     CLINICS_CHECK_UNAVAILABLE_MESSAGE,
     INVALID_TOKEN_MESSAGE,
+    MODULE_CHECK_UNAVAILABLE_MESSAGE,
     PERMISSION_DENIED_MESSAGE,
     SUBSCRIPTION_HAS_CLINICS_MESSAGE,
+    SUBSCRIPTION_MODULE_NOT_FOUND_MESSAGE,
+    SUBSCRIPTION_MODULE_PREREQUISITE_MISSING_MESSAGE,
     SUBSCRIPTION_NAME_ALREADY_EXISTS_MESSAGE,
     SUBSCRIPTION_NOT_FOUND_MESSAGE,
     SUBSCRIPTION_STATUS_UNCHANGED_MESSAGE,
@@ -144,3 +147,37 @@ class ClinicsCheckUnavailableError(AppError):
 
     def __init__(self, subscription_id: int) -> None:
         super().__init__(CLINICS_CHECK_UNAVAILABLE_MESSAGE.format(subscription_id=subscription_id))
+
+
+class SubscriptionModuleNotFoundError(AppError):
+    """A requested module key is not an active clinic-type module in the users API."""
+
+    code = ErrorCode.SUBSCRIPTION_MODULE_NOT_FOUND
+    status_code = 422
+
+    def __init__(self, module_key: str) -> None:
+        super().__init__(SUBSCRIPTION_MODULE_NOT_FOUND_MESSAGE.format(module_key=module_key))
+
+
+class SubscriptionModulePrerequisiteMissingError(AppError):
+    """A requested module is included without the other module it depends on."""
+
+    code = ErrorCode.SUBSCRIPTION_MODULE_PREREQUISITE_MISSING
+    status_code = 409
+
+    def __init__(self, module_key: str, prerequisite_key: str) -> None:
+        super().__init__(
+            SUBSCRIPTION_MODULE_PREREQUISITE_MISSING_MESSAGE.format(
+                module_key=module_key, prerequisite_key=prerequisite_key
+            )
+        )
+
+
+class ModuleCheckUnavailableError(AppError):
+    """The users API did not answer as expected while validating modules: nothing was saved."""
+
+    code = ErrorCode.MODULE_CHECK_UNAVAILABLE
+    status_code = 503
+
+    def __init__(self) -> None:
+        super().__init__(MODULE_CHECK_UNAVAILABLE_MESSAGE)

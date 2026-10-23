@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -28,22 +29,56 @@ if TYPE_CHECKING:
 
 
 class Subscription(Base):
-    """Subscription (plan) that is assigned to clinics: price, what it includes and its status."""
+    """Subscription (plan) assigned to clinics: price, modules, limits and its status.
+
+    The clinic module catalog itself is not stored here (Principle IX): `module_keys` only holds
+    the keys this service already validated against the users API (spec 004).
+    """
 
     __tablename__ = "subscriptions"
     __table_args__ = (
         CheckConstraint("btrim(name) <> ''", name="name_check"),
         CheckConstraint("monthly_price >= 0", name="monthly_price_check"),
-        CheckConstraint("cardinality(features) <= 20", name="features_check"),
+        CheckConstraint("annual_price >= 0", name="annual_price_check"),
+        CheckConstraint("trial_days BETWEEN 0 AND 3650", name="trial_days_check"),
+        CheckConstraint("'patients' = ANY(module_keys)", name="module_keys_check"),
+        CheckConstraint("cardinality(other_features) <= 20", name="other_features_check"),
+        CheckConstraint(
+            "consulting_rooms_limit BETWEEN 0 AND 1000000", name="consulting_rooms_limit_check"
+        ),
+        CheckConstraint("doctors_limit BETWEEN 0 AND 1000000", name="doctors_limit_check"),
+        CheckConstraint("assistants_limit BETWEEN 0 AND 1000000", name="assistants_limit_check"),
+        CheckConstraint(
+            "new_patients_per_year_limit BETWEEN 0 AND 1000000",
+            name="new_patients_per_year_limit_check",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
     description: Mapped[str | None] = mapped_column(String(500))
-    # Mexican pesos; exact decimal type, never float (Principle VI).
+    # Mexican pesos, never float (Principle VI); independent of each other (no enforced ratio).
     monthly_price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
-    # Ordered list of free texts shown to people; at most 20 (each of 1 to 150 characters in the DTO).
-    features: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default=text("'{}'::text[]"))
+    annual_price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    # 0 = no trial period.
+    trial_days: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    # Whether the plan is self-service in the MailySoft portal; born off (fail closed).
+    self_service: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    # Keys of a clinic-module catalog owned by the users API (src/clinic_modules.py); always
+    # includes 'patients'.
+    module_keys: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default=text("ARRAY['patients']::text[]")
+    )
+    # Ordered list of free texts that are not modules; at most 20 (each of 1 to 150 characters in
+    # the DTO). Renamed from `features` (spec 004).
+    other_features: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default=text("'{}'::text[]")
+    )
+    # Clinic growth ceilings; informational only, never validated against actual clinic usage.
+    consulting_rooms_limit: Mapped[int] = mapped_column(Integer)
+    doctors_limit: Mapped[int] = mapped_column(Integer)
+    assistants_limit: Mapped[int] = mapped_column(Integer)
+    new_patients_per_year_limit: Mapped[int] = mapped_column(Integer)
     # 1 = Active, 2 = Inactive, 3 = Blocked, 4 = Deleted (see SubscriptionStatus); new ones are Active.
     status_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("subscription_statuses.id"), server_default=text("1")

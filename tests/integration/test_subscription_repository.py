@@ -24,6 +24,33 @@ async def add_hand_made_status(session: AsyncSession) -> None:
     await session.commit()
 
 
+async def create_minimal(
+    repository: SubscriptionRepository,
+    name: str,
+    description: str | None = None,
+    monthly_price: Decimal = Decimal("1"),
+    other_features: list[str] | None = None,
+    module_keys: list[str] | None = None,
+):
+    """`repository.create(...)` with sensible defaults for the seven fields this module does not
+    exercise (module validation is the Service's job, already covered in test_subscription_service.py).
+    """
+    return await repository.create(
+        name,
+        description,
+        monthly_price,
+        annual_price=Decimal("10"),
+        trial_days=0,
+        self_service=False,
+        module_keys=module_keys or ["patients"],
+        other_features=other_features or [],
+        consulting_rooms_limit=1,
+        doctors_limit=1,
+        assistants_limit=1,
+        new_patients_per_year_limit=100,
+    )
+
+
 # --- US1: list_current ---
 
 
@@ -91,7 +118,18 @@ async def test_create_inserts_an_active_subscription_and_returns_it_reloaded(
     repository = SubscriptionRepository(db_session)
 
     created = await repository.create(
-        "Pro", "Para clínicas", Decimal("4500"), ["Hasta 5 consultorios", "Usuarios ilimitados"]
+        "Pro",
+        "Para clínicas",
+        Decimal("4500"),
+        annual_price=Decimal("45000"),
+        trial_days=14,
+        self_service=True,
+        module_keys=["patients", "scheduling"],
+        other_features=["Hasta 5 consultorios", "Usuarios ilimitados"],
+        consulting_rooms_limit=2,
+        doctors_limit=3,
+        assistants_limit=2,
+        new_patients_per_year_limit=15000,
     )
 
     assert created.id >= 1
@@ -99,27 +137,33 @@ async def test_create_inserts_an_active_subscription_and_returns_it_reloaded(
     assert (created.status.id, created.status.name) == (1, "Activa")
     assert created.monthly_price == Decimal("4500.00")  # two decimals even if sent without them
     assert str(created.monthly_price) == "4500.00"
-    assert created.features == ["Hasta 5 consultorios", "Usuarios ilimitados"]  # same order
+    assert created.annual_price == Decimal("45000.00")
+    assert created.trial_days == 14
+    assert created.self_service is True
+    assert created.module_keys == ["patients", "scheduling"]
+    assert created.other_features == ["Hasta 5 consultorios", "Usuarios ilimitados"]  # same order
+    assert (created.consulting_rooms_limit, created.doctors_limit) == (2, 3)
+    assert (created.assistants_limit, created.new_patients_per_year_limit) == (2, 15000)
     assert created.description == "Para clínicas"
     assert created.created_at == created.updated_at
 
 
 async def test_create_without_description_stores_none(db_session: AsyncSession):
-    created = await SubscriptionRepository(db_session).create("Legacy", None, Decimal("0"), [])
+    created = await create_minimal(SubscriptionRepository(db_session), "Legacy")
 
     assert created.description is None
-    assert created.features == []
-    assert created.monthly_price == Decimal("0.00")
+    assert created.other_features == []
+    assert created.monthly_price == Decimal("1.00")
 
 
 async def test_a_repeated_name_with_other_capitals_is_a_unique_violation_of_the_name_index(
     db_session: AsyncSession,
 ):
     repository = SubscriptionRepository(db_session)
-    await repository.create("Pro", None, Decimal("1"), [])
+    await create_minimal(repository, "Pro")
 
     with pytest.raises(UniqueViolationError) as error:
-        await repository.create("pro", None, Decimal("1"), [])
+        await create_minimal(repository, "pro")
 
     assert error.value.constraint_name == SUBSCRIPTION_NAME_INDEX
 
@@ -127,7 +171,7 @@ async def test_a_repeated_name_with_other_capitals_is_a_unique_violation_of_the_
 async def test_the_name_of_a_deleted_subscription_can_be_reused(db_session: AsyncSession):
     await insert_subscription(db_session, name="Solo", status_id=4)
 
-    created = await SubscriptionRepository(db_session).create("Solo", None, Decimal("900"), [])
+    created = await create_minimal(SubscriptionRepository(db_session), "Solo")
 
     assert created.name == "Solo"
 
@@ -138,7 +182,7 @@ async def test_fifty_simultaneous_creations_with_the_same_name_produce_exactly_o
     async def attempt() -> bool:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             try:
-                await SubscriptionRepository(session).create("Carrera", None, Decimal("1"), [])
+                await create_minimal(SubscriptionRepository(session), "Carrera")
             except UniqueViolationError:
                 return False
             return True
@@ -203,7 +247,7 @@ async def test_update_changes_only_the_given_columns_and_returns_the_reloaded_ro
         name="Pro",
         monthly_price="4500",
         description="Para clínicas",
-        features=["Uno", "Dos"],
+        other_features=["Uno", "Dos"],
     )
     repository = SubscriptionRepository(committing_session)
 
@@ -211,21 +255,25 @@ async def test_update_changes_only_the_given_columns_and_returns_the_reloaded_ro
 
     assert updated is not None
     assert updated.monthly_price == Decimal("4700.00")
-    assert (updated.name, updated.description, updated.features) == ("Pro", "Para clínicas", ["Uno", "Dos"])
+    assert (updated.name, updated.description, updated.other_features) == (
+        "Pro",
+        "Para clínicas",
+        ["Uno", "Dos"],
+    )
     assert updated.status.name == "Activa"
     assert updated.updated_at > updated.created_at  # the trigger kept the modification date
 
 
-async def test_update_can_clear_the_description_and_the_features(db_session: AsyncSession):
+async def test_update_can_clear_the_description_and_the_other_features(db_session: AsyncSession):
     subscription_id = await insert_subscription(
-        db_session, name="Pro", description="Antes", features=["Uno"]
+        db_session, name="Pro", description="Antes", other_features=["Uno"]
     )
 
     updated = await SubscriptionRepository(db_session).update(
-        subscription_id, {"description": None, "features": []}
+        subscription_id, {"description": None, "other_features": []}
     )
 
-    assert (updated.description, updated.features) == (None, [])
+    assert (updated.description, updated.other_features) == (None, [])
 
 
 async def test_update_may_rename_a_subscription_with_other_capitals_of_its_own_name(
@@ -358,7 +406,7 @@ async def test_soft_delete_marks_the_subscription_deleted_and_keeps_the_row(
     committing_session: AsyncSession,
 ):
     subscription_id = await insert_subscription(
-        committing_session, name="Pro", monthly_price="4500", features=["Uno"]
+        committing_session, name="Pro", monthly_price="4500", other_features=["Uno"]
     )
     repository = SubscriptionRepository(committing_session)
 
@@ -366,7 +414,10 @@ async def test_soft_delete_marks_the_subscription_deleted_and_keeps_the_row(
 
     row = (
         await committing_session.execute(
-            text("SELECT name, monthly_price, features, status_id, updated_at > created_at FROM subscriptions")
+            text(
+                "SELECT name, monthly_price, other_features, status_id, updated_at > created_at "
+                "FROM subscriptions"
+            )
         )
     ).one()
     assert tuple(row) == ("Pro", Decimal("4500.00"), ["Uno"], 4, True)  # kept, modification date moved
@@ -395,7 +446,7 @@ async def test_the_name_of_a_deleted_subscription_can_be_used_by_a_new_one(
     repository = SubscriptionRepository(db_session)
     await repository.soft_delete(subscription_id)
 
-    created = await repository.create("Solo", None, Decimal("900"), [])
+    created = await create_minimal(repository, "Solo", monthly_price=Decimal("900"))
 
     assert created.id != subscription_id
 

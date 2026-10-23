@@ -114,7 +114,7 @@ def test_a_clinic_and_its_status_have_exactly_their_published_fields(schema):
 
 def test_no_error_code_was_added(schema):
     assert set(schema["components"]["schemas"]["ErrorCode"]["enum"]) == {c.value for c in ErrorCode}
-    assert len(ErrorCode) == 12
+    assert len(ErrorCode) == 15  # spec 004 added 3 module-related codes; reviewed, no dashboard impact
 
 
 def test_every_operation_of_the_api_declares_security_and_permission(schema):
@@ -127,4 +127,7 @@ def test_every_operation_of_the_api_declares_security_and_permission(schema):
 
 
 def test_the_version_of_the_api_does_not_change_when_an_operation_is_added(schema):
-    assert schema["info"]["version"] == "1.0.0"
+    # The dashboard (spec 003) added an operation without bumping the version; spec 004 later
+    # bumped it on its own (a breaking change to the subscriptions schema, research R9), not
+    # because of this operation.
+    assert schema["info"]["version"] == "2.0.0"

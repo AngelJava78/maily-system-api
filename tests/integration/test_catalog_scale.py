@@ -16,8 +16,11 @@ async def seed(api: Api) -> None:
     async with api.engine.begin() as connection:
         await connection.execute(
             text(
-                "INSERT INTO subscriptions (name, monthly_price, status_id, created_at) "
-                "SELECT 'Plan ' || g, 100, ((g - 1) % 4) + 1, "
+                "INSERT INTO subscriptions ("
+                "    name, monthly_price, annual_price, consulting_rooms_limit, doctors_limit,"
+                "    assistants_limit, new_patients_per_year_limit, status_id, created_at"
+                ") "
+                "SELECT 'Plan ' || g, 100, 1000, 1, 1, 1, 100, ((g - 1) % 4) + 1, "
                 "TIMESTAMPTZ '2026-01-01 00:00:00+00' + (g || ' seconds')::interval "
                 "FROM generate_series(1, :total) AS g"
             ),

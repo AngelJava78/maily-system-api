@@ -60,22 +60,45 @@ LIST_EXAMPLE = example_response(
     "catalogo",
     [
         {
-            "id": 1,
-            "name": "Básico",
-            "description": None,
-            "monthly_price": "1500.00",
-            "features": ["1 consultorio", "Hasta 3 usuarios", "Agenda y pacientes"],
+            "id": 2,
+            "name": "Profesional",
+            "description": "Para consultorios con varios doctores que llevan expediente y recetas.",
+            "monthly_price": "1299.00",
+            "annual_price": "12990.00",
+            "trial_days": 14,
+            "self_service": True,
+            "module_keys": [
+                "clinical_record_templates",
+                "clinical_records",
+                "patients",
+                "prescriptions",
+                "reminders",
+                "scheduling",
+            ],
+            "other_features": ["Soporte por correo y WhatsApp", "Capacitación inicial en línea"],
+            "consulting_rooms_limit": 2,
+            "doctors_limit": 3,
+            "assistants_limit": 2,
+            "new_patients_per_year_limit": 15000,
             "status": {"id": 1, "name": "Activa"},
-            "clinics_count": 2,
-            "created_at": "2026-10-17T15:00:00Z",
-            "updated_at": "2026-10-17T15:00:00Z",
+            "clinics_count": 0,
+            "created_at": "2026-10-23T15:00:00Z",
+            "updated_at": "2026-10-23T15:00:00Z",
         },
         {
             "id": 5,
             "name": "Solo",
             "description": "Para el médico que trabaja por su cuenta.",
             "monthly_price": "900.00",
-            "features": ["1 consultorio", "1 usuario"],
+            "annual_price": "9000.00",
+            "trial_days": 0,
+            "self_service": False,
+            "module_keys": ["patients", "scheduling"],
+            "other_features": [],
+            "consulting_rooms_limit": 1,
+            "doctors_limit": 1,
+            "assistants_limit": 0,
+            "new_patients_per_year_limit": 5000,
             "status": {"id": 2, "name": "Inactiva"},
             "clinics_count": None,
             "created_at": "2026-10-17T15:05:00Z",
@@ -84,11 +107,16 @@ LIST_EXAMPLE = example_response(
     ],
 )
 
-NAME_CONFLICT = error_response(
-    "Ya existe una suscripción no eliminada con ese nombre (sin distinguir mayúsculas).",
+WRITE_CONFLICT = error_response(
+    "Ya existe una suscripción no eliminada con ese nombre, o se pidió un módulo sin su "
+    "prerrequisito.",
     nombre_repetido={
         "code": "subscription_name_already_exists",
         "message": "Ya existe una suscripción con el nombre «Pro».",
+    },
+    prerrequisito_faltante={
+        "code": "subscription_module_prerequisite_missing",
+        "message": "El módulo «billing» exige el módulo «finance», que no está incluido.",
     },
 )
 VALIDATION_ERROR = error_response(
@@ -104,11 +132,47 @@ VALIDATION_ERROR = error_response(
         "errors": [{"field": "status", "message": "El campo «status» no está permitido."}],
     },
 )
+WRITE_VALIDATION_ERROR = error_response(
+    "Algún dato no es válido, se envió un campo no permitido, o un módulo no es reconocido por la "
+    "API de usuarios.",
+    nombre_obligatorio={
+        "code": "validation_error",
+        "message": "Hay datos no válidos en la solicitud.",
+        "errors": [{"field": "name", "message": "El nombre de la suscripción es obligatorio."}],
+    },
+    campo_no_permitido={
+        "code": "validation_error",
+        "message": "Hay datos no válidos en la solicitud.",
+        "errors": [{"field": "status", "message": "El campo «status» no está permitido."}],
+    },
+    modulo_no_reconocido={
+        "code": "subscription_module_not_found",
+        "message": (
+            "La API de usuarios no reconoce el módulo «facturacion» como un módulo de clínica "
+            "vigente."
+        ),
+    },
+)
 NOT_FOUND = error_response(
     "La suscripción no existe o está Eliminada.",
     no_encontrada={
         "code": "subscription_not_found",
         "message": "No se encontró la suscripción con el identificador 42.",
+    },
+)
+WRITE_UNAVAILABLE = error_response(
+    "No se pudo verificar el permiso (`authorization_unavailable`) o no se pudieron comprobar los "
+    "módulos pedidos (`module_check_unavailable`). No cambia nada.",
+    permiso={
+        "code": "authorization_unavailable",
+        "message": "No se pudo verificar su permiso por ahora. Inténtelo de nuevo más tarde.",
+    },
+    modulos={
+        "code": "module_check_unavailable",
+        "message": (
+            "No se pudo comprobar los módulos de la suscripción por ahora. No se guardó ningún "
+            "cambio; inténtelo de nuevo más tarde."
+        ),
     },
 )
 CREATED = {
@@ -126,14 +190,22 @@ CREATED = {
                 "creada": {
                     "value": {
                         "id": 7,
-                        "name": "Pro",
+                        "name": "Profesional",
                         "description": "Para clínicas en crecimiento.",
-                        "monthly_price": "4500.00",
-                        "features": ["Hasta 5 consultorios", "Usuarios ilimitados"],
+                        "monthly_price": "1299.00",
+                        "annual_price": "12990.00",
+                        "trial_days": 14,
+                        "self_service": True,
+                        "module_keys": ["patients", "scheduling"],
+                        "other_features": ["Soporte por correo y WhatsApp"],
+                        "consulting_rooms_limit": 2,
+                        "doctors_limit": 3,
+                        "assistants_limit": 2,
+                        "new_patients_per_year_limit": 15000,
                         "status": {"id": 1, "name": "Activa"},
                         "clinics_count": 0,
-                        "created_at": "2026-10-18T15:00:00Z",
-                        "updated_at": "2026-10-18T15:00:00Z",
+                        "created_at": "2026-10-23T15:00:00Z",
+                        "updated_at": "2026-10-23T15:00:00Z",
                     }
                 }
             }
@@ -142,17 +214,39 @@ CREATED = {
 }
 CREATE_EXAMPLES = {
     "completo": {
-        "summary": "Con descripción y funciones",
+        "summary": "Plan «Profesional» del mockup",
         "value": {
-            "name": "Pro",
-            "description": "Para clínicas en crecimiento.",
-            "monthly_price": "4500.00",
-            "features": ["Hasta 5 consultorios", "Usuarios ilimitados", "Todo lo clínico"],
+            "name": "Profesional",
+            "description": "Para consultorios con varios doctores que llevan expediente y recetas.",
+            "monthly_price": "1299.00",
+            "annual_price": "12990.00",
+            "trial_days": 14,
+            "self_service": True,
+            "module_keys": [
+                "scheduling",
+                "reminders",
+                "clinical_records",
+                "clinical_record_templates",
+                "prescriptions",
+            ],
+            "other_features": ["Soporte por correo y WhatsApp", "Capacitación inicial en línea"],
+            "consulting_rooms_limit": 2,
+            "doctors_limit": 3,
+            "assistants_limit": 2,
+            "new_patients_per_year_limit": 15000,
         },
     },
     "minimo": {
-        "summary": "Solo los datos obligatorios",
-        "value": {"name": "Legacy full", "monthly_price": 0},
+        "summary": "Solo los datos obligatorios (solo incluye Pacientes)",
+        "value": {
+            "name": "Esencial",
+            "monthly_price": 499,
+            "annual_price": 4990,
+            "consulting_rooms_limit": 1,
+            "doctors_limit": 1,
+            "assistants_limit": 1,
+            "new_patients_per_year_limit": 5000,
+        },
     },
 }
 
@@ -190,7 +284,11 @@ STATUS_UNCHANGED = error_response(
 )
 STATUS_EXAMPLES = {"inactivar": {"summary": "Retirar de la oferta", "value": {"status_id": 2}}}
 UPDATE_EXAMPLES = {
-    "precio": {"summary": "Cambiar solo el precio", "value": {"monthly_price": "4700.00"}},
+    "precio_anual": {"summary": "Cambiar solo el precio anual", "value": {"annual_price": "13990.00"}},
+    "modulos": {
+        "summary": "Reemplazar el conjunto de módulos",
+        "value": {"module_keys": ["scheduling", "reminders"]},
+    },
 }
 
 
@@ -231,20 +329,31 @@ async def list_subscriptions(
         "suscripciones no eliminadas; el de una Eliminada se puede reutilizar. Se rechaza toda la "
         "solicitud si trae un dato no reconocido (`id`, `status`, `clinics_count`, fechas…). La "
         "respuesta trae `clinics_count: 0` porque una suscripción nueva no puede tener clínicas.\n\n"
+        "`module_keys` siempre incluye `patients`, se envíe o no. Si pide algún módulo además de "
+        "`patients`, se valida contra la API de usuarios (módulo reconocido y de tipo Clínica) y "
+        "contra las dependencias de esta API (Recordatorios exige Agenda y citas; Plantillas de "
+        "expediente y Recetas exigen Expediente clínico; Facturación exige Finanzas).\n\n"
         "**Permiso requerido: `subscriptions:write`.**"
     ),
     response_description="Suscripción creada.",
     **protected(
         SUBSCRIPTIONS_WRITE,
-        responses={201: CREATED, 409: NAME_CONFLICT, 422: VALIDATION_ERROR, 500: INTERNAL_ERROR},
+        responses={
+            201: CREATED,
+            409: WRITE_CONFLICT,
+            422: WRITE_VALIDATION_ERROR,
+            503: WRITE_UNAVAILABLE,
+            500: INTERNAL_ERROR,
+        },
     ),
 )
 async def create_subscription(
     data: Annotated[SubscriptionCreate, Body(openapi_examples=CREATE_EXAMPLES)],
     response: Response,
     service: SubscriptionServiceDep,
+    token: BearerTokenDep,
 ) -> SubscriptionRead:
-    view = await service.create(data)
+    view = await service.create(data, token)
     response.headers["Location"] = f"{SUBSCRIPTIONS_PATH}/{view.subscription.id}"
     return _to_read(view)
 
@@ -278,12 +387,16 @@ async def get_subscription(
     operation_id="update_subscription",
     summary="Actualizar una suscripción",
     description=(
-        "Modifica el nombre, la descripción, el precio mensual y/o lo que incluye de una "
-        "suscripción vigente; los datos que no se envían no cambian. Hay que enviar al menos uno. "
-        "Enviar la descripción vacía (o `null`) la borra; enviar `features: []` vacía la lista. No "
-        "se puede cambiar el identificador, el estatus (ver `change_subscription_status`), las "
-        "fechas ni `clinics_count`. Una suscripción puede conservar su propio nombre (incluso "
-        "cambiando solo las mayúsculas).\n\n"
+        "Modifica, enviando solo lo que cambia, el nombre, la descripción, el precio mensual, el "
+        "precio anual, los días de prueba, el autoconsumo, los módulos incluidos, los cuatro "
+        "límites de la clínica y/o las otras funcionalidades de una suscripción vigente. Hay que "
+        "enviar al menos uno. Enviar la descripción vacía (o `null`) la borra; enviar "
+        "`other_features: []` vacía esa lista. No se puede cambiar el identificador, el estatus "
+        "(ver `change_subscription_status`), las fechas ni `clinics_count`. Una suscripción puede "
+        "conservar su propio nombre (incluso cambiando solo las mayúsculas).\n\n"
+        "Si la solicitud trae `module_keys`, primero se comprueba que la suscripción exista (404 "
+        "si no, antes de llamar a la API de usuarios) y luego se valida igual que al crear; "
+        "`patients` nunca puede excluirse, se envíe o no en la lista.\n\n"
         "**Permiso requerido: `subscriptions:update`.**"
     ),
     response_description="Suscripción actualizada.",
@@ -291,8 +404,9 @@ async def get_subscription(
         SUBSCRIPTIONS_UPDATE,
         responses={
             404: NOT_FOUND,
-            409: NAME_CONFLICT,
-            422: VALIDATION_ERROR,
+            409: WRITE_CONFLICT,
+            422: WRITE_VALIDATION_ERROR,
+            503: WRITE_UNAVAILABLE,
             500: INTERNAL_ERROR,
         },
     ),

@@ -41,7 +41,7 @@
           "      if (next) { next(); }",
           "    });",
           "  };",
-          "  register(\"accessToken\", \"e2e-admin-\", [\"subscriptions:read\", \"subscriptions:write\", \"subscriptions:update\", \"subscriptions:delete\"], function () {",
+          "  register(\"accessToken\", \"e2e-admin-\", [\"subscriptions:read\", \"subscriptions:write\", \"subscriptions:update\", \"subscriptions:delete\", \"modules:read\"], function () {",
           "    register(\"plainToken\", \"e2e-plain-\", []);",
           "  });",
           "}",
@@ -239,7 +239,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"Pro {{suffix}}\", \"description\": \"Para clínicas en crecimiento.\", \"monthly_price\": 4500, \"features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"]}"
+              "raw": "{\"name\": \"Pro {{suffix}}\", \"description\": \"Para clínicas en crecimiento.\", \"monthly_price\": 1299, \"annual_price\": 12990, \"trial_days\": 14, \"self_service\": true, \"module_keys\": [\"scheduling\"], \"other_features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"], \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000}"
             }
           },
           "response": [],
@@ -261,7 +261,9 @@
                   "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
                   "const subscription = pm.response.json();",
                   "pm.test(\"nace Activa\", function () { pm.expect(subscription.status).to.eql({ id: 1, name: \"Activa\" }); });",
-                  "pm.test(\"el precio es una cadena con dos decimales\", function () { pm.expect(subscription.monthly_price).to.eql(\"4500.00\"); });",
+                  "pm.test(\"el precio es una cadena con dos decimales\", function () { pm.expect(subscription.monthly_price).to.eql(\"1299.00\"); });",
+                  "pm.test(\"el precio anual es independiente\", function () { pm.expect(subscription.annual_price).to.eql(\"12990.00\"); });",
+                  "pm.test(\"patients siempre incluido\", function () { pm.expect(subscription.module_keys).to.include(\"patients\"); });",
                   "pm.test(\"una suscripción nueva no tiene clínicas\", function () { pm.expect(subscription.clinics_count).to.eql(0); });",
                   "pm.test(\"informa dónde quedó\", function () { pm.expect(pm.response.headers.get(\"Location\")).to.eql(\"/api/v1/subscriptions/\" + subscription.id); });",
                   "pm.collectionVariables.set(\"subscriptionId\", String(subscription.id));",
@@ -344,7 +346,7 @@
           ]
         },
         {
-          "name": "update_subscription: cambiar solo el precio",
+          "name": "update_subscription: cambiar solo el precio anual",
           "request": {
             "method": "PATCH",
             "header": [
@@ -367,7 +369,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"monthly_price\": \"4700.00\"}"
+              "raw": "{\"annual_price\": \"13990.00\"}"
             }
           },
           "response": [],
@@ -379,9 +381,10 @@
                 "exec": [
                   "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
                   "const subscription = pm.response.json();",
-                  "pm.test(\"el precio cambió\", function () { pm.expect(subscription.monthly_price).to.eql(\"4700.00\"); });",
+                  "pm.test(\"el precio anual cambió\", function () { pm.expect(subscription.annual_price).to.eql(\"13990.00\"); });",
                   "pm.test(\"lo demás se conserva\", function () { pm.expect(subscription.name).to.eql(pm.collectionVariables.get(\"proName\")); });",
-                  "pm.test(\"las funciones se conservan\", function () { pm.expect(subscription.features).to.eql([\"Hasta 5 consultorios\", \"Usuarios ilimitados\"]); });"
+                  "pm.test(\"el precio mensual se conserva\", function () { pm.expect(subscription.monthly_price).to.eql(\"1299.00\"); });",
+                  "pm.test(\"otras funcionalidades se conservan\", function () { pm.expect(subscription.other_features).to.eql([\"Hasta 5 consultorios\", \"Usuarios ilimitados\"]); });"
                 ]
               }
             }
@@ -410,7 +413,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"Otra {{suffix}}\", \"monthly_price\": 100}"
+              "raw": "{\"name\": \"Otra {{suffix}}\", \"monthly_price\": 100, \"annual_price\": 1000, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 100}"
             }
           },
           "response": [],
@@ -508,6 +511,92 @@
                   "const error = pm.response.json();",
                   "pm.test(\"el código es validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
                   "pm.test(\"indica el campo\", function () { pm.expect(error.errors[0]).to.eql({ field: \"status\", message: \"El campo «status» no está permitido.\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_subscription: módulo sin prerrequisito se rechaza",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"module_keys\": [\"billing\"]}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 409\", function () { pm.response.to.have.status(409); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código subscription_module_prerequisite_missing\", function () { pm.expect(error.code).to.eql(\"subscription_module_prerequisite_missing\"); });",
+                  "pm.test(\"nombra los dos módulos\", function () { pm.expect(error.message).to.include(\"billing\").and.to.include(\"finance\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_subscription: módulo no reconocido se rechaza",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"module_keys\": [\"no_existe\"]}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código subscription_module_not_found\", function () { pm.expect(error.code).to.eql(\"subscription_module_not_found\"); });",
+                  "pm.test(\"nombra la clave\", function () { pm.expect(error.message).to.include(\"no_existe\"); });"
                 ]
               }
             }
@@ -965,7 +1054,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"{{proName}}\", \"monthly_price\": 4500}"
+              "raw": "{\"name\": \"{{proName}}\", \"monthly_price\": 1299, \"annual_price\": 12990, \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000}"
             }
           },
           "response": [],
@@ -1354,7 +1443,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"Degradación {{suffix}}\", \"monthly_price\": 1}"
+              "raw": "{\"name\": \"Degradación {{suffix}}\", \"monthly_price\": 1, \"annual_price\": 10, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 1}"
             }
           },
           "response": [],

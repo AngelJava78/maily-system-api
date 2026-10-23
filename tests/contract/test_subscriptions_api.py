@@ -1,4 +1,4 @@
-"""The subscriptions API over HTTP: the contract of each operation (spec 001-subscriptions-api)."""
+"""The subscriptions API over HTTP: the contract of each operation (spec 004-correct-subscriptions-api)."""
 
 from datetime import UTC, datetime, timedelta
 
@@ -10,13 +10,53 @@ FIELDS = {
     "name",
     "description",
     "monthly_price",
-    "features",
+    "annual_price",
+    "trial_days",
+    "self_service",
+    "module_keys",
+    "other_features",
+    "consulting_rooms_limit",
+    "doctors_limit",
+    "assistants_limit",
+    "new_patients_per_year_limit",
     "status",
     "clinics_count",
     "created_at",
     "updated_at",
 }
 MOMENT = datetime(2026, 1, 1, tzinfo=UTC)
+
+# The nine clinic-module keys the stub seeds by default (src/clinic_modules.py).
+BASE_LIMITS = {
+    "annual_price": 12990,
+    "consulting_rooms_limit": 2,
+    "doctors_limit": 3,
+    "assistants_limit": 2,
+    "new_patients_per_year_limit": 15000,
+}
+PRO = {
+    "name": "Profesional",
+    "monthly_price": 1299,
+    "trial_days": 14,
+    "self_service": True,
+    "module_keys": ["scheduling", "reminders", "clinical_records"],
+    "other_features": ["Soporte por correo y WhatsApp", "Capacitación inicial en línea"],
+    **BASE_LIMITS,
+}
+
+
+def minimal_body(name: str, monthly_price: float = 1, **extra) -> dict:
+    """The smallest valid `SubscriptionCreate` body (no modules beyond `patients`)."""
+    return {
+        "name": name,
+        "monthly_price": monthly_price,
+        "annual_price": extra.pop("annual_price", 10),
+        "consulting_rooms_limit": extra.pop("consulting_rooms_limit", 1),
+        "doctors_limit": extra.pop("doctors_limit", 1),
+        "assistants_limit": extra.pop("assistants_limit", 1),
+        "new_patients_per_year_limit": extra.pop("new_patients_per_year_limit", 1),
+        **extra,
+    }
 
 
 # --- US1: the catalog ---
@@ -26,7 +66,15 @@ async def test_the_catalog_is_a_json_array_with_exactly_the_fields_of_the_contra
     await api.insert(
         name="Básico",
         monthly_price="1500",
-        features=["1 consultorio", "Hasta 3 usuarios"],
+        annual_price="15000",
+        trial_days=14,
+        self_service=True,
+        module_keys=["patients", "scheduling"],
+        other_features=["Soporte por correo"],
+        consulting_rooms_limit=1,
+        doctors_limit=1,
+        assistants_limit=1,
+        new_patients_per_year_limit=5000,
     )
     await api.counts({1: 2})
 
@@ -40,11 +88,39 @@ async def test_the_catalog_is_a_json_array_with_exactly_the_fields_of_the_contra
     assert subscription["name"] == "Básico"
     assert subscription["description"] is None
     assert subscription["monthly_price"] == "1500.00"  # a string with two decimals
-    assert subscription["features"] == ["1 consultorio", "Hasta 3 usuarios"]
+    assert subscription["annual_price"] == "15000.00"
+    assert subscription["trial_days"] == 14
+    assert subscription["self_service"] is True
+    assert subscription["module_keys"] == ["patients", "scheduling"]
+    assert subscription["other_features"] == ["Soporte por correo"]
+    assert subscription["consulting_rooms_limit"] == 1
+    assert subscription["new_patients_per_year_limit"] == 5000
     assert subscription["status"] == {"id": 1, "name": "Activa"}
     assert subscription["clinics_count"] == 2
     assert datetime.fromisoformat(subscription["created_at"]).tzinfo is not None
     assert datetime.fromisoformat(subscription["updated_at"]).tzinfo is not None
+
+
+async def test_excluding_a_module_does_not_exclude_what_depends_on_it(api: Api):
+    # "Avanzado" del mockup: 8 de 9 módulos (todos salvo billing), billing depende de finance.
+    await api.insert(
+        name="Avanzado",
+        module_keys=[
+            "patients",
+            "scheduling",
+            "reminders",
+            "clinical_records",
+            "clinical_record_templates",
+            "prescriptions",
+            "finance",
+            "reports",
+        ],
+    )
+
+    body = (await api.client.get(URL)).json()[0]
+
+    assert "billing" not in body["module_keys"]
+    assert "finance" in body["module_keys"]
 
 
 async def test_the_catalog_has_active_inactive_and_blocked_but_never_deleted(api: Api):
@@ -102,10 +178,14 @@ async def test_the_clinics_api_is_asked_once_without_filter_and_missing_ones_cou
     assert calls[0]["subscription_ids"] == []
 
 
-async def test_the_catalog_asks_the_users_api_for_the_read_permission(api: Api):
+async def test_the_catalog_asks_the_users_api_for_the_read_permission_but_not_for_modules(api: Api):
+    await api.insert(name="Una", module_keys=["patients", "scheduling"])
+
     await api.client.get(URL)
 
-    assert [call["permission"] for call in await api.users_calls()] == ["subscriptions:read"]
+    users_calls = await api.users_calls()
+    assert [call["permission"] for call in users_calls] == ["subscriptions:read"]
+    assert not [call for call in users_calls if call["path"] == "/api/v1/modules"]
 
 
 async def test_without_the_read_permission_the_catalog_is_forbidden(api: Api):
@@ -129,12 +209,6 @@ async def test_without_a_token_the_catalog_asks_to_log_in(api: Api):
 
 # --- US3: create ---
 
-PRO = {
-    "name": "Pro",
-    "monthly_price": 4500,
-    "features": ["Hasta 5 consultorios", "Usuarios ilimitados"],
-}
-
 
 async def test_creating_a_subscription_answers_201_with_everything_the_contract_promises(api: Api):
     response = await api.client.post(URL, json=PRO)
@@ -143,10 +217,15 @@ async def test_creating_a_subscription_answers_201_with_everything_the_contract_
     body = response.json()
     assert set(body) == FIELDS
     assert body["status"] == {"id": 1, "name": "Activa"}
-    assert body["monthly_price"] == "4500.00"
+    assert body["monthly_price"] == "1299.00"
+    assert body["annual_price"] == "12990.00"
+    assert body["trial_days"] == 14
+    assert body["self_service"] is True
+    assert body["module_keys"] == ["clinical_records", "patients", "reminders", "scheduling"]
+    assert body["other_features"] == ["Soporte por correo y WhatsApp", "Capacitación inicial en línea"]
+    assert body["consulting_rooms_limit"] == 2
     assert body["clinics_count"] == 0
     assert body["description"] is None
-    assert body["features"] == ["Hasta 5 consultorios", "Usuarios ilimitados"]
     assert response.headers["Location"] == f"{URL}/{body['id']}"
 
 
@@ -155,43 +234,57 @@ async def test_creating_does_not_ask_the_clinics_api_and_the_new_one_is_in_the_c
 
     assert await api.clinics_calls() == []
     names = [s["name"] for s in (await api.client.get(URL)).json()]
-    assert names == ["Pro"]
+    assert names == ["Profesional"]
 
 
 async def test_only_the_required_data_is_enough(api: Api):
-    response = await api.client.post(URL, json={"name": "Legacy full", "monthly_price": 0})
+    response = await api.client.post(URL, json=minimal_body("Legacy full", 0))
 
     assert response.status_code == 201
-    assert response.json()["features"] == []
-    assert response.json()["monthly_price"] == "0.00"
+    body = response.json()
+    assert body["other_features"] == []
+    assert body["monthly_price"] == "0.00"
+    assert body["trial_days"] == 0
+    assert body["self_service"] is False
+    assert body["module_keys"] == ["patients"]  # always included, even unrequested
+
+
+async def test_patients_is_always_included_even_if_the_request_excludes_it(api: Api):
+    response = await api.client.post(
+        URL, json=minimal_body("Esencial", 1, module_keys=["scheduling"])
+    )
+
+    assert response.json()["module_keys"] == ["patients", "scheduling"]
 
 
 async def test_the_texts_are_saved_without_surrounding_spaces(api: Api):
     response = await api.client.post(
         URL,
-        json={"name": "  Pro  ", "description": "  Para clínicas ", "monthly_price": 1, "features": [" Uno "]},
+        json=minimal_body(
+            "  Pro  ", 1, description="  Para clínicas ", other_features=[" Uno "]
+        ),
     )
 
     body = response.json()
-    assert (body["name"], body["description"], body["features"]) == ("Pro", "Para clínicas", ["Uno"])
+    assert (body["name"], body["description"], body["other_features"]) == ("Pro", "Para clínicas", ["Uno"])
 
 
 async def test_a_name_that_only_differs_in_capitals_conflicts(api: Api):
     await api.client.post(URL, json=PRO)
 
-    response = await api.client.post(URL, json={**PRO, "name": "pro"})
+    response = await api.client.post(URL, json={**PRO, "name": "profesional"})
 
     assert response.status_code == 409
     assert response.json() == {
         "code": "subscription_name_already_exists",
-        "message": "Ya existe una suscripción con el nombre «pro».",
+        "message": "Ya existe una suscripción con el nombre «profesional».",
     }
 
 
 async def test_the_name_of_a_deleted_subscription_is_free(api: Api):
     await api.insert(name="Solo", status_id=4)
 
-    response = await api.client.post(URL, json={"name": "Solo", "monthly_price": 900})
+    response = await api.client.post(URL, json=minimal_body("Solo", 900))
 
     assert response.status_code == 201
 
@@ -199,7 +292,7 @@ async def test_the_name_of_a_deleted_subscription_is_free(api: Api):
 async def test_the_name_of_an_inactive_subscription_stays_reserved(api: Api):
     await api.insert(name="Legacy", status_id=2)
 
-    response = await api.client.post(URL, json={"name": "Legacy", "monthly_price": 1})
+    response = await api.client.post(URL, json=minimal_body("Legacy", 1))
 
     assert response.status_code == 409
 
@@ -217,21 +310,72 @@ async def test_fields_that_cannot_be_sent_reject_the_whole_request(api: Api):
 
 async def test_every_invalid_field_gets_its_own_message_and_none_repeats_the_value(api: Api):
     response = await api.client.post(
-        URL, json={"name": "", "monthly_price": -5, "features": [""]}
+        URL, json=minimal_body("", -5, other_features=[""])
     )
 
     assert response.status_code == 422
     body = response.json()
     assert body["code"] == "validation_error"
-    assert {e["field"] for e in body["errors"]} == {"name", "monthly_price", "features"}
+    assert {e["field"] for e in body["errors"]} == {"name", "monthly_price", "other_features"}
     assert "-5" not in response.text.replace("99 999 999,99", "")
 
 
 async def test_a_price_with_three_decimals_is_rejected(api: Api):
-    response = await api.client.post(URL, json={"name": "Pro", "monthly_price": "4500.555"})
+    response = await api.client.post(URL, json=minimal_body("Pro", "4500.555"))
 
     assert response.status_code == 422
     assert response.json()["errors"][0]["field"] == "monthly_price"
+
+
+async def test_without_the_annual_price_or_a_limit_the_request_is_rejected(api: Api):
+    body = minimal_body("Sin anual", 1)
+    del body["annual_price"]
+
+    response = await api.client.post(URL, json=body)
+
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["field"] == "annual_price"
+
+
+async def test_a_module_without_its_prerequisite_is_a_conflict(api: Api):
+    response = await api.client.post(URL, json=minimal_body("Con factura", 1, module_keys=["billing"]))
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "code": "subscription_module_prerequisite_missing",
+        "message": "El módulo «billing» exige el módulo «finance», que no está incluido.",
+    }
+    assert await api.fetch_all("SELECT id FROM subscriptions") == []
+
+
+async def test_an_unrecognised_module_is_a_validation_error(api: Api):
+    response = await api.client.post(
+        URL, json=minimal_body("Inventado", 1, module_keys=["no_existe"])
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "code": "subscription_module_not_found",
+        "message": "La API de usuarios no reconoce el módulo «no_existe» como un módulo de clínica vigente.",
+    }
+
+
+async def test_when_the_users_api_cannot_validate_modules_nothing_is_created(api: Api):
+    await api.users_fault("unavailable", operation="modules")
+
+    response = await api.client.post(
+        URL, json=minimal_body("Falla", 1, module_keys=["scheduling"])
+    )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "module_check_unavailable"
+    assert await api.fetch_all("SELECT id FROM subscriptions") == []
+
+
+async def test_creating_without_extra_modules_does_not_ask_the_users_api_for_them(api: Api):
+    await api.client.post(URL, json=minimal_body("Solo pacientes", 1))
+
+    assert not [c for c in await api.users_calls() if c["path"] == "/api/v1/modules"]
 
 
 async def test_without_the_write_permission_nothing_is_created(api: Api):
@@ -254,7 +398,7 @@ NOT_FOUND_42 = {
 
 async def test_a_current_subscription_is_returned_with_the_same_detail_as_the_catalog(api: Api):
     subscription_id = await api.insert(
-        name="Pro", monthly_price="4500", features=["Uno"], description="Para clínicas"
+        name="Pro", monthly_price="4500", other_features=["Uno"], description="Para clínicas"
     )
     await api.counts({subscription_id: 3})
 
@@ -286,6 +430,14 @@ async def test_the_clinics_api_is_asked_once_for_that_subscription_only(api: Api
     calls = await api.clinics_calls()
     assert len(calls) == 1
     assert calls[0]["subscription_ids"] == [first]
+
+
+async def test_get_does_not_ask_the_users_api_for_modules(api: Api):
+    subscription_id = await api.insert(name="Una", module_keys=["patients", "scheduling"])
+
+    await api.client.get(f"{URL}/{subscription_id}")
+
+    assert not [c for c in await api.users_calls() if c["path"] == "/api/v1/modules"]
 
 
 async def test_a_deleted_subscription_is_not_found_and_clinics_are_not_asked(api: Api):
@@ -346,22 +498,22 @@ async def test_without_the_read_permission_even_a_missing_subscription_is_forbid
 # --- US5: update ---
 
 
-async def test_updating_only_the_price_keeps_everything_else_and_moves_the_modification_date(
+async def test_updating_only_the_annual_price_keeps_everything_else_and_moves_the_modification_date(
     api: Api,
 ):
     subscription_id = await api.insert(
-        name="Pro", monthly_price="4500", description="Para clínicas", features=["Uno"]
+        name="Pro", monthly_price="4500", description="Para clínicas", other_features=["Uno"]
     )
     before = (await api.client.get(f"{URL}/{subscription_id}")).json()
 
     response = await api.client.patch(
-        f"{URL}/{subscription_id}", json={"monthly_price": "4700.00"}
+        f"{URL}/{subscription_id}", json={"annual_price": "47000.00"}
     )
 
     assert response.status_code == 200
     after = response.json()
-    assert after["monthly_price"] == "4700.00"
-    for field in ("id", "name", "description", "features", "status", "created_at"):
+    assert after["annual_price"] == "47000.00"
+    for field in ("id", "name", "description", "monthly_price", "other_features", "status", "created_at"):
         assert after[field] == before[field], field
     assert datetime.fromisoformat(after["updated_at"]) > datetime.fromisoformat(before["updated_at"])
 
@@ -412,11 +564,16 @@ async def test_the_fields_of_the_system_cannot_be_updated(api: Api):
 
 
 async def test_the_fields_that_cannot_be_null_are_reported_and_nothing_changes(api: Api):
-    subscription_id = await api.insert(name="Pro", monthly_price="100", features=["Uno"])
+    subscription_id = await api.insert(name="Pro", monthly_price="100", other_features=["Uno"])
     expected = {
         "name": "El nombre de la suscripción es obligatorio.",
         "monthly_price": "El precio mensual es obligatorio.",
-        "features": "Lo que incluye la suscripción debe ser una lista de textos.",
+        "annual_price": "El precio anual es obligatorio.",
+        "trial_days": "Los días de prueba deben ser un número entero de 0 a 3650.",
+        "self_service": "El autoconsumo debe ser verdadero o falso.",
+        "module_keys": "Cada módulo debe identificarse con una clave válida.",
+        "other_features": "Lo que incluye la suscripción debe ser una lista de textos.",
+        "consulting_rooms_limit": "El límite de consultorios debe ser un número entero de 0 a 1 000 000.",
     }
 
     for field, message in expected.items():
@@ -424,21 +581,75 @@ async def test_the_fields_that_cannot_be_null_are_reported_and_nothing_changes(a
 
         assert response.status_code == 422, field  # never a 500
         assert response.json()["errors"] == [{"field": field, "message": message}]
-    assert (await api.fetch_all("SELECT name, features FROM subscriptions")) == [("Pro", ["Uno"])]
+    assert (await api.fetch_all("SELECT name, other_features FROM subscriptions")) == [("Pro", ["Uno"])]
 
 
-async def test_an_empty_or_null_description_clears_it_and_an_empty_list_empties_the_features(
+async def test_an_empty_or_null_description_clears_it_and_an_empty_list_empties_other_features(
     api: Api,
 ):
-    subscription_id = await api.insert(name="Pro", description="Antes", features=["Uno"])
+    subscription_id = await api.insert(name="Pro", description="Antes", other_features=["Uno"])
 
     for description in ("", None):
         await api.client.patch(f"{URL}/{subscription_id}", json={"description": "Otra"})
         response = await api.client.patch(f"{URL}/{subscription_id}", json={"description": description})
         assert response.json()["description"] is None
 
-    cleared = await api.client.patch(f"{URL}/{subscription_id}", json={"features": []})
-    assert cleared.json()["features"] == []
+    cleared = await api.client.patch(f"{URL}/{subscription_id}", json={"other_features": []})
+    assert cleared.json()["other_features"] == []
+
+
+async def test_updating_modules_replaces_the_whole_set_but_keeps_patients(api: Api):
+    subscription_id = await api.insert(name="Pro", module_keys=["patients", "scheduling", "reminders"])
+
+    response = await api.client.patch(f"{URL}/{subscription_id}", json={"module_keys": ["finance"]})
+
+    assert response.status_code == 200
+    assert response.json()["module_keys"] == ["finance", "patients"]
+
+
+async def test_updating_to_a_module_without_its_prerequisite_is_a_conflict_and_nothing_changes(
+    api: Api,
+):
+    subscription_id = await api.insert(name="Pro", module_keys=["patients", "scheduling"])
+
+    response = await api.client.patch(
+        f"{URL}/{subscription_id}", json={"module_keys": ["billing"]}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "subscription_module_prerequisite_missing"
+    unchanged = (await api.client.get(f"{URL}/{subscription_id}")).json()
+    assert unchanged["module_keys"] == ["patients", "scheduling"]
+
+
+async def test_updating_modules_of_a_deleted_subscription_is_not_found_before_asking_the_users_api(
+    api: Api,
+):
+    deleted = await api.insert(name="Eliminada", status_id=4)
+
+    response = await api.client.patch(
+        f"{URL}/{deleted}", json={"module_keys": ["scheduling"]}
+    )
+
+    assert response.status_code == 404
+    assert not [c for c in await api.users_calls() if c["path"] == "/api/v1/modules"]
+
+
+async def test_updating_without_module_keys_does_not_ask_the_users_api(api: Api):
+    subscription_id = await api.insert(name="Pro")
+
+    await api.client.patch(f"{URL}/{subscription_id}", json={"name": "Nuevo"})
+
+    assert not [c for c in await api.users_calls() if c["path"] == "/api/v1/modules"]
+
+
+async def test_lowering_a_limit_is_always_accepted(api: Api):
+    subscription_id = await api.insert(name="Pro", doctors_limit=3)
+
+    response = await api.client.patch(f"{URL}/{subscription_id}", json={"doctors_limit": 1})
+
+    assert response.status_code == 200
+    assert response.json()["doctors_limit"] == 1
 
 
 async def test_a_deleted_or_missing_subscription_cannot_be_updated(api: Api):
@@ -482,7 +693,7 @@ async def test_without_the_update_permission_nothing_changes(api: Api):
     assert (await api.fetch_all("SELECT name FROM subscriptions")) == [("Pro",)]
 
 
-# --- US6: change the status ---
+# --- US6: change the status (modules, prices and limits are untouched) ---
 
 
 def status_url(subscription_id: int) -> str:
@@ -499,6 +710,24 @@ async def test_the_status_goes_active_inactive_blocked_active_and_the_catalog_sh
         assert response.json()["status"] == {"id": status_id, "name": name}
         listed = (await api.client.get(URL)).json()
         assert [s["status"]["id"] for s in listed] == [status_id]
+
+
+async def test_changing_the_status_keeps_the_modules_prices_and_limits_unchanged(api: Api):
+    subscription_id = await api.insert(
+        name="Pro",
+        monthly_price="1299",
+        annual_price="12990",
+        module_keys=["patients", "scheduling"],
+        consulting_rooms_limit=2,
+    )
+    before = (await api.client.get(f"{URL}/{subscription_id}")).json()
+
+    after = (
+        await api.client.patch(status_url(subscription_id), json={"status_id": 2})
+    ).json()
+
+    for field in ("monthly_price", "annual_price", "module_keys", "consulting_rooms_limit"):
+        assert after[field] == before[field], field
 
 
 async def test_asking_for_the_status_it_already_has_is_a_conflict(api: Api):
@@ -615,9 +844,23 @@ async def test_after_deleting_the_name_can_be_used_again(api: Api):
     subscription_id = await api.insert(name="Pro")
     await api.client.delete(f"{URL}/{subscription_id}")
 
-    response = await api.client.post(URL, json={"name": "Pro", "monthly_price": 1})
+    response = await api.client.post(URL, json=minimal_body("Pro", 1))
 
     assert response.status_code == 201
+
+
+async def test_deleting_does_not_touch_modules_prices_or_limits(api: Api):
+    subscription_id = await api.insert(
+        name="Pro", module_keys=["patients", "finance", "billing"], consulting_rooms_limit=4
+    )
+
+    await api.client.delete(f"{URL}/{subscription_id}")
+
+    row = await api.fetch_all(
+        "SELECT module_keys, consulting_rooms_limit FROM subscriptions WHERE id = :id",
+        id=subscription_id,
+    )
+    assert row == [(["billing", "finance", "patients"], 4)]
 
 
 async def test_a_subscription_with_clinics_cannot_be_deleted(api: Api):
