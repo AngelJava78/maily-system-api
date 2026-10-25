@@ -30,7 +30,13 @@ services:
 
   # API REST: `docker compose up -d api` (aprovisiona el esquema antes con `migrate`).
   api:
-    build: .
+    # El commit y la fecha del build se pasan a la imagen (`/info` los publica); sin ellos valen
+    # `unknown`. No se repiten en `environment`: taparían el valor que la imagen lleva.
+    build:
+      context: .
+      args:
+        APP_COMMIT_SHA: ${APP_COMMIT_SHA:-}
+        APP_BUILD_DATE: ${APP_BUILD_DATE:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -45,6 +51,24 @@ services:
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
       # Clínicas recientes del dashboard cuando no se envía `limit`: 3, 5 o 10 (vacía = 5).
       DASHBOARD_RECENT_CLINICS_LIMIT: ${DASHBOARD_RECENT_CLINICS_LIMIT:-}
+      # Salud de los servicios (spec 005). Todas opcionales: vacía = valor por defecto.
+      # Tiempo máximo, en segundos, de cada llamada a un componente monitoreado (1 a 10; 3).
+      HEALTH_CHECK_TIMEOUT_SECONDS: ${HEALTH_CHECK_TIMEOUT_SECONDS:-}
+      # Segundos que se reutiliza el resultado de salud (0 a 300; 15).
+      HEALTH_CACHE_SECONDS: ${HEALTH_CACHE_SECONDS:-}
+      # Tiempo máximo, en segundos, de /health/ready (1 a 10; 2): menor que el de los chequeos.
+      HEALTH_READY_TIMEOUT_SECONDS: ${HEALTH_READY_TIMEOUT_SECONDS:-}
+      # Hosts a los que puede llamar la salud, separados por comas; un sufijo lleva punto inicial
+      # (.maily.internal). Sin lista, no se puede registrar ningún componente.
+      HEALTH_ALLOWED_HOSTS: ${HEALTH_ALLOWED_HOSTS:-}
+      # Horario de la base de datos (las cuatro juntas o ninguna): fuera de él, una base que no
+      # responde se informa como «detenida por horario», no como caída.
+      DATABASE_SCHEDULE_TIMEZONE: ${DATABASE_SCHEDULE_TIMEZONE:-}
+      DATABASE_SCHEDULE_DAYS: ${DATABASE_SCHEDULE_DAYS:-}
+      DATABASE_SCHEDULE_START: ${DATABASE_SCHEDULE_START:-}
+      DATABASE_SCHEDULE_END: ${DATABASE_SCHEDULE_END:-}
+      # Entorno del despliegue que publica /info (staging, production…).
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-}
     command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "${API_PORT:-8010}:8000"

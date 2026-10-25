@@ -1,6 +1,6 @@
 [project]
 name = "mailysoft-system-api"
-version = "0.1.0"
+version = "2.0.0"
 description = "Servicio REST de MailySoft (suscripciones)"
 requires-python = ">=3.14"
 dependencies = [
@@ -10,6 +10,7 @@ dependencies = [
     "httpx>=0.28",
     "pydantic-settings>=2.6",
     "sqlalchemy[asyncio]>=2.0,<2.1",
+    "tzdata>=2026.5",
     "uvicorn>=0.30",
 ]
 

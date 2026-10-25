@@ -1,0 +1,698 @@
+openapi: 3.1.0
+info:
+  title: MailySoft System API — Salud de servicios
+  version: 2.0.0
+  description: |
+    Contrato de las diez operaciones de la spec 005-health-monitoring. Es **un fragmento** del contrato
+    publicado de la API: la aplicación lo genera en `/openapi.json` junto con las suscripciones (spec 004)
+    y el dashboard (spec 003), cuyos contratos no cambian. La versión publicada sigue en `2.0.0`.
+
+    - **Contrato de salud de Maily v1** (`/health/live`, `/health/ready`, `/info`): público, en la raíz y
+      fuera de `/api/v1`; lo consultan Kubernetes, Docker y el agregador. Común con mailySoft-usuarios 016
+      y mailySoft-pacientes 008.
+    - **Estado público** (`/health/status`): público, sin token; vista mínima del resultado de salud para
+      quien no puede comprobar su acceso. No es una *probe*.
+    - **Consulta de salud** (`/api/v1/health`) y **registro de componentes**
+      (`/api/v1/monitored-components`): exigen token y un permiso `health:*`, que decide el API de usuarios
+      en cada petición, antes de validar la solicitud.
+    - Las respuestas de salud no se guardan en caché (`Cache-Control: no-store`) y nunca incluyen
+      direcciones, hosts, IP, cuerpos de otros servicios, mensajes de excepción ni secretos. `base_url` solo
+      aparece en las respuestas del registro.
+servers:
+  - url: http://localhost:8010
+    description: Entorno local (docker compose)
+tags:
+  - name: Salud
+    description: |
+      Salud de los servicios de Maily: contrato de salud v1 (público), estado público de la plataforma,
+      consulta agregada de salud y registro de componentes monitoreados.
+paths:
+  /health/live:
+    get:
+      tags: [Salud]
+      operationId: get_health_live
+      summary: Comprobar que el proceso está vivo
+      description: |
+        Responde 200 mientras el proceso atienda HTTP, sin consultar ninguna dependencia (ni la base de datos
+        ni otros APIs). Sirve como *liveness* y *startup probe*. Ruta pública: no exige token.
+      responses:
+        '200':
+          description: El proceso está vivo.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LiveRead' }
+              example: { status: ok }
+  /health/ready:
+    get:
+      tags: [Salud]
+      operationId: get_health_ready
+      summary: Comprobar que el servicio puede atender
+      description: |
+        Comprueba **solo** la base de datos con una consulta trivial, con un tiempo máximo de
+        `HEALTH_READY_TIMEOUT_SECONDS` (2 s por defecto). Responde 200 si responde y 503 si no, con el mismo
+        cuerpo. No consulta otros servicios ni tiene en cuenta el horario de la base de datos: mientras esté
+        detenida, el orquestador deja de enviarle tráfico. Ruta pública: no exige token.
+      responses:
+        '200':
+          description: La base de datos respondió.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReadyRead' }
+              example:
+                status: ok
+                checks: [{ name: database, status: ok, latency_ms: 12, error: null }]
+        '503':
+          description: |
+            La base de datos no respondió a tiempo, rechazó la conexión o falló de otra forma. No es un error
+            de la API: es la respuesta de disponibilidad del contrato v1, con el mismo esquema que el 200.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReadyRead' }
+              examples:
+                tiempo_agotado:
+                  value:
+                    status: unavailable
+                    checks: [{ name: database, status: error, latency_ms: 2001, error: timeout }]
+                conexion_rechazada:
+                  value:
+                    status: unavailable
+                    checks: [{ name: database, status: error, latency_ms: 35, error: connection_error }]
+  /info:
+    get:
+      tags: [Salud]
+      operationId: get_info
+      summary: Consultar qué build corre
+      description: |
+        Identifica el build: nombre del servicio, versión (la misma del documento OpenAPI), commit, fecha de
+        build y entorno. Los tres últimos salen de `APP_COMMIT_SHA`, `APP_BUILD_DATE` y `APP_ENVIRONMENT`; si
+        no se configuraron valen `unknown`. Ruta pública: no exige token.
+      responses:
+        '200':
+          description: Identificación del build.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InfoRead' }
+              examples:
+                con_build:
+                  value:
+                    service: maily-system-api
+                    version: 2.0.0
+                    commit: 3c81089d2f6a4b7e9a0c1d2e3f4a5b6c7d8e9f01
+                    build_date: '2026-10-24T16:05:00Z'
+                    environment: staging
+                sin_variables:
+                  value:
+                    service: maily-system-api
+                    version: 2.0.0
+                    commit: unknown
+                    build_date: unknown
+                    environment: unknown
+  /health/status:
+    get:
+      tags: [Salud]
+      operationId: get_health_status
+      summary: Consultar el estado público de la plataforma
+      description: |
+        Estado mínimo de la plataforma para quien no puede comprobar su acceso (por ejemplo, el Backoffice
+        de noche, con la base de datos detenida por horario). Sale del **mismo resultado** y de la misma
+        caché que la consulta de salud, pero solo trae el estado global, cuándo se comprobó y, de cada
+        componente, su código, su nombre, su tipo, su estado y, si es la base de datos detenida por horario,
+        cuándo vuelve a encenderse. Nunca publica versiones, commits, fechas de build, entornos, direcciones,
+        latencias, chequeos ni códigos de error.
+
+        - Responde **siempre 200** mientras el proceso atienda HTTP, aunque la base de datos esté detenida o
+          caída, el registro no pueda leerse o el API de usuarios no responda.
+        - No autoriza la petición: si llega una cabecera `Authorization`, se ignora (no se valida ni se
+          reenvía).
+        - Reutiliza el último resultado mientras no hayan pasado `max(HEALTH_CACHE_SECONDS, 15)` segundos desde
+          que terminó; después espera o lanza una agregación (a lo más una por proceso a la vez).
+        - **No es una *probe***: no debe usarse para *liveness* ni *readiness*.
+
+        Ruta pública: no exige token.
+      responses:
+        '200':
+          description: Estado público de la plataforma.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicStatusRead' }
+              example:
+                status: degraded
+                checked_at: '2026-10-24T03:15:00Z'
+                components:
+                  - { code: maily-system-api, name: MailySoft System API, kind: service, status: degraded, next_start_at: null }
+                  - { code: database, name: Base de datos, kind: database, status: stopped, next_start_at: '2026-10-26T14:00:00Z' }
+                  - { code: mailysoft-usuarios, name: MailySoft Usuarios, kind: service, status: degraded, next_start_at: null }
+                  - { code: mailysoft, name: MailySoft, kind: frontend, status: up, next_start_at: null }
+  /api/v1/health:
+    get:
+      tags: [Salud]
+      operationId: get_health
+      summary: Consultar la salud de todos los componentes
+      description: |
+        Devuelve, en una sola respuesta, el estado global y el de cada componente: primero los dos
+        integrados (`maily-system-api` y `database`) y después los registrados habilitados, por
+        `sort_order` y `code`. Concedido el acceso responde **siempre 200**: un componente caído se informa
+        en su propio elemento. `registry_available` es `false` si el registro no pudo leerse en esta
+        agregación (se usan los componentes de la última lectura buena, o solo los integrados).
+
+        - Estado global: `down` si algún componente está `down`; si no, `degraded` si alguno está
+          `degraded`, `stopped` o `unknown`; si no, `ok`.
+        - El resultado se comparte entre consultas durante `HEALTH_CACHE_SECONDS` (15 por defecto) y
+          conserva sus `checked_at`. No hay forma de saltarse la caché.
+        - La respuesta no se guarda en caché (`Cache-Control: no-store`) y nunca trae direcciones ni cuerpos
+          de otros servicios.
+
+        Permiso requerido: `health:read`.
+      x-required-permission: health:read
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Salud de la plataforma.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthRead' }
+              example:
+                status: down
+                checked_at: '2026-10-24T17:40:03Z'
+                registry_available: true
+                components:
+                  - code: maily-system-api
+                    name: MailySoft System API
+                    kind: service
+                    status: up
+                    latency_ms: 4
+                    checked_at: '2026-10-24T17:40:00Z'
+                    version: 2.0.0
+                    commit: 3c81089d2f6a4b7e9a0c1d2e3f4a5b6c7d8e9f01
+                    build_date: '2026-10-24T16:05:00Z'
+                    environment: staging
+                    checks: [{ name: database, status: ok, latency_ms: 4, error: null }]
+                    error: null
+                    next_start_at: null
+                  - code: database
+                    name: Base de datos
+                    kind: database
+                    status: up
+                    latency_ms: 4
+                    checked_at: '2026-10-24T17:40:00Z'
+                    version: unknown
+                    commit: unknown
+                    build_date: unknown
+                    environment: unknown
+                    checks: []
+                    error: null
+                    next_start_at: null
+                  - code: mailysoft-pacientes
+                    name: MailySoft Pacientes
+                    kind: service
+                    status: down
+                    latency_ms: 3001
+                    checked_at: '2026-10-24T17:40:03Z'
+                    version: unknown
+                    commit: unknown
+                    build_date: unknown
+                    environment: unknown
+                    checks: []
+                    error: timeout
+                    next_start_at: null
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/AuthorizationUnavailable' }
+  /api/v1/monitored-components:
+    get:
+      tags: [Salud]
+      operationId: list_monitored_components
+      summary: Listar los componentes registrados (sin paginar)
+      description: |
+        Devuelve todos los componentes no eliminados, habilitados y deshabilitados, como una lista sin
+        envoltorio y **sin paginar** (catálogo acotado: máximo esperado de 50), ordenada por `sort_order` y,
+        a igualdad, por `code`. Los dos componentes integrados no aparecen: no se registran.
+
+        Permiso requerido: `health:read`.
+      x-required-permission: health:read
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Componentes registrados.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/MonitoredComponentRead' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/AuthorizationUnavailable' }
+    post:
+      tags: [Salud]
+      operationId: create_monitored_component
+      summary: Registrar un componente
+      description: |
+        Registra un servicio o un frontend. El registro empieza vacío; el componente aparece en la siguiente
+        consulta de salud sin redesplegar.
+
+        - `code` es único entre los no eliminados; `maily-system-api` y `database` están reservados (409).
+        - `base_url`: `http` o `https`, con host y sin usuario, contraseña, consulta ni fragmento; su host debe
+          estar en la lista permitida del servicio (`HEALTH_ALLOWED_HOSTS`). Se guarda sin barra final.
+        - Un `service` toma por defecto `/health/live`, `/health/ready` e `/info`. Un `frontend` necesita
+          `live_path` (su ruta de salud), no lleva `ready_path` e `info_path` es opcional.
+        - Se rechaza toda la solicitud si trae un campo no reconocido.
+
+        Permiso requerido: `health:write`.
+      x-required-permission: health:write
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MonitoredComponentCreate' }
+            examples:
+              servicio:
+                summary: Un servicio con las rutas del contrato v1
+                value: { code: mailysoft-usuarios, name: MailySoft Usuarios, kind: service, base_url: 'http://mailysoft-usuarios:8000', sort_order: 10 }
+              frontend:
+                summary: MailySoft (servido por Maily360)
+                value: { code: mailysoft, name: MailySoft, kind: frontend, base_url: 'https://maily360-production.up.railway.app', live_path: /healthz/, sort_order: 30 }
+      responses:
+        '201':
+          description: Componente registrado.
+          headers:
+            Location:
+              description: Ruta del componente registrado.
+              schema: { type: string }
+              example: /api/v1/monitored-components/7d3c2f0e-9a1b-4c5d-8e6f-0a1b2c3d4e5f
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MonitoredComponentRead' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/CodeConflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/AuthorizationUnavailable' }
+  /api/v1/monitored-components/{component_id}:
+    parameters:
+      - name: component_id
+        in: path
+        required: true
+        description: Identificador del componente (UUID).
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Salud]
+      operationId: get_monitored_component
+      summary: Consultar un componente registrado
+      description: |
+        Devuelve el componente con ese identificador. Si no existe o está eliminado responde «no se
+        encuentra».
+
+        Permiso requerido: `health:read`.
+      x-required-permission: health:read
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Componente encontrado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MonitoredComponentRead' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/AuthorizationUnavailable' }
+    patch:
+      tags: [Salud]
+      operationId: update_monitored_component
+      summary: Modificar, habilitar o deshabilitar un componente
+      description: |
+        Cambia solo los campos enviados (al menos uno) y valida el componente resultante con las mismas
+        reglas que un alta: por ejemplo, pasar `kind` a `frontend` exige enviar `ready_path` nula. Un cambio
+        de `base_url` vuelve a comprobar la lista permitida. No se pueden cambiar el identificador ni las
+        fechas. Deshabilitado, el componente sigue en el registro pero no se consulta ni aparece en la
+        salud.
+
+        Permiso requerido: `health:update`.
+      x-required-permission: health:update
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MonitoredComponentUpdate' }
+            examples:
+              deshabilitar: { summary: Dejar de consultarlo, value: { enabled: false } }
+              mover: { summary: Cambiar el orden, value: { sort_order: 5 } }
+      responses:
+        '200':
+          description: Componente modificado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MonitoredComponentRead' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CodeConflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/AuthorizationUnavailable' }
+    delete:
+      tags: [Salud]
+      operationId: delete_monitored_component
+      summary: Eliminar un componente (baja lógica)
+      description: |
+        Marca el componente como eliminado: su fila se conserva, deja de aparecer en el registro y en la
+        salud, consultarlo después responde «no se encuentra» y su `code` queda libre para un componente
+        nuevo (con otro identificador).
+
+        Permiso requerido: `health:delete`.
+      x-required-permission: health:delete
+      security:
+        - BearerAuth: []
+      responses:
+        '204':
+          description: Componente eliminado (sin contenido).
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/AuthorizationUnavailable' }
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de acceso emitido por Auth0. Este servicio no lo verifica, lo reenvía al API de usuarios.
+  headers:
+    NoStore:
+      description: La respuesta no debe guardarse en caché.
+      schema: { type: string }
+      example: no-store
+  schemas:
+    LiveRead:
+      type: object
+      description: El proceso está vivo.
+      required: [status]
+      properties:
+        status: { type: string, const: ok }
+    CheckRead:
+      type: object
+      description: Un chequeo de disponibilidad (forma del contrato v1).
+      required: [name, status, latency_ms, error]
+      properties:
+        name: { type: string, maxLength: 64, examples: [database] }
+        status: { type: string, enum: [ok, error] }
+        latency_ms:
+          anyOf: [{ type: integer, minimum: 0 }, { type: 'null' }]
+          description: Duración del chequeo en milisegundos, también si falló.
+        error:
+          anyOf:
+            - { type: string, enum: [timeout, connection_error, not_configured, unexpected_error] }
+            - { type: 'null' }
+    ReadyRead:
+      type: object
+      description: Disponibilidad del servicio (contrato v1); el mismo esquema en 200 y en 503.
+      required: [status, checks]
+      properties:
+        status: { type: string, enum: [ok, unavailable] }
+        checks:
+          type: array
+          items: { $ref: '#/components/schemas/CheckRead' }
+    InfoRead:
+      type: object
+      description: Identificación del build (contrato v1).
+      required: [service, version, commit, build_date, environment]
+      properties:
+        service: { type: string, const: maily-system-api }
+        version: { type: string, description: Versión semántica; la misma del documento OpenAPI., examples: [2.0.0] }
+        commit: { type: string, description: 'SHA del commit (7 a 64 hexadecimales) o `unknown`.' }
+        build_date: { type: string, description: 'Fecha y hora del build en ISO 8601 UTC (con `Z`) o `unknown`.' }
+        environment: { type: string, description: 'Entorno del despliegue o `unknown`.' }
+    ComponentKind:
+      type: string
+      enum: [service, database, frontend]
+    ComponentStatus:
+      type: string
+      enum: [up, degraded, down, stopped, unknown]
+      description: |
+        `up` sano; `degraded` vivo pero no disponible (o la base de datos detenida por horario explica su
+        estado); `down` caído; `stopped` la base de datos detenida por horario; `unknown` no se pudo saber
+        (por ejemplo, su host ya no está permitido).
+    ComponentErrorCode:
+      type: string
+      enum: [timeout, connection_error, dns_error, host_not_allowed, unexpected_status, invalid_response, response_too_large, not_ready, unexpected_error]
+      description: Lista cerrada (contracts/error-catalog.md, sección 2). Agregar un código es compatible.
+    ComponentHealthRead:
+      type: object
+      description: Salud de un componente. Nunca incluye su dirección.
+      required: [code, name, kind, status, latency_ms, checked_at, version, commit, build_date, environment, checks, error, next_start_at]
+      properties:
+        code: { type: string, examples: [mailysoft-usuarios] }
+        name: { type: string, examples: [MailySoft Usuarios] }
+        kind: { $ref: '#/components/schemas/ComponentKind' }
+        status: { $ref: '#/components/schemas/ComponentStatus' }
+        latency_ms:
+          anyOf: [{ type: integer, minimum: 0 }, { type: 'null' }]
+          description: Duración del chequeo principal, también si falló; `null` si no se intentó.
+        checked_at: { type: string, format: date-time, description: Cuándo terminó su chequeo (UTC). }
+        version: { type: string, description: Texto (hasta 64 caracteres) o `unknown`. }
+        commit: { type: string, description: Texto (hasta 64 caracteres) o `unknown`. }
+        build_date: { type: string, description: 'ISO 8601 UTC o `unknown`.' }
+        environment: { type: string, description: Texto (hasta 64 caracteres) o `unknown`. }
+        checks:
+          type: array
+          maxItems: 20
+          items: { $ref: '#/components/schemas/CheckRead' }
+        error:
+          anyOf: [{ $ref: '#/components/schemas/ComponentErrorCode' }, { type: 'null' }]
+        next_start_at:
+          anyOf: [{ type: string, format: date-time }, { type: 'null' }]
+          description: |
+            Próximo encendido programado (UTC). Solo tiene valor en `database` cuando está `stopped` y el
+            horario está configurado; `null` en cualquier otro caso.
+    HealthRead:
+      type: object
+      description: Resultado de salud de la plataforma.
+      required: [status, checked_at, registry_available, components]
+      properties:
+        status: { type: string, enum: [ok, degraded, down] }
+        checked_at: { type: string, format: date-time, description: Cuándo terminó la agregación (UTC). }
+        registry_available:
+          type: boolean
+          description: '`false` si el registro no pudo leerse en esta agregación; vacío no es lo mismo que no disponible.'
+        components:
+          type: array
+          items: { $ref: '#/components/schemas/ComponentHealthRead' }
+    PublicComponentRead:
+      type: object
+      description: Un componente en el estado público. Lista cerrada de campos (FR-047).
+      additionalProperties: false
+      required: [code, name, kind, status, next_start_at]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        kind: { $ref: '#/components/schemas/ComponentKind' }
+        status: { $ref: '#/components/schemas/ComponentStatus' }
+        next_start_at:
+          anyOf: [{ type: string, format: date-time }, { type: 'null' }]
+    PublicStatusRead:
+      type: object
+      description: Estado público de la plataforma. Lista cerrada de campos (FR-047).
+      additionalProperties: false
+      required: [status, checked_at, components]
+      properties:
+        status: { type: string, enum: [ok, degraded, down] }
+        checked_at: { type: string, format: date-time }
+        components:
+          type: array
+          items: { $ref: '#/components/schemas/PublicComponentRead' }
+    RegisteredKind:
+      type: string
+      enum: [service, frontend]
+    Path:
+      type: string
+      maxLength: 200
+      pattern: "^/[A-Za-z0-9\\-._~!$&'()*+,;=:@/]*$"
+      description: |
+        Empieza con una sola `/`; sin `//`, sin segmentos `.` o `..`, sin `\`, `?`, `#`, `%`, espacios ni
+        caracteres de control; hasta 200 caracteres.
+    MonitoredComponentCreate:
+      type: object
+      additionalProperties: false
+      required: [code, name, kind, base_url]
+      properties:
+        code: { type: string, minLength: 2, maxLength: 50, pattern: '^[a-z][a-z0-9]*(-[a-z0-9]+)*$' }
+        name: { type: string, minLength: 1, maxLength: 100 }
+        kind: { $ref: '#/components/schemas/RegisteredKind' }
+        base_url: { type: string, maxLength: 255, examples: ['http://mailysoft-usuarios:8000'] }
+        live_path: { anyOf: [{ $ref: '#/components/schemas/Path' }, { type: 'null' }], description: 'Servicio: `/health/live` por defecto. Frontend: obligatoria.' }
+        ready_path: { anyOf: [{ $ref: '#/components/schemas/Path' }, { type: 'null' }], description: 'Servicio: `/health/ready` por defecto. Frontend: debe ser nula.' }
+        info_path: { anyOf: [{ $ref: '#/components/schemas/Path' }, { type: 'null' }], description: 'Servicio: `/info` por defecto. Frontend: opcional.' }
+        enabled: { type: boolean, default: true }
+        sort_order: { type: integer, minimum: 0, maximum: 9999, default: 0 }
+    MonitoredComponentUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: Campos a modificar (al menos uno). El componente resultante se valida como un alta.
+      properties:
+        code: { type: string, minLength: 2, maxLength: 50, pattern: '^[a-z][a-z0-9]*(-[a-z0-9]+)*$' }
+        name: { type: string, minLength: 1, maxLength: 100 }
+        kind: { $ref: '#/components/schemas/RegisteredKind' }
+        base_url: { type: string, maxLength: 255 }
+        live_path: { anyOf: [{ $ref: '#/components/schemas/Path' }, { type: 'null' }] }
+        ready_path: { anyOf: [{ $ref: '#/components/schemas/Path' }, { type: 'null' }] }
+        info_path: { anyOf: [{ $ref: '#/components/schemas/Path' }, { type: 'null' }] }
+        enabled: { type: boolean }
+        sort_order: { type: integer, minimum: 0, maximum: 9999 }
+    MonitoredComponentRead:
+      type: object
+      description: Un componente registrado. Es el único lugar de la API donde se ve `base_url`.
+      required: [id, code, name, kind, base_url, live_path, ready_path, info_path, enabled, sort_order, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        kind: { $ref: '#/components/schemas/RegisteredKind' }
+        base_url: { type: string }
+        live_path: { type: string }
+        ready_path: { anyOf: [{ type: string }, { type: 'null' }] }
+        info_path: { anyOf: [{ type: string }, { type: 'null' }] }
+        enabled: { type: boolean }
+        sort_order: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      example:
+        id: 7d3c2f0e-9a1b-4c5d-8e6f-0a1b2c3d4e5f
+        code: mailysoft-usuarios
+        name: MailySoft Usuarios
+        kind: service
+        base_url: 'http://mailysoft-usuarios:8000'
+        live_path: /health/live
+        ready_path: /health/ready
+        info_path: /info
+        enabled: true
+        sort_order: 10
+        created_at: '2026-10-24T17:00:00Z'
+        updated_at: '2026-10-24T17:00:00Z'
+    ErrorCode:
+      type: string
+      description: Los 17 códigos de la API (15 vigentes y 2 de esta feature).
+      enum:
+        - unauthenticated
+        - token_expired
+        - invalid_token
+        - permission_denied
+        - authorization_unavailable
+        - subscription_not_found
+        - subscription_name_already_exists
+        - subscription_status_unchanged
+        - subscription_has_clinics
+        - clinics_check_unavailable
+        - subscription_module_not_found
+        - subscription_module_prerequisite_missing
+        - module_check_unavailable
+        - validation_error
+        - internal_error
+        - monitored_component_not_found
+        - monitored_component_code_already_exists
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field: { type: string }
+        message: { type: string }
+    ErrorResponse:
+      type: object
+      description: Formato uniforme de todos los errores.
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        message: { type: string }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/FieldError' }
+  responses:
+    Unauthorized:
+      description: No hay token, venció o no es válido. No se ejecuta ni se consulta nada.
+      headers:
+        WWW-Authenticate:
+          description: Esquema de autenticación esperado.
+          schema: { type: string }
+          example: Bearer
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { code: unauthenticated, message: Debe iniciar sesión para usar esta operación. }
+    Forbidden:
+      description: La persona no tiene el permiso de la operación. No se revela si el componente existe ni si los datos eran válidos.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            code: permission_denied
+            message: 'No tiene permiso para realizar esta operación. Permiso requerido: health:write.'
+    AuthorizationUnavailable:
+      description: El API de usuarios no responde o respondió algo inesperado (falla cerrada). No se consulta ningún componente.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { code: authorization_unavailable, message: No se pudo verificar su permiso por ahora. Inténtelo de nuevo más tarde. }
+    NotFound:
+      description: El componente no existe o está eliminado.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            code: monitored_component_not_found
+            message: No se encontró el componente monitoreado con el identificador 7d3c2f0e-9a1b-4c5d-8e6f-0a1b2c3d4e5f.
+    CodeConflict:
+      description: Otro componente no eliminado usa el código, o el código está reservado (`maily-system-api`, `database`). No cambia nada.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { code: monitored_component_code_already_exists, message: Ya existe un componente monitoreado con el código «database». }
+    ValidationError:
+      description: |
+        Algún dato no es válido: campos fuera de las reglas, campos no reconocidos o no modificables,
+        modificación sin datos, identificador que no es un UUID, host de `base_url` fuera de la lista
+        permitida o una combinación inválida para el `kind`. Los mensajes no repiten la dirección recibida
+        ni revelan la lista.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          examples:
+            host_no_permitido:
+              value:
+                code: validation_error
+                message: Hay datos no válidos en la solicitud.
+                errors: [{ field: base_url, message: El host de la dirección base no está entre los hosts permitidos por el servicio. }]
+            frontend_con_ready_path:
+              value:
+                code: validation_error
+                message: Hay datos no válidos en la solicitud.
+                errors: [{ field: ready_path, message: 'Un componente de tipo «frontend» no lleva ruta de disponibilidad: envíela nula o no la envíe.' }]
+    InternalError:
+      description: Fallo inesperado (por ejemplo, la base de datos no está disponible). No cambia nada y no se dan detalles técnicos.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { code: internal_error, message: Ocurrió un error inesperado. Inténtelo de nuevo más tarde. }

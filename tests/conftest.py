@@ -198,6 +198,27 @@ def clinics_api_client(clinics_stub: httpx.AsyncClient):
     return ClinicsApiClient(clinics_stub, CLINICS_BASE_URL, 5.0)
 
 
+# --- Simulation of the monitored components (tests/stubs/components, spec 005) ---
+
+
+@pytest.fixture
+def components_stub_app():
+    from tests.stubs.components.app import create_stub_app
+
+    return create_stub_app()
+
+
+@pytest_asyncio.fixture
+async def components_stub(components_stub_app) -> AsyncIterator[httpx.AsyncClient]:
+    """A client of the simulation for its `/__test__/` surface."""
+    from tests.health_support import COMPONENTS_HOST
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=components_stub_app), base_url=f"http://{COMPONENTS_HOST}"
+    ) as client:
+        yield client
+
+
 # --- The application under test (US1 onwards) ---
 
 
@@ -207,17 +228,24 @@ async def api(
     migrated_db: None,
     users_stub: httpx.AsyncClient,
     clinics_stub: httpx.AsyncClient,
+    components_stub_app,
 ) -> AsyncIterator[Api]:
     """The real application over HTTP, talking to the real PostgreSQL and to the two simulations.
 
     The clients of the other APIs are the real ones (their translation of answers and failures is
-    part of what is tested); only their transport is replaced by the in-memory simulations.
+    part of what is tested); only their transport is replaced by the in-memory simulations. The
+    health checks (spec 005) go to the simulation of components.
     """
     from src.database import get_session
     from src.dependencies import get_clinics_api_client, get_users_api_client
     from src.integrations.clinics_api import ClinicsApiClient
     from src.integrations.users_api import UsersApiClient
     from src.main import create_app
+    from tests.health_support import (
+        TEST_HEALTH_CONFIG,
+        HealthConfigHolder,
+        install_health_overrides,
+    )
 
     app = create_app()
     timeouts = {"users": 5.0, "clinics": 5.0}
@@ -235,6 +263,9 @@ async def api(
     app.dependency_overrides[get_users_api_client] = users_client
     app.dependency_overrides[get_clinics_api_client] = clinics_client
     app.dependency_overrides[get_session] = session
+    probe_client = install_health_overrides(
+        app, components_stub_app, HealthConfigHolder(TEST_HEALTH_CONFIG)
+    )
 
     await grant(users_stub)  # TEST_TOKEN with the four permissions
     transport = httpx.ASGITransport(app=app)
@@ -245,8 +276,69 @@ async def api(
             headers={"Authorization": f"Bearer {TEST_TOKEN}"},
         ) as client,
         httpx.AsyncClient(transport=transport, base_url="http://api.test") as anonymous,
+        probe_client,
     ):
         yield Api(client, anonymous, users_stub, clinics_stub, engine, timeouts)
 
     async with engine.begin() as connection:
-        await connection.execute(text("TRUNCATE subscriptions RESTART IDENTITY CASCADE"))
+        await connection.execute(
+            text("TRUNCATE subscriptions, monitored_components RESTART IDENTITY CASCADE")
+        )
+
+
+@pytest_asyncio.fixture
+async def health_api(
+    engine: AsyncEngine,
+    migrated_db: None,
+    users_stub: httpx.AsyncClient,
+    components_stub_app,
+    components_stub: httpx.AsyncClient,
+) -> AsyncIterator["HealthApi"]:
+    """The real application for the health tests (spec 005): real PostgreSQL, simulated users API
+    and components, a `FakeClock` and a configuration that each test may change.
+
+    `TEST_TOKEN` starts with the four `health:*` permissions.
+    """
+    from src.database import get_session
+    from src.dependencies import get_users_api_client
+    from src.integrations.users_api import UsersApiClient
+    from src.main import create_app
+    from tests.health_support import (
+        HEALTH_PERMISSIONS,
+        TEST_HEALTH_CONFIG,
+        FakeClock,
+        HealthApi,
+        HealthConfigHolder,
+        install_health_overrides,
+    )
+
+    app = create_app()
+
+    async def users_client() -> UsersApiClient:
+        return UsersApiClient(users_stub, USERS_BASE_URL, 5.0)
+
+    async def session() -> AsyncIterator[AsyncSession]:
+        async with AsyncSession(engine, expire_on_commit=False) as new_session:
+            yield new_session
+
+    app.dependency_overrides[get_users_api_client] = users_client
+    app.dependency_overrides[get_session] = session
+    clock = FakeClock()
+    holder = HealthConfigHolder(TEST_HEALTH_CONFIG)
+    probe_client = install_health_overrides(app, components_stub_app, holder, clock)
+
+    await grant(users_stub, TEST_TOKEN, HEALTH_PERMISSIONS)
+    transport = httpx.ASGITransport(app=app)
+    async with (
+        httpx.AsyncClient(
+            transport=transport,
+            base_url="http://api.test",
+            headers={"Authorization": f"Bearer {TEST_TOKEN}"},
+        ) as client,
+        httpx.AsyncClient(transport=transport, base_url="http://api.test") as anonymous,
+        probe_client,
+    ):
+        yield HealthApi(app, client, anonymous, users_stub, components_stub, engine, clock, holder)
+
+    async with engine.begin() as connection:
+        await connection.execute(text("TRUNCATE monitored_components"))

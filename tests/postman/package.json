@@ -5,7 +5,8 @@
   "scripts": {
     "e2e": "newman run collections/MailySoft-System-Suscripciones.postman_collection.json -e environments/e2e.postman_environment.json -r cli,junit --reporter-junit-export reports/junit.xml --timeout-request 15000",
     "e2e:dashboard": "newman run collections/MailySoft-System-Dashboard.postman_collection.json -e environments/e2e.postman_environment.json -r cli,junit --reporter-junit-export reports/junit-dashboard.xml --timeout-request 15000",
-    "e2e:all": "npm run e2e && npm run e2e:dashboard"
+    "e2e:health": "newman run collections/MailySoft-System-Salud.postman_collection.json -e environments/e2e.postman_environment.json -r cli,junit --reporter-junit-export reports/junit-health.xml --timeout-request 15000",
+    "e2e:all": "npm run e2e && npm run e2e:dashboard && npm run e2e:health"
   },
   "devDependencies": {
     "newman": "6.2.3"

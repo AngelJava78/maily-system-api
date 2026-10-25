@@ -4,8 +4,9 @@ This module imports no layer. The codes are English and stable (consumers rely o
 messages are Spanish and written for non-technical people (FR-021). The validation messages are
 organised per resource (the first path segment after /api/v1/) so a feature never touches the
 texts of another one. The texts come from `specs/004-correct-subscriptions-api/contracts/error-catalog.md`
-(the complete catalog, superseding `specs/001-subscriptions-api/contracts/error-catalog.md`) and
-must not be paraphrased.
+(the complete catalog, superseding `specs/001-subscriptions-api/contracts/error-catalog.md`) and, for
+the registry of monitored components, from `specs/005-health-monitoring/contracts/error-catalog.md`;
+they must not be paraphrased.
 """
 
 from enum import StrEnum
@@ -27,6 +28,8 @@ class ErrorCode(StrEnum):
     MODULE_CHECK_UNAVAILABLE = "module_check_unavailable"
     VALIDATION_ERROR = "validation_error"
     INTERNAL_ERROR = "internal_error"
+    MONITORED_COMPONENT_NOT_FOUND = "monitored_component_not_found"
+    MONITORED_COMPONENT_CODE_ALREADY_EXISTS = "monitored_component_code_already_exists"
 
 
 # --- Access control ---
@@ -67,6 +70,15 @@ SUBSCRIPTION_MODULE_PREREQUISITE_MISSING_MESSAGE = (
 MODULE_CHECK_UNAVAILABLE_MESSAGE = (
     "No se pudo comprobar los módulos de la suscripción por ahora. No se guardó ningún cambio; "
     "inténtelo de nuevo más tarde."
+)
+
+# --- Domain errors of the registry of monitored components (spec 005) ---
+
+MONITORED_COMPONENT_NOT_FOUND_MESSAGE = (
+    "No se encontró el componente monitoreado con el identificador {component_id}."
+)
+MONITORED_COMPONENT_CODE_ALREADY_EXISTS_MESSAGE = (
+    "Ya existe un componente monitoreado con el código «{code}»."
 )
 
 # --- Generic errors ---
@@ -131,6 +143,46 @@ DASHBOARD_LIMIT_INVALID_MESSAGE = (
     "El parámetro «limit» debe ser un número entero mayor o igual que 1."
 )
 
+# --- Validation messages of the registry of components (spec 005, contracts/error-catalog.md) ---
+
+# Raised as `ValueError` by the validators of the DTOs, and by the Service in the errors it decides
+# (the list of allowed hosts and the rules that depend on `kind`). None repeats the value that was
+# received: a `base_url` could carry credentials, and the list of allowed hosts is never revealed.
+MONITORED_COMPONENT_CODE_REQUIRED_MESSAGE = "El código del componente es obligatorio."
+MONITORED_COMPONENT_CODE_INVALID_MESSAGE = (
+    "El código debe tener de 2 a 50 caracteres entre minúsculas sin acentos, dígitos y guiones, "
+    "empezar con una letra y no terminar en guion ni tener dos guiones seguidos."
+)
+MONITORED_COMPONENT_NAME_REQUIRED_MESSAGE = "El nombre del componente es obligatorio."
+MONITORED_COMPONENT_KIND_REQUIRED_MESSAGE = "El tipo del componente es obligatorio."
+MONITORED_COMPONENT_KIND_INVALID_MESSAGE = "El tipo del componente debe ser «service» o «frontend»."
+MONITORED_COMPONENT_BASE_URL_REQUIRED_MESSAGE = "La dirección base del componente es obligatoria."
+MONITORED_COMPONENT_BASE_URL_INVALID_MESSAGE = (
+    "La dirección base debe ser una dirección http:// o https:// de hasta 255 caracteres, con un "
+    "host válido y sin usuario, contraseña, consulta (?) ni fragmento (#)."
+)
+MONITORED_COMPONENT_HOST_NOT_ALLOWED_MESSAGE = (
+    "El host de la dirección base no está entre los hosts permitidos por el servicio."
+)
+MONITORED_COMPONENT_PATH_INVALID_MESSAGE = (
+    "La ruta debe empezar con una sola «/» y tener hasta 200 caracteres, sin segmentos «.» o «..» "
+    "y sin «\\», «?», «#», «%», espacios ni caracteres de control."
+)
+MONITORED_COMPONENT_SERVICE_PATH_REQUIRED_MESSAGE = (
+    "Un componente de tipo «service» necesita esta ruta: no puede ser nula."
+)
+MONITORED_COMPONENT_FRONTEND_LIVE_PATH_REQUIRED_MESSAGE = (
+    "Un componente de tipo «frontend» necesita su ruta de salud."
+)
+MONITORED_COMPONENT_FRONTEND_READY_PATH_NOT_ALLOWED_MESSAGE = (
+    "Un componente de tipo «frontend» no lleva ruta de disponibilidad: envíela nula o no la envíe."
+)
+MONITORED_COMPONENT_ENABLED_INVALID_MESSAGE = "«enabled» debe ser verdadero o falso."
+MONITORED_COMPONENT_SORT_ORDER_INVALID_MESSAGE = "El orden debe ser un número entero de 0 a 9999."
+# The same text as in the subscriptions (contracts/error-catalog.md).
+MONITORED_COMPONENT_EMPTY_UPDATE_MESSAGE = SUBSCRIPTION_EMPTY_UPDATE_MESSAGE
+MONITORED_COMPONENT_ID_INVALID_MESSAGE = "El identificador del componente debe ser un UUID."
+
 # (field, kind) -> message. The kinds are `required`, `too_long`, `too_many`, `not_text`,
 # `not_list` and `invalid` (see `_KINDS` in `src/error_handlers.py`).
 # Messages shared by every resource; today the only resource has its own block below.
@@ -179,5 +231,19 @@ VALIDATION_MESSAGES: dict[str, dict[tuple[str, str], str]] = {
     },
     "dashboard": {
         ("limit", "invalid"): DASHBOARD_LIMIT_INVALID_MESSAGE,
+    },
+    # The native errors of Pydantic; the formats raise their own message (see above).
+    "monitored-components": {
+        ("code", "required"): MONITORED_COMPONENT_CODE_REQUIRED_MESSAGE,
+        ("name", "required"): MONITORED_COMPONENT_NAME_REQUIRED_MESSAGE,
+        ("name", "too_long"): "El nombre del componente no puede tener más de 100 caracteres.",
+        ("name", "not_text"): "El nombre del componente debe ser un texto.",
+        ("kind", "required"): MONITORED_COMPONENT_KIND_REQUIRED_MESSAGE,
+        ("base_url", "required"): MONITORED_COMPONENT_BASE_URL_REQUIRED_MESSAGE,
+        ("enabled", "required"): MONITORED_COMPONENT_ENABLED_INVALID_MESSAGE,
+        ("enabled", "invalid"): MONITORED_COMPONENT_ENABLED_INVALID_MESSAGE,
+        ("sort_order", "required"): MONITORED_COMPONENT_SORT_ORDER_INVALID_MESSAGE,
+        ("sort_order", "invalid"): MONITORED_COMPONENT_SORT_ORDER_INVALID_MESSAGE,
+        ("component_id", "invalid"): MONITORED_COMPONENT_ID_INVALID_MESSAGE,
     },
 }

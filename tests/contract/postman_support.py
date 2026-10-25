@@ -34,6 +34,12 @@ DASHBOARD_COLLECTION = POSTMAN / "collections" / "MailySoft-System-Dashboard.pos
 DASHBOARD_PREFIX = "/api/v1/dashboard"
 DASHBOARD_HELPER_PREFIXES = {"setup", "docs"}
 
+# End-to-end collection of spec 005 (the health of the services and the registry of components; run by
+# Newman against the same isolated stack, which also has the simulation of the components).
+HEALTH_COLLECTION = POSTMAN / "collections" / "MailySoft-System-Salud.postman_collection.json"
+HEALTH_HELPER_PREFIXES = {"setup", "docs"}
+HEALTH_PATH_PREFIXES = ("/health/", "/info", "/api/v1/health", "/api/v1/monitored-components")
+
 JWT_PATTERN = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.")
 BEARER_LITERAL_PATTERN = re.compile(r"Bearer [A-Za-z0-9._~+/=-]{8,}")
 # A value that looks like a key or a secret: 32 or more token characters and no spaces.
@@ -90,5 +96,17 @@ def operation_ids_of_the_api(path_prefix: str = SUBSCRIPTIONS_PREFIX) -> set[str
         operation["operationId"]
         for path, item in schema["paths"].items()
         if path.startswith(path_prefix)
+        for operation in item.values()
+    }
+
+
+def health_operation_ids() -> set[str]:
+    """The `operationId` of the health operations: the contract v1, the public status, the aggregated
+    health and the registry of components (the paths of `HEALTH_PATH_PREFIXES`)."""
+    schema = create_app().openapi()
+    return {
+        operation["operationId"]
+        for path, item in schema["paths"].items()
+        if path.startswith(HEALTH_PATH_PREFIXES)
         for operation in item.values()
     }

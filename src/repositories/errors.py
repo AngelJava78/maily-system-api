@@ -40,3 +40,15 @@ def as_foreign_key_violation(error: IntegrityError) -> ForeignKeyViolationError 
     if getattr(cause, "sqlstate", None) == FOREIGN_KEY_VIOLATION:
         return ForeignKeyViolationError(getattr(cause, "constraint_name", None))
     return None
+
+
+class DatabaseUnavailableError(Exception):
+    """The database did not answer the health check (spec 005, FR-005, FR-016).
+
+    `kind` is `connection_error` (no connection could be obtained, or it broke) or
+    `unexpected_error` (anything else). The message is generic: never an address or a detail.
+    """
+
+    def __init__(self, kind: str) -> None:
+        super().__init__("The database did not answer as expected")
+        self.kind = kind

@@ -4,13 +4,16 @@ They carry the stable English code and the already formatted Spanish message; th
 `src/error_handlers.py` turn them into `ErrorResponse`.
 """
 
-from typing import ClassVar
+from typing import Any, ClassVar
+from uuid import UUID
 
 from src.messages import (
     AUTHORIZATION_UNAVAILABLE_MESSAGE,
     CLINICS_CHECK_UNAVAILABLE_MESSAGE,
     INVALID_TOKEN_MESSAGE,
     MODULE_CHECK_UNAVAILABLE_MESSAGE,
+    MONITORED_COMPONENT_CODE_ALREADY_EXISTS_MESSAGE,
+    MONITORED_COMPONENT_NOT_FOUND_MESSAGE,
     PERMISSION_DENIED_MESSAGE,
     SUBSCRIPTION_HAS_CLINICS_MESSAGE,
     SUBSCRIPTION_MODULE_NOT_FOUND_MESSAGE,
@@ -20,6 +23,7 @@ from src.messages import (
     SUBSCRIPTION_STATUS_UNCHANGED_MESSAGE,
     TOKEN_EXPIRED_MESSAGE,
     UNAUTHENTICATED_MESSAGE,
+    VALIDATION_ERROR_MESSAGE,
     ErrorCode,
 )
 
@@ -181,3 +185,52 @@ class ModuleCheckUnavailableError(AppError):
 
     def __init__(self) -> None:
         super().__init__(MODULE_CHECK_UNAVAILABLE_MESSAGE)
+
+
+# --- Registry of monitored components (spec 005) ---
+
+
+class MonitoredComponentNotFoundError(AppError):
+    """The component does not exist or is deleted."""
+
+    code = ErrorCode.MONITORED_COMPONENT_NOT_FOUND
+    status_code = 404
+
+    def __init__(self, component_id: UUID) -> None:
+        super().__init__(MONITORED_COMPONENT_NOT_FOUND_MESSAGE.format(component_id=component_id))
+
+
+class MonitoredComponentCodeAlreadyExistsError(AppError):
+    """Another current component uses the code, or it is the code of an integrated component."""
+
+    code = ErrorCode.MONITORED_COMPONENT_CODE_ALREADY_EXISTS
+    status_code = 409
+
+    def __init__(self, component_code: str) -> None:
+        super().__init__(MONITORED_COMPONENT_CODE_ALREADY_EXISTS_MESSAGE.format(code=component_code))
+
+
+class MonitoredComponentDataError(AppError):
+    """Data that the Service rejects: a host outside the allowed list or a rule of `kind`.
+
+    `errors` keeps the format of the errors of Pydantic (`type`, `loc`, `msg`, `input` and `ctx` with
+    the `ValueError` of the message), so the answer is the same 422 as the validation of the request.
+    """
+
+    code = ErrorCode.VALIDATION_ERROR
+    status_code = 422
+
+    def __init__(self, errors: list[dict[str, Any]]) -> None:
+        super().__init__(VALIDATION_ERROR_MESSAGE)
+        self.errors = errors
+
+    @staticmethod
+    def field_error(field: str, message: str) -> dict[str, Any]:
+        """One error on a field of the body, with its message in Spanish (never the value)."""
+        return {
+            "type": "value_error",
+            "loc": ("body", field),
+            "msg": message,
+            "input": None,
+            "ctx": {"error": ValueError(message)},
+        }

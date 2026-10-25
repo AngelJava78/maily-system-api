@@ -1,0 +1,2284 @@
+{
+  "info": {
+    "name": "MailySoft System API — Salud",
+    "description": "Pruebas de punta a punta de la salud de los servicios y del registro de componentes monitoreados contra el servicio real, la simulación del API de usuarios y la simulación de componentes de la pila aislada de pruebas.\n\n**Qué cubre**: las diez operaciones de salud: el contrato de salud v1 público (`get_health_live`, `get_health_ready` y `get_info`), el estado público (`get_health_status`), la consulta agregada (`get_health`) y el registro de componentes (`list_`, `create_`, `get_`, `update_` y `delete_monitored_component`). Incluye el registro de un servicio, de uno que no está listo y de un frontend; deshabilitar, habilitar y eliminar; reutilizar un código; componentes lentos, que devuelven HTML o que no resuelven (la consulta de salud sigue respondiendo 200); los errores 409 y 422 del registro; y los errores 401, 403 y 503 del control de acceso. Complementa a pytest, que sigue siendo la puerta de calidad; no lo sustituye. Lo que Newman no puede provocar (el horario de la base de datos y `next_start_at`, la copia en memoria del registro, la base de datos caída con su 500 y el 503 de `/health/ready`, el periodo mínimo del estado público y los límites de depuración de las respuestas) lo cubre pytest.\n\n**Escribe en el registro**: crea, modifica y elimina componentes, solo en la base de datos desechable de la pila. La primera petición de la colección vacía el registro, así que se puede repetir sin limpiar. No toca suscripciones ni el dashboard.\n\n**Autenticación**: las peticiones llevan un token Bearer (`{{accessToken}}`). El script previo de la colección registra, la primera vez, a cuatro personas en la simulación del API de usuarios (`{{usersStubUrl}}`): una con los cuatro permisos `health:*`, una solo con `health:read`, una sin permisos y una con permisos de otros recursos. Los tokens se generan al azar y quedan solo en variables de colección, nunca en este archivo. Las rutas del contrato de salud v1 y el estado público no exigen token.\n\n**Cómo ejecutarla**: levante la pila aislada (`docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml up -d --wait api`) y ejecute `npm run e2e:health` dentro de `tests/postman/`, con el entorno `e2e` (`npm run e2e:all` ejecuta las tres colecciones).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Las personas de prueba se registran en la simulación del API de usuarios (`{{usersStubUrl}}`) la",
+          "// primera vez y quedan solo en variables de colección (en memoria): ningún token se escribe en este",
+          "// archivo. Cada token se genera al azar en cada ejecución.",
+          "const random = function () { return Date.now().toString(36) + Math.random().toString(36).slice(2, 10); };",
+          "const usersStubUrl = pm.environment.get(\"usersStubUrl\");",
+          "if (!pm.collectionVariables.get(\"accessToken\") && usersStubUrl) {",
+          "  const register = function (variable, prefix, permissions, next) {",
+          "    const token = prefix + random();",
+          "    pm.sendRequest({",
+          "      url: usersStubUrl + \"/__test__/tokens\",",
+          "      method: \"POST\",",
+          "      header: { \"Content-Type\": \"application/json\" },",
+          "      body: { mode: \"raw\", raw: JSON.stringify({ token: token, permissions: permissions }) }",
+          "    }, function (error, response) {",
+          "      if (error || response.code !== 200) {",
+          "        throw new Error(\"No se pudo registrar a la persona de prueba (\" + variable + \"). ¿Está levantada la pila de pruebas?\");",
+          "      }",
+          "      pm.collectionVariables.set(variable, token);",
+          "      if (next) { next(); }",
+          "    });",
+          "  };",
+          "  register(\"accessToken\", \"e2e-health-\", [\"health:read\", \"health:write\", \"health:update\", \"health:delete\"], function () {",
+          "    register(\"readerToken\", \"e2e-reader-\", [\"health:read\"], function () {",
+          "      register(\"plainToken\", \"e2e-plain-\", [], function () {",
+          "        register(\"subscriptionsToken\", \"e2e-subscriptions-\", [\"subscriptions:read\", \"subscriptions:write\", \"subscriptions:update\", \"subscriptions:delete\", \"dashboard:read\"]);",
+          "      });",
+          "    });",
+          "  });",
+          "}",
+          "pm.variables.set(\"badToken\", \"e2e-invalid-\" + random());"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "healthyId",
+      "value": ""
+    },
+    {
+      "key": "notReadyId",
+      "value": ""
+    },
+    {
+      "key": "frontendId",
+      "value": ""
+    },
+    {
+      "key": "healthyCreatedAt",
+      "value": ""
+    },
+    {
+      "key": "deletedId",
+      "value": ""
+    },
+    {
+      "key": "lastHealth",
+      "value": ""
+    },
+    {
+      "key": "usersCallsBefore",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Preparación",
+      "description": "Deja las simulaciones y el registro en un estado conocido para que la colección se pueda repetir.",
+      "item": [
+        {
+          "name": "setup: reiniciar la simulación del API de usuarios",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{usersStubUrl}}/__test__/reset",
+              "host": [
+                "{{usersStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "reset"
+              ]
+            },
+            "description": "Vacía la simulación del API de usuarios (`{{usersStubUrl}}`): personas, fallas programadas y llamadas. Después de reiniciar se descartan las cuatro personas de prueba; el script previo de la colección las registra de nuevo en la petición siguiente.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "// Tras reiniciar se pierden los tokens: se vuelven a registrar en la siguiente petición.",
+                  "pm.collectionVariables.unset(\"accessToken\");",
+                  "pm.collectionVariables.unset(\"readerToken\");",
+                  "pm.collectionVariables.unset(\"plainToken\");",
+                  "pm.collectionVariables.unset(\"subscriptionsToken\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: reiniciar la simulación de componentes",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{componentsStubUrl}}/__test__/reset",
+              "host": [
+                "{{componentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "reset"
+              ]
+            },
+            "description": "Vacía la simulación de componentes (`{{componentsStubUrl}}`): las llamadas recibidas y los modos programados.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: vaciar el registro",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "Lista el registro y elimina cada componente que encuentre, para que la colección pueda repetirse sobre la misma base de datos."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const token = pm.collectionVariables.get(\"accessToken\");",
+                  "const base = pm.environment.get(\"baseUrl\");",
+                  "pm.response.json().forEach(function (component) {",
+                  "  pm.sendRequest({",
+                  "    url: base + \"/api/v1/monitored-components/\" + component.id,",
+                  "    method: \"DELETE\",",
+                  "    header: { Authorization: \"Bearer \" + token }",
+                  "  }, function (error, response) {",
+                  "    pm.test(\"se eliminó el componente \" + component.code, function () {",
+                  "      pm.expect(error).to.eql(null);",
+                  "      pm.expect(response.code).to.eql(204);",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Contrato de salud (público)",
+      "description": "Las rutas del contrato de salud v1 y el estado público: no exigen token y la respuesta no debe guardarse en caché.",
+      "item": [
+        {
+          "name": "get_health_live: responde sin token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/live",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "live"
+              ]
+            },
+            "description": "Liveness: responde 200 mientras el proceso atienda HTTP, sin consultar ninguna dependencia. No lleva token.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"la respuesta no debe guardarse en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.test(\"el cuerpo es exactamente {status: ok}\", function () { pm.expect(pm.response.json()).to.eql({ status: \"ok\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_health_ready: la base de datos responde",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/ready",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "ready"
+              ]
+            },
+            "description": "Readiness: consulta solo la base de datos. Con la base de la pila responde 200 con un único chequeo `database` correcto y su latencia.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"la respuesta no debe guardarse en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"status ok\", function () { pm.expect(body.status).to.eql(\"ok\"); });",
+                  "pm.test(\"un único chequeo database correcto con latencia entera\", function () {",
+                  "  pm.expect(body.checks).to.have.lengthOf(1);",
+                  "  const check = body.checks[0];",
+                  "  pm.expect(Object.keys(check).sort()).to.eql([\"error\", \"latency_ms\", \"name\", \"status\"]);",
+                  "  pm.expect(check.name).to.eql(\"database\");",
+                  "  pm.expect(check.status).to.eql(\"ok\");",
+                  "  pm.expect(Number.isInteger(check.latency_ms) && check.latency_ms >= 0).to.be.true;",
+                  "  pm.expect(check.error).to.eql(null);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_info: identifica el build",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/info",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "info"
+              ]
+            },
+            "description": "Identifica el build: el servicio, la versión (la del documento OpenAPI), el commit, la fecha de build y el entorno. En la pila de pruebas el commit, la fecha y el entorno valen `unknown` salvo que se hayan inyectado.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"la respuesta no debe guardarse en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "const info = pm.response.json();",
+                  "pm.test(\"tiene exactamente los cinco campos del contrato\", function () { pm.expect(Object.keys(info).sort()).to.eql([\"build_date\", \"commit\", \"environment\", \"service\", \"version\"]); });",
+                  "pm.test(\"el servicio es maily-system-api\", function () { pm.expect(info.service).to.eql(\"maily-system-api\"); });",
+                  "pm.test(\"commit, build_date y environment son textos (unknown si no se configuraron)\", function () {",
+                  "  [\"commit\", \"build_date\", \"environment\"].forEach(function (name) {",
+                  "    pm.expect(info[name]).to.be.a(\"string\").and.not.be.empty;",
+                  "  });",
+                  "});",
+                  "pm.sendRequest(pm.environment.get(\"baseUrl\") + \"/openapi.json\", function (error, response) {",
+                  "  pm.test(\"la versión es la del documento OpenAPI\", function () {",
+                  "    pm.expect(error).to.eql(null);",
+                  "    pm.expect(response.json().info.version).to.eql(info.version);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_health_status: estado público sin token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "status"
+              ]
+            },
+            "description": "El estado público de la plataforma, sin token: solo el estado global, cuándo se comprobó y, de cada componente, su código, nombre, tipo, estado y próximo encendido. Nunca publica versiones, direcciones, latencias, chequeos ni códigos de error.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"la respuesta no debe guardarse en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"tiene exactamente status, checked_at y components\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"checked_at\", \"components\", \"status\"]); });",
+                  "pm.test(\"el estado global es ok, degraded o down y la fecha va en UTC\", function () {",
+                  "  pm.expect([\"ok\", \"degraded\", \"down\"]).to.include(body.status);",
+                  "  pm.expect(body.checked_at).to.match(/^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(\\.\\d+)?Z$/);",
+                  "});",
+                  "pm.test(\"cada componente tiene exactamente code, name, kind, status y next_start_at\", function () {",
+                  "  body.components.forEach(function (component) {",
+                  "    pm.expect(Object.keys(component).sort()).to.eql([\"code\", \"kind\", \"name\", \"next_start_at\", \"status\"]);",
+                  "  });",
+                  "});",
+                  "pm.test(\"los dos componentes integrados van primero\", function () {",
+                  "  pm.expect(body.components.map(function (component) { return component.code; }).slice(0, 2)).to.eql([\"maily-system-api\", \"database\"]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_health_status: un token no cambia nada",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "status"
+              ]
+            },
+            "description": "El estado público ignora la cabecera `Authorization`: con un token que el API de usuarios no conoce responde 200 con la misma forma, y la simulación del API de usuarios no recibe ninguna consulta de permiso.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{badToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Cuántas consultas de permiso ha recibido ya la simulación del API de usuarios.",
+                  "pm.sendRequest(pm.environment.get(\"usersStubUrl\") + \"/__test__/calls\", function (error, response) {",
+                  "  pm.collectionVariables.set(\"usersCallsBefore\", String(response.json().length));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"tiene la misma forma que sin token\", function () {",
+                  "  pm.expect(Object.keys(body).sort()).to.eql([\"checked_at\", \"components\", \"status\"]);",
+                  "  body.components.forEach(function (component) {",
+                  "    pm.expect(Object.keys(component).sort()).to.eql([\"code\", \"kind\", \"name\", \"next_start_at\", \"status\"]);",
+                  "  });",
+                  "});",
+                  "pm.sendRequest(pm.environment.get(\"usersStubUrl\") + \"/__test__/calls\", function (error, response) {",
+                  "  pm.test(\"el API de usuarios no recibió ninguna consulta de permiso\", function () {",
+                  "    pm.expect(error).to.eql(null);",
+                  "    pm.expect(String(response.json().length)).to.eql(pm.collectionVariables.get(\"usersCallsBefore\"));",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "docs: las rutas públicas no exigen token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openapi.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openapi.json"
+              ]
+            },
+            "description": "El contrato publicado (no pide token) declara las cuatro operaciones públicas sin esquema de seguridad ni permiso, con la etiqueta «Salud».",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const paths = pm.response.json().paths;",
+                  "[[\"/health/live\", \"get_health_live\"], [\"/health/ready\", \"get_health_ready\"], [\"/info\", \"get_info\"], [\"/health/status\", \"get_health_status\"]].forEach(function (route) {",
+                  "  const operation = paths[route[0]].get;",
+                  "  pm.test(route[1] + \" no declara seguridad ni permiso y lleva la etiqueta Salud\", function () {",
+                  "    pm.expect(operation.operationId).to.eql(route[1]);",
+                  "    pm.expect(operation).to.not.have.any.keys(\"security\", \"x-required-permission\");",
+                  "    pm.expect(operation.tags).to.eql([\"Salud\"]);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Registro",
+      "description": "El ciclo completo de un componente: registrarlo, consultarlo, verlo en la salud, modificarlo, deshabilitarlo, habilitarlo, eliminarlo y reutilizar su código. Las llamadas a los componentes nunca llevan el token.",
+      "item": [
+        {
+          "name": "create_monitored_component: un servicio sano",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "Registra un servicio sano de la simulación (`healthy`) sin enviar rutas, `enabled` ni `sort_order`: toma las rutas del contrato v1, queda habilitado y con orden 0. Responde 201 con la ruta del componente en `Location`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"servicio-sano\", \"name\": \"Servicio sano\", \"kind\": \"service\", \"base_url\": \"http://components-stub:8080/healthy\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"Location apunta al componente registrado\", function () { pm.expect(pm.response.headers.get(\"Location\")).to.eql(\"/api/v1/monitored-components/\" + body.id); });",
+                  "pm.test(\"el identificador es un UUID\", function () { pm.expect(body.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/); });",
+                  "pm.test(\"tiene exactamente los doce campos del registro\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"base_url\", \"code\", \"created_at\", \"enabled\", \"id\", \"info_path\", \"kind\", \"live_path\", \"name\", \"ready_path\", \"sort_order\", \"updated_at\"]); });",
+                  "pm.test(\"rutas por defecto del contrato v1\", function () {",
+                  "  pm.expect([body.live_path, body.ready_path, body.info_path]).to.eql([\"/health/live\", \"/health/ready\", \"/info\"]);",
+                  "});",
+                  "pm.test(\"habilitado, orden 0 y fechas en UTC\", function () {",
+                  "  pm.expect(body.enabled).to.eql(true);",
+                  "  pm.expect(body.sort_order).to.eql(0);",
+                  "  pm.expect(body.created_at).to.match(/^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(\\.\\d+)?Z$/);",
+                  "  pm.expect(body.updated_at).to.match(/^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(\\.\\d+)?Z$/);",
+                  "});",
+                  "pm.collectionVariables.set(\"healthyId\", body.id);",
+                  "pm.collectionVariables.set(\"healthyCreatedAt\", body.created_at);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_monitored_component: un servicio que no está listo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "Registra un servicio de la simulación que está vivo pero cuya disponibilidad falla (`not-ready`), con orden 10.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"servicio-no-listo\", \"name\": \"Servicio no listo\", \"kind\": \"service\", \"base_url\": \"http://components-stub:8080/not-ready\", \"sort_order\": 10}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"queda con orden 10\", function () { pm.expect(body.sort_order).to.eql(10); });",
+                  "pm.collectionVariables.set(\"notReadyId\", body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_monitored_component: un frontend",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "Registra un frontend de la simulación (`spa`, que responde 200 en cualquier ruta) con su ruta de salud `/healthz/`, sin ruta de disponibilidad, con orden 30.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"frontend-spa\", \"name\": \"Frontend\", \"kind\": \"frontend\", \"base_url\": \"http://components-stub:8080/spa\", \"live_path\": \"/healthz/\", \"sort_order\": 30}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"es un frontend con su ruta de salud y sin ruta de disponibilidad\", function () {",
+                  "  pm.expect(body.kind).to.eql(\"frontend\");",
+                  "  pm.expect(body.live_path).to.eql(\"/healthz/\");",
+                  "  pm.expect(body.ready_path).to.eql(null);",
+                  "});",
+                  "pm.test(\"la ruta de información es opcional y vale null\", function () { pm.expect(body.info_path).to.eql(null); });",
+                  "pm.collectionVariables.set(\"frontendId\", body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_monitored_component: por su identificador",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components/{{healthyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components",
+                "{{healthyId}}"
+              ]
+            },
+            "description": "Consulta el servicio sano registrado: devuelve los mismos datos con los que se registró."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"son los datos del componente registrado\", function () {",
+                  "  pm.expect(body.id).to.eql(pm.collectionVariables.get(\"healthyId\"));",
+                  "  pm.expect(body.code).to.eql(\"servicio-sano\");",
+                  "  pm.expect(body.name).to.eql(\"Servicio sano\");",
+                  "  pm.expect(body.kind).to.eql(\"service\");",
+                  "  pm.expect(body.base_url).to.eql(\"http://components-stub:8080/healthy\");",
+                  "  pm.expect(body.created_at).to.eql(pm.collectionVariables.get(\"healthyCreatedAt\"));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list_monitored_components: todos, en orden",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "Lista los componentes registrados: una lista sin envoltorio y sin paginar, ordenada por `sort_order` y, a igualdad, por `code`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"es una lista sin envoltorio con los tres componentes\", function () {",
+                  "  pm.expect(body).to.be.an(\"array\");",
+                  "  pm.expect(body.map(function (component) { return component.code; })).to.eql([\"servicio-sano\", \"servicio-no-listo\", \"frontend-spa\"]);",
+                  "});",
+                  "pm.test(\"va ordenada por sort_order y code\", function () {",
+                  "  const keys = body.map(function (component) { return [component.sort_order, component.code]; });",
+                  "  const sorted = keys.slice().sort(function (a, b) { return a[0] - b[0] || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0); });",
+                  "  pm.expect(keys).to.eql(sorted);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_health: aparecen los registrados",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "health"
+              ]
+            },
+            "description": "La consulta de salud muestra primero los dos componentes integrados y después los registrados: el servicio sano `up`, el que no está listo `degraded` con `not_ready` y el frontend `up`. Cada componente trae sus trece campos y ninguna dirección."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"la respuesta no debe guardarse en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "const body = pm.response.json();",
+                  "const byCode = {};",
+                  "body.components.forEach(function (component) { byCode[component.code] = component; });",
+                  "pm.test(\"el estado global es degraded y el registro está disponible\", function () {",
+                  "  pm.expect(body.status).to.eql(\"degraded\");",
+                  "  pm.expect(body.registry_available).to.eql(true);",
+                  "});",
+                  "pm.test(\"los dos integrados van primero y después los registrados en su orden\", function () {",
+                  "  pm.expect(body.components.map(function (component) { return component.code; })).to.eql([\"maily-system-api\", \"database\", \"servicio-sano\", \"servicio-no-listo\", \"frontend-spa\"]);",
+                  "});",
+                  "pm.test(\"el servicio sano está up\", function () {",
+                  "  pm.expect(byCode[\"servicio-sano\"].status).to.eql(\"up\");",
+                  "  pm.expect(byCode[\"servicio-sano\"].error).to.eql(null);",
+                  "});",
+                  "pm.test(\"el que no está listo está degraded con not_ready\", function () {",
+                  "  pm.expect(byCode[\"servicio-no-listo\"].status).to.eql(\"degraded\");",
+                  "  pm.expect(byCode[\"servicio-no-listo\"].error).to.eql(\"not_ready\");",
+                  "});",
+                  "pm.test(\"el frontend está up\", function () { pm.expect(byCode[\"frontend-spa\"].status).to.eql(\"up\"); });",
+                  "pm.test(\"cada componente tiene exactamente los trece campos\", function () {",
+                  "  body.components.forEach(function (component) { pm.expect(Object.keys(component).sort()).to.eql([\"build_date\", \"checked_at\", \"checks\", \"code\", \"commit\", \"environment\", \"error\", \"kind\", \"latency_ms\", \"name\", \"next_start_at\", \"status\", \"version\"]); });",
+                  "});",
+                  "pm.test(\"ninguna dirección llega en el cuerpo\", function () {",
+                  "  pm.expect(pm.response.text()).to.not.include(\"base_url\");",
+                  "  pm.expect(pm.response.text()).to.not.include(\"components-stub\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_monitored_component: cambia el nombre",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components/{{healthyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components",
+                "{{healthyId}}"
+              ]
+            },
+            "description": "Cambia solo el nombre del servicio sano: lo demás queda igual y la fecha de modificación avanza.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Servicio sano (renombrado)\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"el nombre cambió y el código no\", function () {",
+                  "  pm.expect(body.name).to.eql(\"Servicio sano (renombrado)\");",
+                  "  pm.expect(body.code).to.eql(\"servicio-sano\");",
+                  "});",
+                  "pm.test(\"updated_at es posterior a created_at\", function () {",
+                  "  pm.expect(new Date(body.updated_at).getTime()).to.be.above(new Date(pm.collectionVariables.get(\"healthyCreatedAt\")).getTime());",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_monitored_component: deshabilitar",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components/{{healthyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components",
+                "{{healthyId}}"
+              ]
+            },
+            "description": "Deshabilita el servicio sano: deja de consultarse y de aparecer en la salud, pero sigue en el registro.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"quedó deshabilitado\", function () { pm.expect(pm.response.json().enabled).to.eql(false); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_health: el deshabilitado no aparece",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "health"
+              ]
+            },
+            "description": "El componente deshabilitado no aparece en la salud, aunque sigue en el listado del registro como deshabilitado."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"servicio-sano no aparece en la salud\", function () {",
+                  "  pm.expect(pm.response.json().components.map(function (component) { return component.code; })).to.not.include(\"servicio-sano\");",
+                  "});",
+                  "pm.sendRequest({",
+                  "  url: pm.environment.get(\"baseUrl\") + \"/api/v1/monitored-components\",",
+                  "  method: \"GET\",",
+                  "  header: { Authorization: \"Bearer \" + pm.collectionVariables.get(\"accessToken\") }",
+                  "}, function (error, response) {",
+                  "  pm.test(\"sigue en el listado del registro como deshabilitado\", function () {",
+                  "    pm.expect(error).to.eql(null);",
+                  "    const listed = response.json().filter(function (component) { return component.code === \"servicio-sano\"; });",
+                  "    pm.expect(listed).to.have.lengthOf(1);",
+                  "    pm.expect(listed[0].enabled).to.eql(false);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_monitored_component: habilitar de nuevo",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components/{{healthyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components",
+                "{{healthyId}}"
+              ]
+            },
+            "description": "Vuelve a habilitar el servicio sano: reaparece en la siguiente consulta de salud.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"quedó habilitado\", function () { pm.expect(pm.response.json().enabled).to.eql(true); });",
+                  "pm.sendRequest({",
+                  "  url: pm.environment.get(\"baseUrl\") + \"/api/v1/health\",",
+                  "  method: \"GET\",",
+                  "  header: { Authorization: \"Bearer \" + pm.collectionVariables.get(\"accessToken\") }",
+                  "}, function (error, response) {",
+                  "  pm.test(\"reaparece en la consulta de salud\", function () {",
+                  "    pm.expect(error).to.eql(null);",
+                  "    pm.expect(response.json().components.map(function (component) { return component.code; })).to.include(\"servicio-sano\");",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "delete_monitored_component: baja lógica",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components/{{healthyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components",
+                "{{healthyId}}"
+              ]
+            },
+            "description": "Elimina el servicio sano (baja lógica): responde 204 sin contenido."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 204\", function () { pm.response.to.have.status(204); });",
+                  "pm.test(\"la respuesta no tiene contenido\", function () { pm.expect(pm.response.text()).to.eql(\"\"); });",
+                  "pm.collectionVariables.set(\"deletedId\", pm.collectionVariables.get(\"healthyId\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_monitored_component: el eliminado no se encuentra",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components/{{healthyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components",
+                "{{healthyId}}"
+              ]
+            },
+            "description": "El componente eliminado ya no se encuentra: 404 `monitored_component_not_found`, con su identificador en el mensaje."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 404\", function () { pm.response.to.have.status(404); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código monitored_component_not_found\", function () { pm.expect(error.code).to.eql(\"monitored_component_not_found\"); });",
+                  "pm.test(\"mensaje en español con el identificador\", function () {",
+                  "  pm.expect(error.message).to.eql(\"No se encontró el componente monitoreado con el identificador \" + pm.collectionVariables.get(\"deletedId\") + \".\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_monitored_component: reutilizar el código",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "El código de un componente eliminado queda libre: se registra de nuevo y es otro componente, con otro identificador.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"servicio-sano\", \"name\": \"Servicio sano\", \"kind\": \"service\", \"base_url\": \"http://components-stub:8080/healthy\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"es otro componente con el mismo código\", function () {",
+                  "  pm.expect(body.code).to.eql(\"servicio-sano\");",
+                  "  pm.expect(body.id).to.not.eql(pm.collectionVariables.get(\"deletedId\"));",
+                  "});",
+                  "pm.collectionVariables.set(\"healthyId\", body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: las llamadas a los componentes no llevan token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{componentsStubUrl}}/__test__/calls",
+              "host": [
+                "{{componentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "calls"
+              ]
+            },
+            "description": "Pide a la simulación de componentes las llamadas que recibió de la consulta de salud: ninguna lleva la cabecera `Authorization` ni una cookie.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const calls = pm.response.json();",
+                  "pm.test(\"la simulación recibió llamadas de la consulta de salud\", function () { pm.expect(calls.length).to.be.above(0); });",
+                  "pm.test(\"ninguna llamada lleva Authorization ni Cookie\", function () {",
+                  "  calls.forEach(function (call) {",
+                  "    pm.expect(call.has_authorization, call.path).to.eql(false);",
+                  "    pm.expect(call.has_cookie, call.path).to.eql(false);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Componentes caídos",
+      "description": "Un componente lento, uno que devuelve HTML y uno que no resuelve: la consulta de salud sigue respondiendo 200 y cada caída se informa en su componente, sin cuerpos crudos ni direcciones.",
+      "item": [
+        {
+          "name": "create_monitored_component: un servicio lento",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "Registra un servicio de la simulación que tarda 30 segundos en responder (`slow`): la consulta de salud lo da por caído al agotar su tiempo.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"servicio-lento\", \"name\": \"Servicio lento\", \"kind\": \"service\", \"base_url\": \"http://components-stub:8080/slow\", \"sort_order\": 40}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_monitored_component: un servicio que devuelve HTML",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "Registra un servicio de la simulación que responde 200 con una página HTML en lugar del JSON del contrato (`html`).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"servicio-html\", \"name\": \"Servicio que devuelve HTML\", \"kind\": \"service\", \"base_url\": \"http://components-stub:8080/html\", \"sort_order\": 50}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_monitored_component: un servicio que no resuelve",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "Registra un servicio cuyo host está en la lista permitida pero nunca resuelve (`.invalid`, RFC 6761).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"servicio-sin-dns\", \"name\": \"Servicio que no resuelve\", \"kind\": \"service\", \"base_url\": \"http://missing-service.invalid\", \"sort_order\": 60}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_health: con componentes caídos responde 200",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "health"
+              ]
+            },
+            "description": "Con componentes caídos la consulta de salud responde 200: el estado global es `down` y cada caída se informa en su componente con su código de error. Nunca llega el cuerpo crudo de un componente."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "const byCode = {};",
+                  "body.components.forEach(function (component) { byCode[component.code] = component; });",
+                  "pm.test(\"el estado global es down\", function () { pm.expect(body.status).to.eql(\"down\"); });",
+                  "pm.test(\"el lento está down por timeout\", function () {",
+                  "  pm.expect(byCode[\"servicio-lento\"].status).to.eql(\"down\");",
+                  "  pm.expect(byCode[\"servicio-lento\"].error).to.eql(\"timeout\");",
+                  "});",
+                  "pm.test(\"el que devuelve HTML está down por respuesta no válida\", function () {",
+                  "  pm.expect(byCode[\"servicio-html\"].status).to.eql(\"down\");",
+                  "  pm.expect(byCode[\"servicio-html\"].error).to.eql(\"invalid_response\");",
+                  "});",
+                  "pm.test(\"el que no resuelve está down por dns_error\", function () {",
+                  "  pm.expect(byCode[\"servicio-sin-dns\"].status).to.eql(\"down\");",
+                  "  pm.expect(byCode[\"servicio-sin-dns\"].error).to.eql(\"dns_error\");",
+                  "});",
+                  "// El marcador que la simulación pone en el cuerpo de sus fallas, partido a propósito: la guardia de",
+                  "// la carpeta de Postman prohíbe esa palabra en cualquier archivo.",
+                  "const marker = \"SECRE\" + \"TO-INTERNO\";",
+                  "pm.test(\"ningún texto interno ni cuerpo crudo llega al cliente\", function () {",
+                  "  pm.expect(pm.response.text()).to.not.include(marker);",
+                  "  pm.expect(pm.response.text()).to.not.include(\"<html\");",
+                  "});",
+                  "pm.collectionVariables.set(\"lastHealth\", pm.response.text());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_health_status: el estado público coincide",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "status"
+              ]
+            },
+            "description": "El estado público sale del mismo resultado que la consulta anterior: los mismos componentes, en el mismo orden y con los mismos estados, sin campos extra.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const previous = JSON.parse(pm.collectionVariables.get(\"lastHealth\"));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"el mismo estado global\", function () { pm.expect(body.status).to.eql(previous.status); });",
+                  "pm.test(\"los mismos componentes, en el mismo orden y con los mismos estados\", function () {",
+                  "  const summary = function (component) { return [component.code, component.name, component.kind, component.status, component.next_start_at]; };",
+                  "  pm.expect(body.components.map(summary)).to.eql(previous.components.map(summary));",
+                  "});",
+                  "pm.test(\"sin campos extra\", function () {",
+                  "  pm.expect(Object.keys(body).sort()).to.eql([\"checked_at\", \"components\", \"status\"]);",
+                  "  body.components.forEach(function (component) {",
+                  "    pm.expect(Object.keys(component).sort()).to.eql([\"code\", \"kind\", \"name\", \"next_start_at\", \"status\"]);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Errores del registro",
+      "description": "Los rechazos del registro: código repetido o reservado (409) y datos no válidos (422), sin repetir lo recibido ni revelar la lista de hosts permitidos. Ninguno cambia el registro.",
+      "item": [
+        {
+          "name": "create_monitored_component: código repetido",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "Registrar un código que otro componente vigente ya usa se rechaza con 409 `monitored_component_code_already_exists`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"servicio-sano\", \"name\": \"Otro nombre\", \"kind\": \"service\", \"base_url\": \"http://components-stub:8080/healthy\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 409\", function () { pm.response.to.have.status(409); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código monitored_component_code_already_exists\", function () { pm.expect(error.code).to.eql(\"monitored_component_code_already_exists\"); });",
+                  "pm.test(\"mensaje en español con el código\", function () { pm.expect(error.message).to.eql(\"Ya existe un componente monitoreado con el código «servicio-sano».\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_monitored_component: código reservado",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "`database` y `maily-system-api` son los códigos de los componentes integrados: no se pueden registrar (409).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"database\", \"name\": \"Servicio sano\", \"kind\": \"service\", \"base_url\": \"http://components-stub:8080/healthy\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 409\", function () { pm.response.to.have.status(409); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código monitored_component_code_already_exists\", function () { pm.expect(error.code).to.eql(\"monitored_component_code_already_exists\"); });",
+                  "pm.test(\"mensaje en español con el código reservado\", function () { pm.expect(error.message).to.eql(\"Ya existe un componente monitoreado con el código «database».\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_monitored_component: host no permitido",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "Una dirección cuyo host no está en la lista permitida del servicio se rechaza con 422 en `base_url`; el mensaje no repite la dirección ni revela la lista.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"host-no-permitido\", \"name\": \"Servicio sano\", \"kind\": \"service\", \"base_url\": \"http://not-allowed.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"mensaje general en español\", function () { pm.expect(error.message).to.eql(\"Hay datos no válidos en la solicitud.\"); });",
+                  "pm.test(\"el error está en base_url y no repite la dirección\", function () {",
+                  "  pm.expect(error.errors).to.eql([{ field: \"base_url\", message: \"El host de la dirección base no está entre los hosts permitidos por el servicio.\" }]);",
+                  "  pm.expect(pm.response.text()).to.not.include(\"not-allowed\");",
+                  "  pm.expect(pm.response.text()).to.not.include(\"components-stub\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_monitored_component: dirección con credenciales",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "Una dirección con usuario y contraseña se rechaza con 422 en `base_url`; el mensaje no repite lo recibido.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"con-credenciales\", \"name\": \"Servicio sano\", \"kind\": \"service\", \"base_url\": \"http://usuario:clave@components-stub:8080\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"mensaje general en español\", function () { pm.expect(error.message).to.eql(\"Hay datos no válidos en la solicitud.\"); });",
+                  "pm.test(\"el error está en base_url y no repite las credenciales\", function () {",
+                  "  pm.expect(error.errors).to.have.lengthOf(1);",
+                  "  pm.expect(error.errors[0].field).to.eql(\"base_url\");",
+                  "  pm.expect(error.errors[0].message).to.eql(\"La dirección base debe ser una dirección http:// o https:// de hasta 255 caracteres, con un host válido y sin usuario, contraseña, consulta (?) ni fragmento (#).\");",
+                  "  pm.expect(pm.response.text()).to.not.include(\"clave\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_monitored_component: frontend con ruta de disponibilidad",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "Un frontend no lleva ruta de disponibilidad: se rechaza con 422 en `ready_path`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"frontend-con-ready\", \"name\": \"Frontend con ruta de disponibilidad\", \"kind\": \"frontend\", \"base_url\": \"http://components-stub:8080/spa\", \"live_path\": \"/healthz/\", \"ready_path\": \"/health/ready\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"mensaje general en español\", function () { pm.expect(error.message).to.eql(\"Hay datos no válidos en la solicitud.\"); });",
+                  "pm.test(\"el error está en ready_path\", function () {",
+                  "  pm.expect(error.errors).to.eql([{ field: \"ready_path\", message: \"Un componente de tipo «frontend» no lleva ruta de disponibilidad: envíela nula o no la envíe.\" }]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_monitored_component: campo no reconocido",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "Un campo que la API no reconoce (aquí, la fecha interna de baja) rechaza toda la solicitud con 422.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"con-campo-extra\", \"name\": \"Servicio sano\", \"kind\": \"service\", \"base_url\": \"http://components-stub:8080/healthy\", \"deleted_at\": null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"mensaje general en español\", function () { pm.expect(error.message).to.eql(\"Hay datos no válidos en la solicitud.\"); });",
+                  "pm.test(\"el error nombra el campo no permitido\", function () {",
+                  "  pm.expect(error.errors).to.eql([{ field: \"deleted_at\", message: \"El campo «deleted_at» no está permitido.\" }]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_monitored_component: sin ningún dato",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components/{{healthyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components",
+                "{{healthyId}}"
+              ]
+            },
+            "description": "Modificar sin enviar ningún dato se rechaza con 422.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"mensaje general en español\", function () { pm.expect(error.message).to.eql(\"Hay datos no válidos en la solicitud.\"); });",
+                  "pm.test(\"el error pide al menos un dato\", function () {",
+                  "  pm.expect(error.errors).to.eql([{ field: \"body\", message: \"Hay que enviar al menos un dato para modificar.\" }]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_monitored_component: identificador inexistente",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components/00000000-0000-4000-8000-000000000000",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components",
+                "00000000-0000-4000-8000-000000000000"
+              ]
+            },
+            "description": "Un identificador con forma de UUID que no existe: 404 `monitored_component_not_found`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 404\", function () { pm.response.to.have.status(404); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código monitored_component_not_found\", function () { pm.expect(error.code).to.eql(\"monitored_component_not_found\"); });",
+                  "pm.test(\"mensaje en español con el identificador\", function () {",
+                  "  pm.expect(error.message).to.eql(\"No se encontró el componente monitoreado con el identificador 00000000-0000-4000-8000-000000000000.\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_monitored_component: identificador que no es UUID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components/no-es-un-uuid",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components",
+                "no-es-un-uuid"
+              ]
+            },
+            "description": "Un identificador que no es un UUID se rechaza con 422 en `component_id`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"mensaje general en español\", function () { pm.expect(error.message).to.eql(\"Hay datos no válidos en la solicitud.\"); });",
+                  "pm.test(\"el error está en component_id\", function () {",
+                  "  pm.expect(error.errors).to.eql([{ field: \"component_id\", message: \"El identificador del componente debe ser un UUID.\" }]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Control de acceso",
+      "description": "Las operaciones protegidas exigen un token válido con el permiso de la operación, que se comprueba antes de validar los datos. Si el API de usuarios no responde se rechaza la petición, pero el estado público sigue respondiendo.",
+      "item": [
+        {
+          "name": "get_health: sin token se pide iniciar sesión",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "health"
+              ]
+            },
+            "description": "Sin token: 401 `unauthenticated`.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 401\", function () { pm.response.to.have.status(401); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código unauthenticated\", function () { pm.expect(error.code).to.eql(\"unauthenticated\"); });",
+                  "pm.test(\"mensaje en español\", function () { pm.expect(error.message).to.eql(\"Debe iniciar sesión para usar esta operación.\"); });",
+                  "pm.test(\"no trae ningún dato de salud\", function () { pm.expect(error).to.not.have.any.keys(\"components\", \"registry_available\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_health: un token inválido se rechaza",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "health"
+              ]
+            },
+            "description": "Un token que el API de usuarios no conoce: 401 `invalid_token`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{badToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 401\", function () { pm.response.to.have.status(401); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código invalid_token\", function () { pm.expect(error.code).to.eql(\"invalid_token\"); });",
+                  "pm.test(\"mensaje en español\", function () { pm.expect(error.message).to.eql(\"El token de acceso no es válido.\"); });",
+                  "pm.test(\"no trae ningún dato de salud\", function () { pm.expect(error).to.not.have.any.keys(\"components\", \"registry_available\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_health: sin permisos recibe 403",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "health"
+              ]
+            },
+            "description": "Una persona autenticada sin permisos: 403 `permission_denied`, y el mensaje nombra el permiso `health:read`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{plainToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 403\", function () { pm.response.to.have.status(403); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código permission_denied\", function () { pm.expect(error.code).to.eql(\"permission_denied\"); });",
+                  "pm.test(\"mensaje en español que nombra health:read\", function () { pm.expect(error.message).to.eql(\"No tiene permiso para realizar esta operación. Permiso requerido: health:read.\"); });",
+                  "pm.test(\"no trae ningún dato de salud\", function () { pm.expect(error).to.not.have.any.keys(\"components\", \"registry_available\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_health: los permisos de otros recursos no autorizan",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "health"
+              ]
+            },
+            "description": "Los permisos de suscripciones y del dashboard no autorizan la salud: 403.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{subscriptionsToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 403\", function () { pm.response.to.have.status(403); });",
+                  "pm.test(\"código permission_denied\", function () { pm.expect(pm.response.json().code).to.eql(\"permission_denied\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_monitored_component: solo lectura no registra, aunque los datos sean inválidos",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components"
+              ]
+            },
+            "description": "Una persona con solo `health:read` que intenta registrar con datos además inválidos recibe 403: el permiso se comprueba antes que la validación, y no se revela si los datos eran válidos.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"X\", \"name\": \"\", \"kind\": \"database\", \"base_url\": \"ftp://nada\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{readerToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 403\", function () { pm.response.to.have.status(403); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código permission_denied y mensaje que nombra health:write\", function () {",
+                  "  pm.expect(error.code).to.eql(\"permission_denied\");",
+                  "  pm.expect(error.message).to.eql(\"No tiene permiso para realizar esta operación. Permiso requerido: health:write.\");",
+                  "});",
+                  "pm.test(\"no hay detalle de validación\", function () { pm.expect(error).to.not.have.any.keys(\"errors\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "delete_monitored_component: solo lectura no elimina",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/monitored-components/{{healthyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "monitored-components",
+                "{{healthyId}}"
+              ]
+            },
+            "description": "Una persona con solo `health:read` no puede eliminar: 403, y el mensaje nombra `health:delete`.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{readerToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 403\", function () { pm.response.to.have.status(403); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código permission_denied y mensaje que nombra health:delete\", function () {",
+                  "  pm.expect(error.code).to.eql(\"permission_denied\");",
+                  "  pm.expect(error.message).to.eql(\"No tiene permiso para realizar esta operación. Permiso requerido: health:delete.\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: el API de usuarios dejará de responder una vez",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{usersStubUrl}}/__test__/faults",
+              "host": [
+                "{{usersStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "faults"
+              ]
+            },
+            "description": "Programa en la simulación del API de usuarios una falla (`unavailable`) que afectará a la siguiente consulta de permiso.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\": \"unavailable\", \"count\": 1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_health_status: responde aunque el API de usuarios no",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "status"
+              ]
+            },
+            "description": "El estado público no consulta permisos: responde 200 aunque el API de usuarios esté caído, y la falla programada no se consume.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"trae el estado de la plataforma\", function () { pm.expect(pm.response.json()).to.have.all.keys(\"status\", \"checked_at\", \"components\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_health: con el API de usuarios caído se rechaza",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "health"
+              ]
+            },
+            "description": "Si no se puede verificar el permiso la petición se rechaza (503 `authorization_unavailable`) y no se devuelve ningún dato de salud. Consume la falla programada."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 503\", function () { pm.response.to.have.status(503); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código authorization_unavailable\", function () { pm.expect(error.code).to.eql(\"authorization_unavailable\"); });",
+                  "pm.test(\"mensaje en español\", function () { pm.expect(error.message).to.eql(\"No se pudo verificar su permiso por ahora. Inténtelo de nuevo más tarde.\"); });",
+                  "pm.test(\"no trae ningún dato de salud\", function () { pm.expect(error).to.not.have.any.keys(\"components\", \"registry_available\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_health: vuelve a responder",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "health"
+              ]
+            },
+            "description": "Consumida la falla, el API de usuarios vuelve a responder y la consulta de salud también."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"trae los componentes\", function () { pm.expect(pm.response.json().components.length).to.be.above(1); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

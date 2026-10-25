@@ -20,6 +20,8 @@ from tests.contract.postman_support import (
     DASHBOARD_HELPER_PREFIXES,
     DASHBOARD_PREFIX,
     E2E_HELPER_PREFIXES,
+    HEALTH_COLLECTION,
+    HEALTH_HELPER_PREFIXES,
     HIGH_ENTROPY_PATTERN,
     JWT_PATTERN,
     MANUAL_COLLECTION,
@@ -195,7 +197,7 @@ def check_variable_names(collection: dict, environment: dict) -> list[str]:
     return [f"the environment variable «{key}» would hide the one of the collection" for key in hidden]
 
 
-# --- G9: the three collections together cover the API ---
+# --- G9: the four collections together cover the API ---
 
 
 def check_union(prefixes_by_collection: dict[str, set[str]], api_operations: set[str]) -> list[str]:
@@ -205,11 +207,12 @@ def check_union(prefixes_by_collection: dict[str, set[str]], api_operations: set
     return problems
 
 
-def prefixes_of_the_three(dashboard: dict) -> dict[str, set[str]]:
+def prefixes_of_the_collections(dashboard: dict) -> dict[str, set[str]]:
     return {
         "subscriptions (e2e)": operation_prefixes(load_json(COLLECTION), E2E_HELPER_PREFIXES),
         "subscriptions (manual)": operation_prefixes(load_json(MANUAL_COLLECTION), MANUAL_HELPER_PREFIXES),
         "dashboard": operation_prefixes(dashboard, DASHBOARD_HELPER_PREFIXES),
+        "health": operation_prefixes(load_json(HEALTH_COLLECTION), HEALTH_HELPER_PREFIXES),
     }
 
 
@@ -249,8 +252,8 @@ def test_g8_no_variable_of_the_environment_hides_one_of_the_collection(collectio
     assert check_variable_names(collection, environment) == []
 
 
-def test_g9_the_three_collections_together_cover_exactly_the_operations_of_the_api(collection):
-    assert check_union(prefixes_of_the_three(collection), operation_ids_of_the_api("/")) == []
+def test_g9_the_four_collections_together_cover_exactly_the_operations_of_the_api(collection):
+    assert check_union(prefixes_of_the_collections(collection), operation_ids_of_the_api("/")) == []
 
 
 def test_the_collection_has_the_four_folders_and_twenty_four_requests(collection):
@@ -380,7 +383,7 @@ def test_g8_detects_a_variable_that_the_environment_would_hide(collection, envir
 
 
 def test_g9_detects_an_operation_that_no_collection_covers(collection):
-    prefixes = prefixes_of_the_three(collection)
+    prefixes = prefixes_of_the_collections(collection)
     prefixes["dashboard"] = set()  # as if the dashboard collection did not exist
 
     problems = check_union(prefixes, operation_ids_of_the_api("/"))

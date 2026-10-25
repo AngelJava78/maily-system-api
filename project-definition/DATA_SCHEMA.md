@@ -4,9 +4,10 @@ Este es el **esquema objetivo** del proyecto (Principio VI de la constitución):
 —tablas, restricciones, índices, funciones, disparadores y datos iniciales— que exigen las
 especificaciones. Cada regla lleva el comentario `-- [spec NNN-nombre]` de la especificación que la
 introduce. Hoy coincide con lo que entregan las migraciones `0001` y `0002` (esquema y datos
-iniciales de `001-subscriptions-api`) y `0003` (`004-correct-subscriptions-api`), y con
-`specs/004-correct-subscriptions-api/contracts/database-schema.sql` (el esquema completo vigente de
-`subscriptions`; el de `001-subscriptions-api` quedó superado por esa corrección).
+iniciales de `001-subscriptions-api`), `0003` (`004-correct-subscriptions-api`) y `0004`
+(`005-health-monitoring`), y con `specs/004-correct-subscriptions-api/contracts/database-schema.sql` (el
+esquema completo vigente de `subscriptions`; el de `001-subscriptions-api` quedó superado por esa
+corrección) y `specs/005-health-monitoring/contracts/database-schema.sql` (`monitored_components`).
 
 Debe mantenerse al día: toda especificación o plan que cambie una regla de datos debe reflejarla aquí.
 
@@ -27,16 +28,26 @@ PostgreSQL les pone el automático (`<tabla>_pkey`, `<tabla>_<columna>_key`, `<t
 | `subscriptions_other_features_check` | Lo que incluye una suscripción (otras funcionalidades) tiene como máximo 20 elementos -- [spec 004-correct-subscriptions-api] (reemplaza a `subscriptions_features_check` de 001: columna renombrada) |
 | `subscriptions_consulting_rooms_limit_check`, `subscriptions_doctors_limit_check`, `subscriptions_assistants_limit_check`, `subscriptions_new_patients_per_year_limit_check` | Cada límite de la clínica va de 0 a 1 000 000 -- [spec 004-correct-subscriptions-api] |
 | `subscriptions_status_id_fkey` | El estatus debe existir en el catálogo |
+| `monitored_components_code_check` | El código tiene de 2 a 50 caracteres (minúsculas, dígitos y guiones; empieza con letra; sin guion final ni doble) y no es `maily-system-api` ni `database` -- [spec 005-health-monitoring] |
+| `monitored_components_name_check` | El nombre no está en blanco ni tiene espacios en los extremos -- [spec 005-health-monitoring] |
+| `monitored_components_kind_check` | El tipo es `service` o `frontend` -- [spec 005-health-monitoring] |
+| `monitored_components_sort_order_check` | El orden va de 0 a 9999 -- [spec 005-health-monitoring] |
+| `monitored_components_service_paths_check` | Un servicio tiene `ready_path` e `info_path` -- [spec 005-health-monitoring] |
+| `monitored_components_frontend_ready_path_check` | Un frontend no tiene `ready_path` -- [spec 005-health-monitoring] |
 
-El único índice con nombre explícito es `subscriptions_name_not_deleted_key` (el servicio lo usa para
-traducir un nombre repetido a un 409); también llevan nombre explícito la función `set_updated_at` y el
-disparador `subscriptions_set_updated_at`. Ninguno de los dos cambia con `004-correct-subscriptions-api`.
+Los índices con nombre explícito son `subscriptions_name_not_deleted_key` (el servicio lo usa para
+traducir un nombre repetido a un 409) y `monitored_components_code_not_deleted_key` (traduce un código de
+componente repetido a un 409) -- [spec 005-health-monitoring]; también llevan nombre explícito la función
+`set_updated_at` y los disparadores `subscriptions_set_updated_at` y `monitored_components_set_updated_at`
+(este último de `005-health-monitoring`, que reutiliza la función). Las restricciones de tabla de
+`monitored_components` (`…_service_paths_check` y `…_frontend_ready_path_check`) se nombran a propósito,
+porque PostgreSQL no da un nombre estable a una restricción de varias columnas.
 
 ## Esquema
 
 ```sql
--- Esquema vigente tras 001-subscriptions-api (migraciones 0001, 0002) y su corrección
--- 004-correct-subscriptions-api (migración 0003), PostgreSQL 17.
+-- Esquema vigente tras 001-subscriptions-api (migraciones 0001, 0002), su corrección
+-- 004-correct-subscriptions-api (migración 0003) y 005-health-monitoring (migración 0004), PostgreSQL 17.
 -- Es el contenido que entregan esas migraciones y el que se refleja en
 -- project-definition/DATA_SCHEMA.md (esquema objetivo del proyecto). `subscriptions` se muestra ya
 -- corregida (no el estado intermedio de solo 0001); el delta que aplica 0003 está documentado en
@@ -115,4 +126,44 @@ INSERT INTO subscription_statuses (id, name, description) VALUES
 
 -- Los estatus añadidos a mano empiezan en 5.
 SELECT setval(pg_get_serial_sequence('subscription_statuses', 'id'), 4);
+
+-- ---------------------------------------------------------------------------------------------
+-- Registro de componentes monitoreados  -- [spec 005-health-monitoring FR-023 a FR-032]
+-- Servicios y frontends cuya salud agrega GET /api/v1/health (migración 0004). Los dos componentes
+-- integrados (maily-system-api y database) NO se guardan aquí: sus códigos están reservados. La baja
+-- es lógica (deleted_at con fecha); la fila se conserva y su code queda libre. Empieza vacío: no hay
+-- datos iniciales.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE monitored_components (
+	id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	code varchar(50) NOT NULL CHECK (
+		char_length(code) BETWEEN 2 AND 50
+		AND code ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$'
+		AND code NOT IN ('maily-system-api', 'database')
+	), -- [spec 005 FR-024]
+	name varchar(100) NOT NULL CHECK (btrim(name) <> '' AND name = btrim(name)), -- [spec 005 FR-024]
+	kind varchar(20) NOT NULL CHECK (kind IN ('service', 'frontend')), -- [spec 005 FR-024]
+	base_url varchar(255) NOT NULL, -- [spec 005 FR-025] sin credenciales, query ni fragmento (lo valida el servicio)
+	live_path varchar(200) NOT NULL, -- [spec 005 FR-026]
+	ready_path varchar(200), -- [spec 005 FR-026] NULL en un frontend
+	info_path varchar(200), -- [spec 005 FR-026] opcional en un frontend
+	enabled bool NOT NULL DEFAULT true, -- [spec 005 FR-024]
+	sort_order int4 NOT NULL DEFAULT 0 CHECK (sort_order BETWEEN 0 AND 9999), -- [spec 005 FR-024]
+	created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	deleted_at timestamptz, -- [spec 005 FR-029] baja lógica; no se publica
+	CONSTRAINT monitored_components_service_paths_check
+		CHECK (kind <> 'service' OR (ready_path IS NOT NULL AND info_path IS NOT NULL)),
+	CONSTRAINT monitored_components_frontend_ready_path_check
+		CHECK (kind <> 'frontend' OR ready_path IS NULL)
+);
+
+-- [spec 005 FR-024, FR-028, FR-029] código único entre los componentes no eliminados.
+CREATE UNIQUE INDEX monitored_components_code_not_deleted_key
+	ON monitored_components (code) WHERE deleted_at IS NULL;
+
+-- [spec 005 FR-028] updated_at cambia con cualquier UPDATE (reutiliza set_updated_at de 001).
+CREATE TRIGGER monitored_components_set_updated_at
+	BEFORE UPDATE ON monitored_components
+	FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 ```

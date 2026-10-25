@@ -1,8 +1,9 @@
 # Pila aislada para las pruebas de punta a punta: otro proyecto de Compose con su propia base de
-# datos desechable (sin puerto publicado), la API solo en 127.0.0.1 y las dos simulaciones (API de
-# usuarios y API de clínicas) en lugar de los servicios reales.
+# datos desechable (sin puerto publicado), la API solo en 127.0.0.1 y las tres simulaciones (API de
+# usuarios, API de clínicas y componentes monitoreados) en lugar de los servicios reales.
 #
-# Levantar:  docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml up -d --wait api
+# Levantar:  docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml up -d --build --wait api
+#            (`--build`: sin él, Compose reutiliza las imágenes de una ejecución anterior y la API podría no llevar el código actual)
 # Desmontar: docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml down -v
 # Requiere Docker Compose 2.24 o superior (por `!override`).
 services:
@@ -40,15 +41,38 @@ services:
       retries: 20
       start_period: 3s
 
+  # Simulación de los componentes monitoreados (spec 005): un mismo proceso imita varios servicios y
+  # un frontend, cada uno bajo un prefijo de ruta (tests/stubs/components/app.py).
+  components-stub:
+    build: .
+    command: ["uvicorn", "app:app", "--app-dir", "/stub", "--host", "0.0.0.0", "--port", "8080"]
+    volumes:
+      - ./tests/stubs/components:/stub:ro
+    ports:
+      - "127.0.0.1:${E2E_COMPONENTS_STUB_PORT:-8014}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__test__/calls', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 3s
+
   api:
     depends_on:
       users-api-stub:
         condition: service_healthy
       clinics-api-stub:
         condition: service_healthy
+      components-stub:
+        condition: service_healthy
     environment:
       USERS_API_BASE_URL: http://users-api-stub:8080
       CLINICS_API_BASE_URL: http://clinics-api-stub:8080
+      # Solo la simulación de componentes y un nombre que nunca resuelve (RFC 6761).
+      HEALTH_ALLOWED_HOSTS: components-stub,missing-service.invalid
+      HEALTH_CHECK_TIMEOUT_SECONDS: "2"
+      # Cada consulta de salud agrega de nuevo: las comprobaciones no dependen de la caché.
+      HEALTH_CACHE_SECONDS: "0"
     ports: !override
       - "127.0.0.1:${E2E_API_PORT:-8011}:8000"
     healthcheck:

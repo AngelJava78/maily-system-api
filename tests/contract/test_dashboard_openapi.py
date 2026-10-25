@@ -114,11 +114,20 @@ def test_a_clinic_and_its_status_have_exactly_their_published_fields(schema):
 
 def test_no_error_code_was_added(schema):
     assert set(schema["components"]["schemas"]["ErrorCode"]["enum"]) == {c.value for c in ErrorCode}
-    assert len(ErrorCode) == 15  # spec 004 added 3 module-related codes; reviewed, no dashboard impact
+    assert len(ErrorCode) == 17  # spec 005 added 2 registry codes; reviewed, no dashboard impact
+
+
+# The public health routes of spec 005 (Principle VIII exception): the only operations without security.
+PUBLIC_HEALTH_PATHS = {"/health/live", "/health/ready", "/info", "/health/status"}
 
 
 def test_every_operation_of_the_api_declares_security_and_permission(schema):
-    operations = [op for item in schema["paths"].values() for op in item.values()]
+    operations = [
+        op
+        for path, item in schema["paths"].items()
+        if path not in PUBLIC_HEALTH_PATHS
+        for op in item.values()
+    ]
 
     assert len(operations) >= 7
     for operation in operations:

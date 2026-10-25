@@ -58,6 +58,105 @@ que alimenta la pantalla de resumen general del administrador de plataforma (con
 - **`null` significa «no disponible»**: si una fuente falla, solo su valor llega como `null` (nunca un cero
   inventado) y el resto del dashboard se devuelve con 200. Un `0` o un `[]` solo dicen que no hay datos.
 
+### Salud de servicios
+
+Spec [`005-health-monitoring`](specs/005-health-monitoring/spec.md): cuatro rutas **públicas** (el contrato de
+salud v1 de MailySoft y el estado público), la consulta agregada de salud de toda la plataforma y el **registro
+de componentes monitoreados**, que se administra sin redesplegar (contrato en
+[`openapi-health.yaml`](specs/005-health-monitoring/contracts/openapi-health.yaml)).
+
+| Operación | Método y ruta | Permiso |
+|---|---|---|
+| `get_health_live` | `GET /health/live` | pública |
+| `get_health_ready` | `GET /health/ready` | pública |
+| `get_info` | `GET /info` | pública |
+| `get_health_status` | `GET /health/status` | pública |
+| `get_health` | `GET /api/v1/health` | `health:read` |
+| `list_monitored_components` | `GET /api/v1/monitored-components` | `health:read` |
+| `get_monitored_component` | `GET /api/v1/monitored-components/{id}` | `health:read` |
+| `create_monitored_component` | `POST /api/v1/monitored-components` | `health:write` |
+| `update_monitored_component` | `PATCH /api/v1/monitored-components/{id}` | `health:update` |
+| `delete_monitored_component` | `DELETE /api/v1/monitored-components/{id}` | `health:delete` |
+
+- **Contrato de salud v1** (`/health/live`, `/health/ready`, `/info`): están en la raíz, sin token y con
+  `Cache-Control: no-store`; cumplen el contrato que comparten los servicios de MailySoft.
+  `/health/live` responde 200 mientras el proceso atienda HTTP, sin consultar nada más. `/health/ready`
+  consulta **solo** la base de datos, con `HEALTH_READY_TIMEOUT_SECONDS`: 200 si responde y 503 si no, con el
+  mismo cuerpo (`status` y `checks`). `/info` identifica el build: servicio, versión (la del documento OpenAPI),
+  commit, fecha de build y entorno.
+- **Consulta agregada** (`GET /api/v1/health`): una sola respuesta con el estado global y el de cada
+  componente, primero los dos integrados (`maily-system-api` y `database`) y después los registrados y
+  habilitados, por `sort_order` y `code`. Concedido el acceso responde **siempre 200**: un componente caído se
+  informa en su elemento, nunca como error de la consulta. El estado global es `down` si alguno está caído,
+  `degraded` si alguno está degradado, detenido o desconocido, y `ok` si no. Todas las consultas comparten una
+  sola agregación y su resultado durante `HEALTH_CACHE_SECONDS`. Nunca trae direcciones ni cuerpos de otros
+  servicios.
+- **Estado público** (`GET /health/status`): pensado para quien no puede comprobar su acceso (por ejemplo, el
+  Backoffice de noche). Sale del **mismo resultado y de la misma caché** que la consulta agregada, pero solo
+  publica el estado global, cuándo se comprobó y, de cada componente, `code`, `name`, `kind`, `status` y
+  `next_start_at`: nunca versiones, direcciones, latencias, chequeos ni códigos de error. No autoriza la
+  petición (ignora la cabecera `Authorization`), responde 200 aunque todo esté caído y reutiliza el último
+  resultado al menos `max(HEALTH_CACHE_SECONDS, 15)` segundos, así que por muchas peticiones que reciba no
+  provoca más de una ronda de chequeos por periodo.
+  **No es una *probe*: no lo uses para *liveness* ni para *readiness*** (responde 200 con todo caído y puede
+  provocar chequeos de todos los componentes). Para eso están `/health/live` y `/health/ready`.
+- **Registro sin redesplegar**: servicios que cumplen el contrato v1 (`service`: sus tres rutas) y frontends (su
+  ruta de salud). El `code` es único entre los no eliminados (`maily-system-api` y `database` están
+  reservados), la baja es lógica y se libera el código. Las respuestas del registro son el **único** lugar de la
+  API donde se ve la `base_url`. El permiso se comprueba antes que los datos.
+- **Lista permitida** (`HEALTH_ALLOWED_HOSTS`): como este servicio llama a las direcciones registradas, solo
+  admite hosts de una lista que fija quien lo opera; sin lista no se puede registrar ninguno. Las llamadas
+  nunca llevan el token ni cookies, no siguen redirecciones y leen a lo más 64 KiB. **Conviene listar hosts
+  exactos**: un sufijo de una plataforma compartida, como `.up.railway.app`, admitiría aplicaciones de
+  terceros.
+- **Base de datos detenida por horario**: con las cuatro `DATABASE_SCHEDULE_*` (valores del runbook
+  `Deploy-PgAutoShutdown.ps1`: `America/Mexico_City`, de lunes a viernes, de 08:00 a 20:00), una base que no
+  responde **fuera** de su horario se informa como `stopped` con su próximo encendido (`next_start_at`, en
+  UTC), no como caída; dentro del horario, o sin horario, es `down`. `/health/ready` no tiene en cuenta el
+  horario: sin base de datos el servicio no puede atender.
+- **Tiempos**: `HEALTH_READY_TIMEOUT_SECONDS` (2 s) es menor que `HEALTH_CHECK_TIMEOUT_SECONDS` (3 s), el de cada
+  llamada a un componente, y la *probe* de *readiness* del orquestador debe tener un tiempo mayor que el de
+  `/health/ready`.
+- **Si el registro no se puede leer**, la consulta usa la última copia que leyó (en memoria) con
+  `registry_available: false`; sin copia, solo trae los dos integrados.
+
+**Identificar el build**: `/info` publica `APP_COMMIT_SHA` y `APP_BUILD_DATE`, que se pasan al **construir** la
+imagen (sin ellos valen `unknown`), y `APP_ENVIRONMENT`, que se inyecta al desplegar:
+
+```powershell
+docker build -t maily-system-api `
+  --build-arg APP_COMMIT_SHA=$(git rev-parse HEAD) `
+  --build-arg APP_BUILD_DATE=$((Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")) .
+```
+
+Con Docker Compose basta con definir `APP_COMMIT_SHA` y `APP_BUILD_DATE` en el entorno al construir.
+
+**Probes de Kubernetes** (ejemplo; la imagen arranca por defecto con `alembic upgrade head`, así que el
+contenedor de la API fija el comando de uvicorn):
+
+```yaml
+livenessProbe:            # el proceso atiende; no depende de la base de datos
+  httpGet: { path: /health/live, port: 8000 }
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+readinessProbe:           # falla mientras la base de datos está detenida: deja de recibir tráfico
+  httpGet: { path: /health/ready, port: 8000 }
+  periodSeconds: 10
+  timeoutSeconds: 3       # mayor que HEALTH_READY_TIMEOUT_SECONDS (2 s)
+  failureThreshold: 3
+startupProbe:             # arranque rápido; umbral amplio
+  httpGet: { path: /health/live, port: 8000 }
+  periodSeconds: 5
+  failureThreshold: 30
+```
+
+*Readiness* falla mientras la base de datos está detenida (lo esperado: el orquestador deja de enviarle
+tráfico) y *liveness* no (no se reinicia el contenedor).
+
+> **Permisos**: los cuatro `health:*` los administra el API de usuarios. Mientras no existan allí (con su
+> módulo «Salud de servicios»), las seis operaciones protegidas responden 403 en ambientes reales.
+
 > **Importante**: sin las direcciones del API de usuarios y del de clínicas el servicio **no arranca**, y si
 > el API de usuarios no responde, **todas** las operaciones devuelven 503 (la documentación sigue
 > pública). Para desarrollar sin esos servicios, usa las simulaciones de la pila de pruebas de punta a
@@ -82,9 +181,21 @@ Copia `.env.example` a `.env` (no se versiona). Variables del servicio:
 | `CLINICS_API_TIMEOUT_SECONDS` | no | `5` | Ídem, para el API de clínicas |
 | `CORS_ALLOWED_ORIGINS` | no | vacía | Sitios web del Front que pueden llamar desde el navegador (lista separada por comas); vacía = ninguno |
 | `DASHBOARD_RECENT_CLINICS_LIMIT` | no | `5` | Clínicas recientes del dashboard cuando no se envía `limit`: solo `3`, `5` o `10` (cualquier otro valor impide arrancar). Un cambio requiere reiniciar |
+| `HEALTH_CHECK_TIMEOUT_SECONDS` | no | `3` | Tiempo máximo de cada llamada a un componente monitoreado (entero de 1 a 10) |
+| `HEALTH_CACHE_SECONDS` | no | `15` | Segundos que se reutiliza el resultado de salud entre consultas (entero de 0 a 300); `/health/status` lo reutiliza al menos 15 |
+| `HEALTH_READY_TIMEOUT_SECONDS` | no | `2` | Tiempo máximo de `/health/ready` (entero de 1 a 10); conviene que sea menor que el de los chequeos |
+| `HEALTH_ALLOWED_HOSTS` | no | vacía | Hosts a los que puede llamar la salud, separados por comas (exactos, o con punto inicial para un sufijo); vacía = no se puede registrar ningún componente |
+| `DATABASE_SCHEDULE_TIMEZONE` | no | — | Zona IANA del horario de la base de datos (`America/Mexico_City`). Las cuatro `DATABASE_SCHEDULE_*` van juntas o ninguna |
+| `DATABASE_SCHEDULE_DAYS` | no | — | Días de encendido en inglés, separados por comas (`Monday,Tuesday,Wednesday,Thursday,Friday`) |
+| `DATABASE_SCHEDULE_START` | no | — | Hora de encendido, `HH:MM` de 24 horas (`08:00`) |
+| `DATABASE_SCHEDULE_END` | no | — | Hora de apagado, `HH:MM` de 24 horas y posterior al inicio (`20:00`) |
+| `APP_COMMIT_SHA` | no | `unknown` | Commit del build que publica `/info` (7 a 64 hexadecimales); se pasa al construir la imagen |
+| `APP_BUILD_DATE` | no | `unknown` | Fecha del build que publica `/info` (ISO 8601 con zona); se pasa al construir la imagen |
+| `APP_ENVIRONMENT` | no | `unknown` | Entorno del despliegue que publica `/info` (1 a 50 letras, dígitos, `.`, `_` o `-`) |
 
-El arranque valida la configuración y, si falta una variable obligatoria o una opcional no es válida, se
-niega a iniciar y nombra la variable (nunca su valor).
+El arranque valida la configuración (también `DATABASE_URL`) y, si falta una variable obligatoria o una
+opcional no es válida, se niega a iniciar y nombra la variable (nunca su valor); un horario de la base de
+datos incompleto o con un valor no válido también impide arrancar.
 
 **Seguridad de las direcciones**: a esas dos direcciones se reenvía el token de la persona. Usa `https://`
 salvo en local o en la red de Docker: con una dirección `http://` no local el servicio arranca pero
@@ -151,39 +262,49 @@ Las pruebas del dashboard **no necesitan PostgreSQL ni Docker** (la operación n
 uv run pytest -k dashboard
 ```
 
+Las de salud usan PostgreSQL real y la simulación de componentes (`tests/stubs/components/`), con un reloj
+controlable para el horario de la base de datos.
+
 Guías de validación con el mapa historia → pruebas:
-[`specs/001-subscriptions-api/quickstart.md`](specs/001-subscriptions-api/quickstart.md) (suscripciones) y
-[`specs/003-platform-dashboard/quickstart.md`](specs/003-platform-dashboard/quickstart.md) (dashboard).
+[`specs/001-subscriptions-api/quickstart.md`](specs/001-subscriptions-api/quickstart.md) (suscripciones),
+[`specs/003-platform-dashboard/quickstart.md`](specs/003-platform-dashboard/quickstart.md) (dashboard) y
+[`specs/005-health-monitoring/quickstart.md`](specs/005-health-monitoring/quickstart.md) (salud).
 
 ## Pruebas de punta a punta (Postman)
 
-Hay **dos colecciones automáticas** para Newman, una por recurso, que recorren la API real contra las
+Hay **tres colecciones automáticas** para Newman, una por recurso, que recorren la API real contra las
 simulaciones de sus dependencias: la de **suscripciones** (las 6 operaciones y los errores clave: 401, 403,
-404, 409, 422 y 503) y la del **dashboard** (`get_dashboard`: el resumen, `limit`, el orden y los errores 401,
-403, 422 y 503; es de solo lectura). **Complementan a pytest, que sigue siendo la puerta de calidad; no lo
-sustituyen.** No necesitan cuenta de Postman ni envían nada a servicios externos. Viven en `tests/postman/` y
+404, 409, 422 y 503), la del **dashboard** (`get_dashboard`: el resumen, `limit`, el orden y los errores 401,
+403, 422 y 503; es de solo lectura) y la de **salud** (las 10 operaciones de salud: el contrato público, el
+registro de componentes, componentes caídos y los errores 401, 403, 404, 409, 422 y 503). **Complementan a
+pytest, que sigue siendo la puerta de calidad; no lo sustituyen.** No necesitan cuenta de Postman ni envían nada a servicios externos. Viven en `tests/postman/` y
 se ejecutan con [Newman](https://github.com/postmanlabs/newman).
 
 ```powershell
 npm ci --prefix tests/postman            # instala Newman (una vez)
-docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml up -d --wait api
+docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml up -d --build --wait api
 npm run e2e --prefix tests/postman       # suscripciones: consola + tests/postman/reports/junit.xml
 npm run e2e --prefix tests/postman -- --folder "5. Control de acceso"   # solo una carpeta (las 2 a 4 usan lo que crea la 1)
 npm run e2e:dashboard --prefix tests/postman   # dashboard → tests/postman/reports/junit-dashboard.xml
-npm run e2e:all --prefix tests/postman         # las dos, una tras otra
+npm run e2e:health --prefix tests/postman      # salud → tests/postman/reports/junit-health.xml
+npm run e2e:all --prefix tests/postman         # las tres, una tras otra
 docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml down -v
 ```
 
 - **Pila aislada**: el proyecto `maily-system-e2e` tiene su propia base de datos desechable (sin puerto
-  publicado), la API en `127.0.0.1:8011` y las simulaciones del API de usuarios (`:8012`) y del de
-  clínicas (`:8013`). **No apuntes nunca la colección a un servicio con datos reales**: crea y elimina de
-  forma lógica suscripciones, así que quedan filas «Eliminada» (la del dashboard no escribe nada).
+  publicado), la API en `127.0.0.1:8011` y las simulaciones del API de usuarios (`:8012`), del de
+  clínicas (`:8013`) y de los componentes monitoreados (`:8014`). Usa `--build` para que la imagen lleve el
+  código actual (sin él, Compose reutiliza la de una ejecución anterior). **No apuntes nunca la colección a un
+  servicio con datos reales**: la de suscripciones crea y elimina de forma lógica suscripciones, así que
+  quedan filas «Eliminada», y la de salud crea, modifica y elimina componentes del registro (la del dashboard
+  no escribe nada).
 - **Resultado**: código de salida `0` si todo pasa y `1` si falla una comprobación o la pila no responde.
 - **Si la API cambia**: cada recurso tiene su colección y toda feature que añada, quite o cambie operaciones
   actualiza la de su recurso (y, si es de suscripciones, también la [manual](#colección-manual-de-postman))
-  en el mismo cambio. `test_postman_collection.py`, `test_manual_postman_collection.py` y
-  `test_dashboard_postman_collection.py` (parte de `uv run pytest`) fallan nombrando las operaciones que
-  faltan o sobran, y esta última comprueba además que **las tres colecciones juntas cubren toda la API**.
+  en el mismo cambio. `test_postman_collection.py`, `test_manual_postman_collection.py`,
+  `test_dashboard_postman_collection.py` y `test_health_postman_collection.py` (parte de `uv run pytest`)
+  fallan nombrando las operaciones que faltan o sobran, y la del dashboard comprueba además que **las cuatro
+  colecciones juntas cubren toda la API**.
 
 ## Colección manual de Postman
 
@@ -339,21 +460,24 @@ src/
 ├── error_handlers.py  # formato uniforme de error (401, 403, 404, 409, 422, 500 y 503)
 ├── messages.py        # códigos de error y mensajes en español
 ├── routers/           # endpoints HTTP: solo validan, llaman a un Service y serializan
-├── services/          # reglas de negocio y autorización
+├── services/          # reglas de negocio y autorización; la salud (`health_service.py`, `health_schedule.py`,
+│                      # `health_state.py`) y el registro de componentes (`monitored_component_service.py`)
 ├── repositories/      # acceso a datos (únicas consultas SQL)
 ├── integrations/      # clientes del API de usuarios y del de clínicas, y el puerto de datos del dashboard
-│                      # (`dashboard_source.py`) con su fuente ficticia de la Fase 1
+│                      # (`dashboard_source.py`) con su fuente ficticia de la Fase 1; y el cliente de los
+│                      # chequeos de salud (`health_probe.py`) con el contrato v1 (`health_contract.py`)
 ├── dtos/              # esquemas de entrada y salida (Pydantic)
 ├── database/          # engine y sesiones async
 └── models/            # modelos SQLAlchemy (sin lógica de negocio)
-alembic/versions/      # 0001 esquema, 0002 catálogo de estatus
+alembic/versions/      # 0001 esquema, 0002 catálogo de estatus, 0003 corrección de suscripciones, 0004 registro de componentes
 tests/unit/            # sin base de datos (DTOs, Services, seguridad, configuración, capas)
 tests/integration/     # PostgreSQL real (esquema, migraciones y Repositories)
-tests/contract/        # la API por HTTP, el documento OpenAPI, la cobertura de permisos y las tres colecciones de Postman
+tests/contract/        # la API por HTTP, el documento OpenAPI, la cobertura de permisos y las colecciones de Postman
                        # (postman_support.py: apoyo compartido; conftest.py: fixtures del dashboard, sin base de datos)
 tests/dashboard_support.py   # fuente de datos doble y ayudas de las pruebas del dashboard
-tests/stubs/           # simulaciones del API de usuarios y del API de clínicas
-tests/postman/         # colecciones (suscripciones y dashboard), entornos y pila aislada de las pruebas de
+tests/health_support.py     # reloj, transporte con fallas y ayudas de las pruebas de salud
+tests/stubs/           # simulaciones del API de usuarios, del API de clínicas y de los componentes monitoreados
+tests/postman/         # colecciones (suscripciones, dashboard y salud), entornos y pila aislada de las pruebas de
                        # punta a punta (Newman) y colección y entornos de la colección manual
 project-definition/    # esquema de datos objetivo (DATA_SCHEMA.md)
 specs/                 # especificaciones de Spec Kit

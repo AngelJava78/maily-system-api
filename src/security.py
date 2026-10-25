@@ -23,6 +23,12 @@ SUBSCRIPTIONS_DELETE = "subscriptions:delete"
 # Permission of the dashboard operation (specs/003-platform-dashboard/contracts/permission-matrix.md).
 DASHBOARD_READ = "dashboard:read"
 
+# Permissions of the health operations (specs/005-health-monitoring/contracts/permission-matrix.md).
+HEALTH_READ = "health:read"
+HEALTH_WRITE = "health:write"
+HEALTH_UPDATE = "health:update"
+HEALTH_DELETE = "health:delete"
+
 bearer_scheme = HTTPBearer(
     scheme_name="BearerAuth",
     bearerFormat="JWT",

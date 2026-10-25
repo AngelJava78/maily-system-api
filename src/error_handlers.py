@@ -3,6 +3,7 @@
 - `AppError` (domain errors) -> its own status with `ErrorResponse(code, message)`.
 - `RequestValidationError` -> 422 with `errors[]`, one element per invalid piece of data and
   with its message in Spanish (never the English text of Pydantic).
+- `MonitoredComponentDataError` (what the Service of the registry rejects) -> the same 422 body.
 - Any other exception -> 500 with a generic message; the detail only goes to the server log, and
   never the body of the request.
 """
@@ -16,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from src.dtos.errors import ErrorResponse, FieldError
-from src.exceptions import AppError
+from src.exceptions import AppError, MonitoredComponentDataError
 from src.messages import (
     FIELD_MESSAGES,
     FORBIDDEN_FIELD_MESSAGE,
@@ -59,6 +60,8 @@ _KINDS = {
     "string_pattern_mismatch": "invalid",
     "bool_parsing": "invalid",
     "bool_type": "invalid",
+    "uuid_parsing": "invalid",
+    "uuid_type": "invalid",
 }
 
 
@@ -146,6 +149,17 @@ async def validation_error_handler(request: Request, error: RequestValidationErr
     return _error_response(422, body)
 
 
+async def component_data_error_handler(
+    request: Request, error: MonitoredComponentDataError
+) -> JSONResponse:
+    body = ErrorResponse(
+        code=ErrorCode.VALIDATION_ERROR,
+        message=VALIDATION_ERROR_MESSAGE,
+        errors=translate_validation_errors(error.errors, "monitored-components"),
+    )
+    return _error_response(422, body)
+
+
 async def unexpected_error_handler(request: Request, error: Exception) -> JSONResponse:
     # The trace goes to the log (in English); the request body and headers never do.
     logger.error(
@@ -157,6 +171,8 @@ async def unexpected_error_handler(request: Request, error: Exception) -> JSONRe
 
 
 def register_error_handlers(app: FastAPI) -> None:
+    # The most specific handler wins: a `MonitoredComponentDataError` is also an `AppError`.
+    app.add_exception_handler(MonitoredComponentDataError, component_data_error_handler)
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(Exception, unexpected_error_handler)

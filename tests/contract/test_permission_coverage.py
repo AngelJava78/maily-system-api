@@ -1,20 +1,22 @@
 """Every route declares its permission and every operation obeys the users API (SC-002).
 
-Principles V and VIII: a route that has no declared permission and is not one of the public
-documentation routes fails this test; and each real operation is checked one by one against the
-simulation of the users API.
+Principles V and VIII: a route that has no declared permission and is not one of the public routes
+(the documentation and, since spec 005, the public health routes) fails this test; and each real
+operation is checked one by one against the simulation of the users API.
 """
 
 from typing import Any
+from uuid import UUID
 
 import pytest
 from fastapi.routing import APIRoute
 
 from src.main import create_app
+from tests.health_support import insert_component
 from tests.helpers import TEST_TOKEN, Api
 
-# The permission matrix: contracts/permission-matrix.md of spec 001 (the six subscriptions) plus the
-# row of spec 003 (the dashboard).
+# The permission matrix: contracts/permission-matrix.md of spec 001 (the six subscriptions), the
+# row of spec 003 (the dashboard) and the rows of spec 005 (the health of the services).
 EXPECTED_PERMISSIONS = {
     "list_subscriptions": "subscriptions:read",
     "get_subscription": "subscriptions:read",
@@ -23,12 +25,31 @@ EXPECTED_PERMISSIONS = {
     "change_subscription_status": "subscriptions:update",
     "delete_subscription": "subscriptions:delete",
     "get_dashboard": "dashboard:read",
+    "get_health": "health:read",
+    "list_monitored_components": "health:read",
+    "get_monitored_component": "health:read",
+    "create_monitored_component": "health:write",
+    "update_monitored_component": "health:update",
+    "delete_monitored_component": "health:delete",
 }
-PUBLIC_ROUTES = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
+# The documentation and the public health routes that spec 005 defines (Principle VIII exception).
+PUBLIC_ROUTES = {
+    "/openapi.json",
+    "/docs",
+    "/docs/oauth2-redirect",
+    "/redoc",
+    "/health/live",
+    "/health/ready",
+    "/info",
+    "/health/status",
+}
 ALL_PERMISSIONS = sorted(set(EXPECTED_PERMISSIONS.values()))
 
 URL = "/api/v1/subscriptions"
-# operation_id -> (method, path, JSON body) against the subscription with id 1
+COMPONENTS_URL = "/api/v1/monitored-components"
+COMPONENT_ID = "00000000-0000-4000-8000-000000000001"
+# operation_id -> (method, path, JSON body) against the subscription with id 1 and the component
+# COMPONENT_ID
 REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
     "list_subscriptions": ("GET", URL, None),
     "get_subscription": ("GET", f"{URL}/1", None),
@@ -49,6 +70,16 @@ REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
     "change_subscription_status": ("PATCH", f"{URL}/1/status", {"status_id": 2}),
     "delete_subscription": ("DELETE", f"{URL}/1", None),
     "get_dashboard": ("GET", "/api/v1/dashboard", None),
+    "get_health": ("GET", "/api/v1/health", None),
+    "list_monitored_components": ("GET", COMPONENTS_URL, None),
+    "get_monitored_component": ("GET", f"{COMPONENTS_URL}/{COMPONENT_ID}", None),
+    "create_monitored_component": (
+        "POST",
+        COMPONENTS_URL,
+        {"code": "nuevo", "name": "Nuevo", "kind": "service", "base_url": "http://components.test/healthy"},
+    ),
+    "update_monitored_component": ("PATCH", f"{COMPONENTS_URL}/{COMPONENT_ID}", {"name": "Cambio"}),
+    "delete_monitored_component": ("DELETE", f"{COMPONENTS_URL}/{COMPONENT_ID}", None),
 }
 
 
@@ -57,7 +88,8 @@ def declared_permissions() -> dict[str, str]:
     schema = create_app().openapi()
     return {
         operation["operationId"]: operation["x-required-permission"]
-        for item in schema["paths"].values()
+        for path, item in schema["paths"].items()
+        if path not in PUBLIC_ROUTES  # the public health routes declare no permission
         for operation in item.values()
     }
 
@@ -84,6 +116,9 @@ def test_every_route_declares_its_permission_or_is_public_documentation():
             continue
         for api_route in api_routes:
             assert isinstance(api_route, APIRoute), f"unexpected route {api_route!r}"
+            if api_route.path in PUBLIC_ROUTES:  # a public health route of spec 005
+                public_seen.add(api_route.path)
+                continue
             for method in api_route.methods - {"HEAD", "OPTIONS"}:
                 checked += 1
                 operation = schema["paths"][api_route.path][method.lower()]
@@ -107,12 +142,19 @@ def test_the_matrix_and_the_requests_of_this_test_cover_the_same_operations():
 
 
 async def snapshot(api: Api) -> list[tuple]:
-    return await api.fetch_all("SELECT id, name, monthly_price, status_id, updated_at FROM subscriptions ORDER BY id")
+    subscriptions = await api.fetch_all(
+        "SELECT id, name, monthly_price, status_id, updated_at FROM subscriptions ORDER BY id"
+    )
+    components = await api.fetch_all(
+        "SELECT id, code, name, enabled, deleted_at, updated_at FROM monitored_components ORDER BY id"
+    )
+    return subscriptions + components
 
 
 @pytest.fixture
 async def seeded(api: Api) -> Api:
     await api.insert(name="Base")  # the subscription with id 1
+    await insert_component(api.engine, code="base", id=UUID(COMPONENT_ID))
     return api
 
 

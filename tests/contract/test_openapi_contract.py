@@ -107,9 +107,9 @@ def test_the_schemas_of_the_contract_exist(schema):
         assert name in schemas, name
 
 
-def test_the_error_codes_are_the_fifteen_of_the_catalog(schema):
+def test_the_error_codes_are_the_seventeen_of_the_catalog(schema):
     assert set(schema["components"]["schemas"]["ErrorCode"]["enum"]) == {c.value for c in ErrorCode}
-    assert len(ErrorCode) == 15
+    assert len(ErrorCode) == 17  # spec 005 added the 2 codes of the registry of components
 
 
 def test_the_price_is_published_as_a_string(schema):
@@ -124,8 +124,15 @@ def test_the_status_change_only_offers_the_three_manageable_statuses(schema):
     assert change["properties"]["status_id"]["enum"] == [1, 2, 3]
 
 
+# The public health routes of spec 005 (Principle VIII exception): the only operations without security.
+PUBLIC_HEALTH_PATHS = {"/health/live", "/health/ready", "/info", "/health/status"}
+
+
 def test_the_documentation_routes_declare_no_security(schema):
     assert not any(path in schema["paths"] for path in ("/docs", "/redoc", "/openapi.json"))
     assert all(
-        operation["security"] for operation in (op for _, _, op in operations_of(schema).values())
+        operation["security"]
+        for operation in (
+            op for _, path, op in operations_of(schema).values() if path not in PUBLIC_HEALTH_PATHS
+        )
     )
