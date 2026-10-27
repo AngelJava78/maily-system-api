@@ -31,6 +31,9 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 markers = [
-    "slow: pruebas lentas",
+    # Auto-applied by `pytest_collection_modifyitems` (tests/conftest.py) to every test that needs
+    # a real, migrated PostgreSQL. Excluded by default (Principle V): `uv run pytest` runs only the
+    # unit tests; `uv run pytest -m ""` runs everything (the gate before merging into `main`).
+    "slow: necesita PostgreSQL real migrado (integración o contrato)",
 ]
 addopts = "-m 'not slow'"

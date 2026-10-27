@@ -30,6 +30,32 @@ from tests.helpers import (
 )
 
 
+# Fixtures that need a real, migrated PostgreSQL, directly or transitively (Principle V). Kept as
+# a set of names, not a directory check: `tests/contract/` mixes tests that need the database
+# (`api`, `health_api`) with some that do not (`dashboard_api`, spec 003's fictitious data).
+_NEEDS_REAL_DATABASE = {
+    "engine",
+    "migrator",
+    "migrated_db",
+    "db_session",
+    "committing_session",
+    "api",
+    "health_api",
+}
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Mark `slow` every test that needs a real, migrated PostgreSQL (Principle V).
+
+    `pyproject.toml` excludes `slow` by default (`addopts = "-m 'not slow'"`), so the local loop of
+    a feature (`/speckit-implement`) only runs the unit tests. The full suite — this and everything
+    else — is the gate before merging into `main`; run it with `uv run pytest -m ""`.
+    """
+    for item in items:
+        if _NEEDS_REAL_DATABASE.intersection(getattr(item, "fixturenames", ())):
+            item.add_marker(pytest.mark.slow)
+
+
 def _test_database_url() -> str | None:
     return os.environ.get("TEST_DATABASE_URL") or dotenv_values(ROOT / ".env").get(
         "TEST_DATABASE_URL"

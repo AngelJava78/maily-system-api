@@ -1,62 +1,46 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: (plantilla sin ratificar) → 1.0.0
-Bump rationale: adopción inicial de la constitución. No hay versión anterior de la que partir.
+Version change: 1.0.0 → 1.1.0
+Bump rationale: ampliación material de una guía ya existente (Principio V): no se elimina ni
+redefine ningún MUST anterior; se agrega la organización en dos niveles de ejecución de pruebas y
+se hace explícita la responsabilidad de la puerta de calidad mientras no exista un pipeline de CI.
 
-Origen: se adapta la constitución de `mailySoft-usuarios` (v1.5.0, C:\maily\code\mailySoft-usuarios)
-para el servicio MailySoft System API, cuyo primer dominio es la gestión de suscripciones (planes).
-Se conservan el stack, la arquitectura en capas, el idioma, las pruebas, Alembic, Docker, Postman y
-el flujo de Spec Kit; cambia el dominio y la forma de controlar el acceso.
+Origen: decisión del responsable del proyecto (2026-10-27), tras diagnosticar junto con el
+asistente por qué el desarrollo de features se sentía lento. Se encontró que `/speckit-implement`
+corría, en cada tarea, pruebas unitarias, pruebas de integración contra PostgreSQL real y las
+colecciones de Postman con Newman —esta última la más costosa: reconstruye cuatro contenedores en
+cada corrida—, sin que la constitución distinguiera cuándo debía correr cada una.
 
-Principios añadidos (todos nuevos):
-  - I. Arquitectura en Capas Estricta
-  - II. Separación entre Modelos ORM y DTOs
-  - III. Asincronía de Extremo a Extremo
-  - IV. Contratos de API Documentados con OpenAPI
-  - V. Pruebas Automatizadas con pytest
-  - VI. Esquema de Datos Versionado con Alembic
-  - VII. Idioma: Código en Inglés, Textos para Personas en Español
-  - VIII. Control de Acceso Delegado al API de Usuarios
-  - IX. Integraciones con Otros APIs de MailySoft
-Principios modificados / eliminados: no aplica (versión inicial)
-Secciones añadidas: Stack Tecnológico y Restricciones; Flujo de Desarrollo y Puertas de Calidad;
-Governance
+Principios modificados:
+  - V. Pruebas Automatizadas con pytest — se agrega: (a) la regla de los dos niveles de ejecución
+    (unitarias por defecto; lo que necesita PostgreSQL real, marcado `slow` y excluido por
+    defecto); (b) que `/speckit-implement` MUST limitarse al nivel rápido; (c) que la exploración
+    manual de la API se hace importando el OpenAPI publicado en la aplicación de Postman, no
+    manteniendo a mano la colección de `002-manual-postman-collection` (que queda como registro
+    histórico, sin actualizarse para features futuras); (d) que, mientras no exista un pipeline de
+    CI/despliegue, quien integre un cambio a `main` es responsable de correr manualmente la suite
+    completa (incluidas las pruebas `slow` y las colecciones de Postman) como sustituto de esa
+    puerta.
+Principios sin cambios de fondo: I, II, III, IV, VI, VII, VIII, IX.
 
-Diferencias deliberadas respecto a mailySoft-usuarios v1.5.0:
-  - El token de Auth0 NO se verifica aquí: se reenvía al API de usuarios, que lo verifica y decide
-    el permiso (decisión del responsable, 2026-10-17). Por eso desaparecen PyJWT, el JWKS, la
-    configuración de Auth0 y el cliente de la API de administración de Auth0.
-  - Se añade el Principio IX (integraciones con el API de usuarios y el API de clínicas).
-  - El listado de suscripciones se devuelve completo, sin paginar (excepción del Principio IV ya
-    prevista en la referencia, ahora declarada para este recurso).
-  - La baja de una suscripción es lógica, con un cuarto estatus «Eliminada» (decisión del
-    responsable, 2026-10-17).
-  - El número de clínicas por plan lo aporta el API de clínicas; este servicio no lo almacena
-    (decisión del responsable, 2026-10-17).
-  - Principio VII: el servicio es nuevo y no hay código previo que traducir, así que se descarta el
-    TODO(COMMENT_LANGUAGE) de la referencia y se conserva «SHOULD» para los comentarios en inglés.
+Secciones afectadas:
+  - «Flujo de Desarrollo y Puertas de Calidad»: aclara que "suite de pytest en verde" significa la
+    suite completa (incluida la marcada `slow`), no solo la corrida por defecto del día a día.
 
-Supuestos NO confirmados por el responsable (revisar; cambiarlos es una enmienda PATCH o MINOR):
-  - Los permisos siguen la convención `<recurso>:<acción>` de la referencia: `subscriptions:read`,
-    `subscriptions:write` (crear), `subscriptions:update` y `subscriptions:delete`.
-  - Las decisiones de permiso no se cachean (igual que la referencia).
-  - Si el API de clínicas no responde, el conteo de clínicas se omite de forma explícita y el resto
-    de la suscripción se sigue devolviendo.
-  - Los seis planes de los pantallazos (Básico, Pro, Premium, Enterprise, Solo, Legacy full) son
-    ejemplos, no datos iniciales obligatorios.
+No se modifican: el stack tecnológico, ni la ubicación de las colecciones de Postman
+(`tests/postman/`, sin cambios — las automatizadas siguen viviendo y manteniéndose en este
+repositorio).
 
-TODOs diferidos (a resolver en la primera especificación, no son huecos de esta constitución):
-  - Qué impide cada estatus (Inactiva: por ejemplo «no se ofrece a clientes nuevos»; Bloqueada) y
-    si una suscripción con clínicas asignadas puede bloquearse o eliminarse.
-  - Contrato del API de clínicas (operación que devuelve el conteo por plan) y moneda y periodo de
-    cobro de los importes.
-  - Estructura de lo que incluye cada plan (consultorios, usuarios y funciones).
-  - El API de usuarios debe tener dado de alta el catálogo `subscriptions:*` y publicar su
-    operación de consulta de permisos (spec 008 de mailySoft-usuarios) antes de integrarse.
+Seguimiento fuera de esta constitución (no son huecos de este documento; son cambios de código que
+el asistente continúa en la misma conversación en que se acordó esta enmienda): el hook de
+`pytest_collection_modifyitems` en `tests/conftest.py` que marca `slow` automáticamente, el ajuste
+de `pyproject.toml` (ya tenía el marcador `slow` declarado, sin usar hasta ahora) y el ajuste del
+`tasks.md` de la feature en curso para dejar de programar la ejecución de Newman dentro de
+`/speckit-implement`.
 
 Plantillas revisadas (no se modifican aquí): .specify/templates/* leen la constitución en tiempo
-de ejecución.
+de ejecución; no referencian el mecanismo de niveles de prueba, así que no requieren cambio.
 -->
 
 # MailySoft System API Constitution
@@ -173,17 +157,36 @@ los catálogos pequeños, donde paginar añade complejidad sin beneficio.
   tiempo agotado, servicio caído).
 - Una prueba MUST recorrer las rutas de la API y fallar si alguna carece de permiso declarado
   (Principio VIII) y no es una de las excepciones.
+- **Dos niveles de ejecución** (decisión del responsable, 2026-10-27): toda prueba que necesite,
+  directa o transitivamente, una base de datos real migrada (p. ej. las que dependen de las
+  fixtures `engine`/`migrated_db`) MUST marcarse `slow` de forma automática (un hook de
+  `pytest_collection_modifyitems`, no a mano en cada archivo) y MUST quedar excluida de la corrida
+  por defecto (`pyproject.toml`, `addopts = "-m 'not slow'"`). El ciclo activo de desarrollo de una
+  feature (`/speckit-implement`) MUST limitarse a esa corrida por defecto (solo pruebas unitarias,
+  sin PostgreSQL real); MUST NOT ejecutar ahí las pruebas marcadas `slow` ni las colecciones de
+  Postman.
 - Las colecciones de Postman (ver «Stack Tecnológico y Restricciones») complementan, sin
   sustituir, las pruebas de pytest: MUST limitarse a recorridos de punta a punta contra el
   servicio real y a los errores clave de cada recurso, y MUST NOT repetir las pruebas
-  unitarias ni las de Repositories. Una colección en verde no exime de ejecutar la suite de
-  pytest.
-- La suite completa MUST pasar antes de integrar cambios en `main`.
+  unitarias ni las de Repositories. Las automatizadas (no la exploración manual) se siguen
+  manteniendo y actualizando junto con cada feature que cambie el contrato que cubren.
+- La exploración manual de la API MUST hacerse importando el esquema publicado (`/openapi.json`)
+  directamente en la aplicación de Postman (su función nativa de «Import»), no manteniendo a mano
+  un archivo de colección en el repositorio. La colección de `002-manual-postman-collection` y su
+  prueba de deriva quedan como registro histórico y MUST NOT actualizarse por features futuras.
+- La suite completa (unitarias + lo marcado `slow` + las colecciones de Postman automatizadas)
+  MUST pasar antes de integrar cambios en `main`. Esa corrida completa (`uv run pytest -m ""`
+  seguido de Newman) es responsabilidad de un pipeline de CI/despliegue; mientras ese pipeline no
+  exista, quien integre el cambio a `main` MUST ejecutarla manualmente como sustituto explícito de
+  esa puerta: su ausencia no exime la obligación, la traslada a una persona.
 
 **Rationale**: Las suscripciones determinan qué puede usar cada clínica y cuánto paga; los errores
 deben detectarse antes de desplegar. Probar con simulaciones mantiene la suite rápida,
-reproducible y sin depender de servicios ajenos. Las colecciones de Postman añaden una
-comprobación desde fuera del proceso, contra el contenedor real.
+reproducible y sin depender de servicios ajenos. Separar lo que necesita PostgreSQL real de lo que
+no permite que el ciclo de desarrollo de una feature corra en segundos, no en minutos, sin perder
+la garantía: esa otra mitad de la suite —y las colecciones de Postman, que comprueban el
+contenedor real— sigue siendo obligatoria, solo que como puerta de calidad antes de integrar, no
+como parte de cada tarea.
 
 ### VI. Esquema de Datos Versionado con Alembic
 
@@ -359,9 +362,10 @@ Restricciones adicionales:
   (`src/routers/`, `src/services/`, `src/repositories/`, `src/integrations/`, `src/database/`,
   `src/models/`, `src/dtos/`), pruebas en `tests/` (las colecciones de Postman, en
   `tests/postman/`) y migraciones en `alembic/`.
-- Cada cambio integrado en `main` MUST cumplir: suite de pytest en verde, migraciones aplicables
-  desde cero, esquema OpenAPI generado sin errores, prueba de cobertura de permisos en verde y
-  revisión de cumplimiento de capas.
+- Cada cambio integrado en `main` MUST cumplir: suite de pytest **completa** en verde (incluidas
+  las pruebas marcadas `slow`, Principio V), migraciones aplicables desde cero, esquema OpenAPI
+  generado sin errores, prueba de cobertura de permisos en verde, colecciones de Postman
+  automatizadas en verde y revisión de cumplimiento de capas.
 - Si cambia la API (operaciones añadidas, quitadas o modificadas), la colección de Postman y la
   matriz «operación → permiso» MUST actualizarse en el mismo cambio.
 
@@ -380,4 +384,4 @@ Restricciones adicionales:
   constitución; la complejidad adicional MUST justificarse. `project-definition/` contiene la
   guía de referencia de datos para el desarrollo.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-17 | **Last Amended**: 2026-10-17
+**Version**: 1.1.0 | **Ratified**: 2026-10-17 | **Last Amended**: 2026-10-27
