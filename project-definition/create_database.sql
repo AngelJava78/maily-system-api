@@ -1,19 +1,21 @@
 -- =============================================================================================
 -- MailySoft System API: creación de la base de datos completa (equivale a las migraciones
--- 0001 a 0005: esquema de suscripciones, catálogo de estatus con sus 4 estatus iniciales,
+-- 0001 a 0006: esquema de suscripciones, catálogo de estatus con sus 4 estatus iniciales,
 -- corrección del modelo de suscripciones -- spec 004--, registro de componentes monitoreados
--- -- spec 005-- y el tipo de suscripción -- spec 006--).
+-- -- spec 005--, el tipo de suscripción -- spec 006-- y el límite de clínicas -- spec 007--).
 --
 -- Contenido: catálogo de estatus de las suscripciones, tabla de suscripciones ya con precio
--- anual, días de prueba, autoconsumo, módulos, los cuatro límites de la clínica y el tipo de
+-- anual, días de prueba, autoconsumo, módulos, los cinco límites de la clínica y el tipo de
 -- suscripción; el registro de componentes monitoreados; el índice único del nombre de cada tabla
 -- y la función/disparador que mantiene `updated_at`. No carga suscripciones ni componentes: ambos
 -- catálogos empiezan vacíos y se llenan con la API.
 --
--- Las claves primarias, únicas y foráneas y las restricciones NOT NULL y CHECK no se nombran aquí:
--- PostgreSQL las crea solas (subscriptions_pkey, subscriptions_status_id_fkey,
--- subscriptions_name_check...). Solo llevan nombre los índices parciales del nombre (la aplicación
--- los usa para traducir un nombre repetido a un 409), la función set_updated_at y sus disparadores.
+-- Las claves primarias, únicas y foráneas y las restricciones NOT NULL y CHECK de una sola columna
+-- no se nombran aquí: PostgreSQL las crea solas (subscriptions_pkey, subscriptions_status_id_fkey,
+-- subscriptions_name_check...). Sí llevan nombre explícito el CHECK de dos columnas
+-- `subscriptions_clinics_limit_check` -- [spec 007-add-clinics-limit] (PostgreSQL no le da uno
+-- estable), los índices parciales del nombre (la aplicación los usa para traducir un nombre
+-- repetido a un 409), la función set_updated_at y sus disparadores.
 --
 -- IMPORTANTE: úsalo en una base de datos PROPIA de este servicio, no en la de mailySoft-usuarios
 -- (ni en ninguna otra base que ya tenga tablas o datos ajenos a este servicio). Ambos proyectos
@@ -89,6 +91,8 @@ CREATE TABLE subscription_types (
 -- renombra a `other_features` (mismo contenido, acotado a lo que no es un módulo).
 -- [spec 006-add-subscription-type FR-001 a FR-010]: `subscription_type_id` (a quién va dirigida la
 -- suscripción), obligatorio, inmutable por la aplicación, referencia al catálogo subscription_types.
+-- [spec 007-add-clinics-limit FR-001 a FR-007]: `clinics_limit`, el quinto límite de la clínica,
+-- con su rango acotado por `subscription_type_id` (exactamente 1 si es Individual; 1 a 100 si no).
 -- ---------------------------------------------------------------------------------------------
 
 CREATE TABLE subscriptions (
@@ -106,9 +110,14 @@ CREATE TABLE subscriptions (
 	doctors_limit int4 NOT NULL CHECK (doctors_limit BETWEEN 0 AND 1000000), -- [spec 004 FR-021]
 	assistants_limit int4 NOT NULL CHECK (assistants_limit BETWEEN 0 AND 1000000), -- [spec 004 FR-021]
 	new_patients_per_year_limit int4 NOT NULL CHECK (new_patients_per_year_limit BETWEEN 0 AND 1000000), -- [spec 004 FR-021]
+	clinics_limit int4 NOT NULL DEFAULT 1, -- [spec 007 FR-001] quinto límite; ver el CHECK de dos columnas, abajo
 	status_id int4 NOT NULL DEFAULT 1 REFERENCES subscription_statuses (id), -- [spec 001 FR-011] 1 = Activa
 	created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+	updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	CONSTRAINT subscriptions_clinics_limit_check CHECK ( -- [spec 007 FR-002, FR-003] respaldo defensivo: la API ya impide llegar a violarlo
+		(subscription_type_id = 1 AND clinics_limit = 1)
+		OR (subscription_type_id <> 1 AND clinics_limit BETWEEN 1 AND 100)
+	)
 );
 
 -- [spec 001 FR-014] el nombre es único, sin distinguir mayúsculas, entre las suscripciones no
@@ -198,7 +207,7 @@ SELECT setval(pg_get_serial_sequence('subscription_types', 'id'), 2);
 
 -- ---------------------------------------------------------------------------------------------
 -- Versión de Alembic  -- [Principio VI de la constitución]
--- Marca la base como creada hasta la migración 0005, para que `alembic upgrade head` no intente
+-- Marca la base como creada hasta la migración 0006, para que `alembic upgrade head` no intente
 -- volver a crear las tablas y las migraciones futuras se apliquen sobre esta base.
 -- ---------------------------------------------------------------------------------------------
 
@@ -206,6 +215,6 @@ CREATE TABLE alembic_version (
 	version_num varchar(32) NOT NULL,
 	CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
 );
-INSERT INTO alembic_version (version_num) VALUES ('0005');
+INSERT INTO alembic_version (version_num) VALUES ('0006');
 
 COMMIT;

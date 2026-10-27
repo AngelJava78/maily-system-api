@@ -5,10 +5,11 @@ Este es el **esquema objetivo** del proyecto (Principio VI de la constitución):
 especificaciones. Cada regla lleva el comentario `-- [spec NNN-nombre]` de la especificación que la
 introduce. Hoy coincide con lo que entregan las migraciones `0001` y `0002` (esquema y datos
 iniciales de `001-subscriptions-api`), `0003` (`004-correct-subscriptions-api`), `0004`
-(`005-health-monitoring`) y `0005` (`006-add-subscription-type`), y con
-`specs/006-add-subscription-type/contracts/database-schema.sql` (el esquema completo vigente de
-`subscriptions` y la tabla nueva `subscription_types`; el de `004-correct-subscriptions-api` quedó
-superado por esta feature) y `specs/005-health-monitoring/contracts/database-schema.sql`
+(`005-health-monitoring`), `0005` (`006-add-subscription-type`) y `0006`
+(`007-add-clinics-limit`), y con
+`specs/007-add-clinics-limit/contracts/database-schema.sql` (el esquema completo vigente de
+`subscriptions`, incluido el límite de clínicas; el de `006-add-subscription-type` quedó superado
+por esta feature) y `specs/005-health-monitoring/contracts/database-schema.sql`
 (`monitored_components`).
 
 La asignación del tipo a las suscripciones que ya existían (FR-009/FR-010 de `006-add-subscription-type`)
@@ -36,6 +37,7 @@ PostgreSQL les pone el automático (`<tabla>_pkey`, `<tabla>_<columna>_key`, `<t
 | `subscriptions_module_keys_check` | `module_keys` siempre contiene `patients` -- [spec 004-correct-subscriptions-api] |
 | `subscriptions_other_features_check` | Lo que incluye una suscripción (otras funcionalidades) tiene como máximo 20 elementos -- [spec 004-correct-subscriptions-api] (reemplaza a `subscriptions_features_check` de 001: columna renombrada) |
 | `subscriptions_consulting_rooms_limit_check`, `subscriptions_doctors_limit_check`, `subscriptions_assistants_limit_check`, `subscriptions_new_patients_per_year_limit_check` | Cada límite de la clínica va de 0 a 1 000 000 -- [spec 004-correct-subscriptions-api] |
+| `subscriptions_clinics_limit_check` | El límite de clínicas es exactamente 1 si el tipo es Individual, o de 1 a 100 si no lo es (restricción de dos columnas, con nombre explícito porque PostgreSQL no le da uno estable) -- [spec 007-add-clinics-limit] |
 | `subscriptions_status_id_fkey` | El estatus debe existir en el catálogo |
 | `monitored_components_code_check` | El código tiene de 2 a 50 caracteres (minúsculas, dígitos y guiones; empieza con letra; sin guion final ni doble) y no es `maily-system-api` ni `database` -- [spec 005-health-monitoring] |
 | `monitored_components_name_check` | El nombre no está en blanco ni tiene espacios en los extremos -- [spec 005-health-monitoring] |
@@ -49,25 +51,28 @@ traducir un nombre repetido a un 409) y `monitored_components_code_not_deleted_k
 componente repetido a un 409) -- [spec 005-health-monitoring]; también llevan nombre explícito la función
 `set_updated_at` y los disparadores `subscriptions_set_updated_at` y `monitored_components_set_updated_at`
 (este último de `005-health-monitoring`, que reutiliza la función). Las restricciones de tabla de
-`monitored_components` (`…_service_paths_check` y `…_frontend_ready_path_check`) se nombran a propósito,
-porque PostgreSQL no da un nombre estable a una restricción de varias columnas.
+`monitored_components` (`…_service_paths_check` y `…_frontend_ready_path_check`) y de `subscriptions`
+(`subscriptions_clinics_limit_check`, spec 007) se nombran a propósito, porque PostgreSQL no da un
+nombre estable a una restricción de varias columnas.
 
 ## Esquema
 
 ```sql
 -- Esquema vigente tras 001-subscriptions-api (migraciones 0001, 0002), su corrección
--- 004-correct-subscriptions-api (migración 0003), 005-health-monitoring (migración 0004) y
--- 006-add-subscription-type (migración 0005), PostgreSQL 17. Es el contenido que entregan esas
--- migraciones y el que se refleja en project-definition/DATA_SCHEMA.md (esquema objetivo del
--- proyecto). `subscriptions` se muestra ya con el tipo (no el estado intermedio de antes de 0005);
--- el delta que aplica 0005 está documentado en
--- specs/006-add-subscription-type/contracts/database-schema.sql.
+-- 004-correct-subscriptions-api (migración 0003), 005-health-monitoring (migración 0004),
+-- 006-add-subscription-type (migración 0005) y 007-add-clinics-limit (migración 0006),
+-- PostgreSQL 17. Es el contenido que entregan esas migraciones y el que se refleja en
+-- project-definition/DATA_SCHEMA.md (esquema objetivo del proyecto). `subscriptions` se muestra
+-- ya con el tipo y el límite de clínicas (no el estado intermedio de antes de 0005/0006); el
+-- delta que aplica 0006 está documentado en
+-- specs/007-add-clinics-limit/contracts/database-schema.sql.
 --
--- Las claves primarias, únicas y foráneas y las restricciones CHECK NO se declaran con nombre:
--- PostgreSQL las crea solas con su nombre automático (<tabla>_pkey, <tabla>_<columna>_key,
--- <tabla>_<columna>_fkey, <tabla>_<columna>_check). Llevan nombre explícito solo el índice
--- parcial del nombre (la aplicación lo usa para traducir un nombre repetido a un 409), la función
--- y el disparador de updated_at.
+-- Las claves primarias, únicas y foráneas y las restricciones CHECK de una sola columna NO se
+-- declaran con nombre: PostgreSQL las crea solas con su nombre automático (<tabla>_pkey,
+-- <tabla>_<columna>_key, <tabla>_<columna>_fkey, <tabla>_<columna>_check). Llevan nombre
+-- explícito el CHECK de dos columnas de `subscriptions` (`subscriptions_clinics_limit_check`), el
+-- índice parcial del nombre (la aplicación lo usa para traducir un nombre repetido a un 409), la
+-- función y el disparador de updated_at.
 
 -- ---------------------------------------------------------------------------------------------
 -- Catálogo de estatus  -- [spec 001-subscriptions-api FR-022]
@@ -102,6 +107,8 @@ CREATE TABLE subscription_types (
 -- [spec 006-add-subscription-type FR-001 a FR-010]: `subscription_type_id` (a quién va dirigida
 -- la suscripción), obligatorio, inmutable por la aplicación, referencia al catálogo
 -- subscription_types (igual patrón que status_id).
+-- [spec 007-add-clinics-limit FR-001 a FR-007]: `clinics_limit`, el quinto límite de la clínica,
+-- con su rango acotado por `subscription_type_id` (exactamente 1 si es Individual; 1 a 100 si no).
 -- ---------------------------------------------------------------------------------------------
 CREATE TABLE subscriptions (
 	id serial4 PRIMARY KEY,
@@ -118,9 +125,14 @@ CREATE TABLE subscriptions (
 	doctors_limit int4 NOT NULL CHECK (doctors_limit BETWEEN 0 AND 1000000), -- [spec 004 FR-021]
 	assistants_limit int4 NOT NULL CHECK (assistants_limit BETWEEN 0 AND 1000000), -- [spec 004 FR-021]
 	new_patients_per_year_limit int4 NOT NULL CHECK (new_patients_per_year_limit BETWEEN 0 AND 1000000), -- [spec 004 FR-021]
+	clinics_limit int4 NOT NULL DEFAULT 1, -- [spec 007 FR-001, FR-007] quinto límite; el DEFAULT asigna 1 a toda fila existente al aplicar 0006 (válido para cualquier tipo); ver el CHECK de dos columnas, abajo
 	status_id int4 NOT NULL DEFAULT 1 REFERENCES subscription_statuses (id), -- [spec 001 FR-011] 1 = Activa
 	created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+	updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	CONSTRAINT subscriptions_clinics_limit_check CHECK ( -- [spec 007 FR-002, FR-003] respaldo defensivo: la API ya impide llegar a violarlo
+		(subscription_type_id = 1 AND clinics_limit = 1)
+		OR (subscription_type_id <> 1 AND clinics_limit BETWEEN 1 AND 100)
+	)
 );
 
 -- [spec 001 FR-014] el nombre es único, sin distinguir mayúsculas, entre las suscripciones no

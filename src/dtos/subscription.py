@@ -104,7 +104,7 @@ class SubscriptionRead(BaseModel):
             "orden en que se guardaron."
         ),
         examples=[["Soporte por correo y WhatsApp"]],
-    )
+    )  
     consulting_rooms_limit: int = Field(
         ge=0, le=1_000_000, description="Techo de consultorios que puede dar de alta la clínica."
     )
