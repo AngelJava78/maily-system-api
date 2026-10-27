@@ -11,12 +11,22 @@ inmutabilidad en una suscripción Individual al actualizar). A diferencia de `00
 tiene ningún script de reconciliación que validar aparte (research R5): todo se ejercita a través
 de las mismas tres operaciones de siempre (crear, consultar, actualizar).
 
+**Enmienda v1.1.0 de la constitución (2026-10-27, posterior al resto de esta guía)**: los tres
+niveles de abajo ya no se ejecutan todos como parte de `/speckit-implement`. El Nivel 1 ahora tiene
+dos corridas (rápida por defecto, completa con `-m ""`); los Niveles 2 y 3 son la puerta de calidad
+antes de integrar a `main` — hoy, mientras no exista un pipeline de CI, responsabilidad de quien
+haga ese merge, no de la implementación de la feature.
+
 ## Nivel 1 — Suite automatizada (pytest)
 
-Mismos comandos que 001/004/006 (`uv run pytest`, `uv run alembic upgrade head`,
-`uv run alembic check`, `uv run alembic downgrade base`). La migración `0006` (agrega
-`subscriptions.clinics_limit` con `DEFAULT 1` y su `CHECK` de dos columnas) se aplica y se revierte
-junto con `0001` a `0005`.
+Mismos comandos que 001/004/006, con una distinción nueva (Principio V, enmienda 2026-10-27):
+`uv run pytest` (sin más) corre solo lo rápido, sin PostgreSQL — es lo que se corre durante la
+implementación. Para la corrida completa (incluidas las pruebas marcadas `slow`, que necesitan la
+base real), hace falta `docker compose up -d db && uv run pytest -m ""`; junto con
+`uv run alembic upgrade head`, `uv run alembic check` y `uv run alembic downgrade base`, esa
+corrida completa es la que debe pasar antes de integrar a `main`, no en cada tarea. La migración
+`0006` (agrega `subscriptions.clinics_limit` con `DEFAULT 1` y su `CHECK` de dos columnas) se
+aplica y se revierte junto con `0001` a `0005`.
 
 ### Mapa historia → pruebas (solo lo nuevo)
 
@@ -33,6 +43,10 @@ El resto de las tablas de 001/004/006 (control de acceso, degradación de clíni
 configuración, tipo de suscripción) no cambia: sigue aplicando igual.
 
 ## Nivel 2 — La API de verdad, con las simulaciones (manual)
+
+**Puerta de calidad antes de integrar a `main` (Principio V, enmienda 2026-10-27), no parte de
+`/speckit-implement`**: levanta la pila e2e completa, lo mismo que exige Newman en el Nivel 3; se
+corre una sola vez, al terminar la feature, no en cada tarea.
 
 Mismo arranque que 001/004/006 (pila aislada `tests/postman/docker-compose.e2e.yml`).
 
@@ -71,6 +85,10 @@ curl.exe -s -X PATCH http://127.0.0.1:8011/api/v1/subscriptions/3 -H "Authorizat
 **Esperado**: los códigos y cuerpos indicados en cada línea. Desmontar la pila igual que en 001.
 
 ## Nivel 3 — Postman con Newman (punta a punta)
+
+**Puerta de calidad antes de integrar a `main` (Principio V, enmienda 2026-10-27), no parte de
+`/speckit-implement`**: responsabilidad de un pipeline de CI o, mientras no exista, de quien
+integre el cambio a `main` (ver `tasks.md`, T025).
 
 Mismos comandos que 001/004/006. La carpeta «1. Catálogo» agrega `clinics_limit` a los cuerpos de
 `create_subscription` existentes (para no romper el recorrido) y gana

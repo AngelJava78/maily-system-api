@@ -36,7 +36,7 @@ def operations_of(schema: dict) -> dict[str, tuple[str, str, dict]]:
 
 def test_the_document_is_generated_openapi_3_with_the_version_of_the_contract(schema):
     assert schema["openapi"].startswith("3.")
-    assert schema["info"]["version"] == "3.0.0"
+    assert schema["info"]["version"] == "4.0.0"
     assert schema["info"]["title"] == "MailySoft System API"
 
 

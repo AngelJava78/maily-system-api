@@ -131,6 +131,56 @@ async def test_subscription_type_id_defaults_to_individual_when_omitted(db_sessi
     assert value == 1
 
 
+@pytest.mark.parametrize(
+    ("subscription_type_id", "clinics_limit"),
+    [
+        (1, 2),  # Individual MUST be exactly 1
+        (1, 0),
+        (1, 100),  # valid for a non-Individual, not for this one
+        (2, 0),
+        (2, 101),
+    ],
+)
+async def test_clinics_limit_outside_its_rule_for_the_type_is_rejected(
+    db_session: AsyncSession, subscription_type_id: int, clinics_limit: int
+):
+    with pytest.raises(DBAPIError) as error:
+        await insert_with(
+            db_session,
+            "Limite invalido",
+            subscription_type_id=subscription_type_id,
+            clinics_limit=clinics_limit,
+        )
+
+    assert_pg_error(error, "23514", constraint="subscriptions_clinics_limit_check")
+
+
+@pytest.mark.parametrize(
+    ("subscription_type_id", "clinics_limit"),
+    [(1, 1), (2, 1), (2, 50), (2, 100)],
+)
+async def test_clinics_limit_matching_its_rule_for_the_type_is_accepted(
+    db_session: AsyncSession, subscription_type_id: int, clinics_limit: int
+):
+    await insert_with(
+        db_session,
+        "Limite valido",
+        subscription_type_id=subscription_type_id,
+        clinics_limit=clinics_limit,
+    )
+
+
+async def test_clinics_limit_defaults_to_one_when_omitted(db_session: AsyncSession):
+    await insert_with(db_session, "Sin limite de clinicas")
+
+    value = (
+        await db_session.execute(
+            text("SELECT clinics_limit FROM subscriptions WHERE name = 'Sin limite de clinicas'")
+        )
+    ).scalar_one()
+    assert value == 1
+
+
 async def test_trial_days_zero_and_the_default_are_accepted(db_session: AsyncSession):
     await insert_with(db_session, "Sin prueba", trial_days=0)
     await insert_with(db_session, "Por defecto")  # trial_days toma su DEFAULT (0)

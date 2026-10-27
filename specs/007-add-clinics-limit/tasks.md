@@ -79,15 +79,19 @@ R5), sin ningún script de reconciliación.
     server_default=text("1"))` (mismo criterio que `subscription_type_id`: `server_default`
     declarado también en el modelo, no solo en la migración, para que `alembic check` no detecte
     diferencia); `__table_args__` gana
-    `CheckConstraint("(subscription_type_id = 1 AND clinics_limit = 1) OR (subscription_type_id <> 1 AND clinics_limit BETWEEN 1 AND 100)", name="subscriptions_clinics_limit_check")`.
+    `CheckConstraint("(subscription_type_id = 1 AND clinics_limit = 1) OR (subscription_type_id <> 1 AND clinics_limit BETWEEN 1 AND 100)", name="clinics_limit_check")`
+    (nombre bare: la convención de `src/models/base.py` ya antepone `subscriptions_`, igual que
+    `consulting_rooms_limit_check`; pasarle el nombre ya prefijado lo duplica).
   - `src/dtos/subscription.py`:
     - `SubscriptionRead.clinics_limit: int = Field(ge=1, le=100, description=..., examples=[5])`.
     - `SubscriptionCreate.clinics_limit: int = Field(ge=1, le=100, description=...)` (obligatorio,
-      sin `default`) + `@model_validator(mode="after") def clinics_limit_matches_type(self):` que,
-      si `self.subscription_type_id == 1 and self.clinics_limit != 1`, levanta
-      `ValueError(SUBSCRIPTION_CLINICS_LIMIT_MUST_BE_ONE_MESSAGE)` (el `1` se escribe literal, igual
-      criterio que `SubscriptionStatusChange.status_id`: los DTOs no importan constantes de
-      `src/models/`).
+      sin `default`) + `@field_validator("clinics_limit") def clinics_limit_matches_type(cls,
+      value, info: ValidationInfo):` que, si `info.data.get("subscription_type_id") == 1 and value
+      != 1`, levanta `ValueError(SUBSCRIPTION_CLINICS_LIMIT_MUST_BE_ONE_MESSAGE)` (el `1` se
+      escribe literal, igual criterio que `SubscriptionStatusChange.status_id`: los DTOs no
+      importan constantes de `src/models/`). Un `field_validator` sobre el campo, no un
+      `model_validator` de clase: así el error sale con `field: "clinics_limit"`, no con la raíz
+      del modelo (`"body"`).
     - `SubscriptionUpdate.clinics_limit: int | None = Field(default=None, ge=1, le=100,
       description=...)` + `@field_validator("clinics_limit") def clinics_limit_cannot_be_null(...)`
       que levanta `ValueError(SUBSCRIPTION_CLINICS_LIMIT_INVALID_MESSAGE)` si el valor es `None`
@@ -116,7 +120,7 @@ R5), sin ningún script de reconciliación.
 
 **Purpose**: Confirmar el punto de partida.
 
-- [ ] T001 Verificar prerrequisitos: `git status --short` no muestra cambios sin seguimiento fuera
+- [X] T001 Verificar prerrequisitos: `git status --short` no muestra cambios sin seguimiento fuera
   de `specs/007-add-clinics-limit/` y `project-definition/`; `.specify/feature.json` contiene
   `"feature_directory": "specs/007-add-clinics-limit"`; `docker compose up -d db && uv run pytest`
   está en verde (línea base, con `006` ya integrada); `uv run alembic current` muestra `0005`.
@@ -132,21 +136,21 @@ historias necesitan. **Ninguna historia puede empezar sin esta fase.**
 
 ### Tests (escribirlos primero; deben fallar contra el código que todavía no tiene `clinics_limit`)
 
-- [ ] T002 [P] `tests/integration/test_migrations.py`: aplicar `0001` → `0006` sobre una base vacía
+- [X] T002 [P] `tests/integration/test_migrations.py`: aplicar `0001` → `0006` sobre una base vacía
   agrega `subscriptions.clinics_limit` (`NOT NULL`, `DEFAULT 1`); `uv run alembic downgrade base`
   revierte las seis sin error (quita primero el `CHECK` y la columna de `0006`, luego sigue con
   `0005` a `0001`); `uv run alembic check` no detecta diferencias tras `0006`. Insertar, con la base
   en `0005`, una fila Individual (`subscription_type_id=1`) y otra Empresarial
   (`subscription_type_id=2`) directo por SQL, **antes** de aplicar `0006`, y luego subir deja ambas
   con `clinics_limit = 1` (verifica el `DEFAULT`, FR-007).
-- [ ] T003 [P] `tests/integration/test_subscriptions_constraints.py`: con la base en `0006`, insertar
+- [X] T003 [P] `tests/integration/test_subscriptions_constraints.py`: con la base en `0006`, insertar
   directo por SQL `subscription_type_id=1, clinics_limit=2` (o cualquier valor ≠ 1) →
   `DBAPIError` SQLSTATE `23514`, `constraint = "subscriptions_clinics_limit_check"`; con
   `subscription_type_id=1, clinics_limit=1` no falla; con `subscription_type_id=2, clinics_limit=0`
   o `clinics_limit=101` → mismo SQLSTATE/constraint; con `subscription_type_id=2, clinics_limit=1` y
   con `clinics_limit=100` (bordes) no falla; omitir la columna en un `INSERT` crudo usa el
   `DEFAULT 1`.
-- [ ] T004 [P] `tests/unit/test_subscription_dtos.py`: **Crear** —
+- [X] T004 [P] `tests/unit/test_subscription_dtos.py`: **Crear** —
   `SubscriptionCreate` sin `clinics_limit`, con `null`, con un valor no entero (`"1"`, `true`,
   `1.5`), o con `0`/`101`/negativo → 422 con el mensaje exacto «El límite de clínicas debe ser un
   número entero de 1 a 100.»; con `subscription_type_id=1` (Individual) y `clinics_limit` de `2`,
@@ -161,7 +165,7 @@ historias necesitan. **Ninguna historia puede empezar sin esta fase.**
 
 ### Implementation
 
-- [ ] T005 [P] `alembic/versions/0006_add_clinics_limit.py` (**nuevo**; `revision = "0006"`,
+- [X] T005 [P] `alembic/versions/0006_add_clinics_limit.py` (**nuevo**; `revision = "0006"`,
   `down_revision = "0005"`): `op.add_column("subscriptions", sa.Column("clinics_limit",
   sa.Integer(), nullable=False, server_default=sa.text("1")))`; luego
   `op.create_check_constraint("subscriptions_clinics_limit_check", "subscriptions",
@@ -169,33 +173,38 @@ historias necesitan. **Ninguna historia puede empezar sin esta fase.**
   `downgrade()`: `op.drop_constraint("subscriptions_clinics_limit_check", "subscriptions",
   type_="check")` y luego `op.drop_column("subscriptions", "clinics_limit")` (orden inverso). Hace
   pasar T002 y T003.
-- [ ] T006 [P] `src/models/subscription.py`: añadir `clinics_limit: Mapped[int] =
+- [X] T006 [P] `src/models/subscription.py`: añadir `clinics_limit: Mapped[int] =
   mapped_column(Integer, server_default=text("1"))` (después de
   `new_patients_per_year_limit`, antes de `status_id`, mismo orden que la migración/el esquema);
   añadir a `__table_args__` el `CheckConstraint` de dos columnas con nombre
   `subscriptions_clinics_limit_check` (ver Convenciones). Debe coincidir exactamente con T005:
   `uv run alembic check` sin diferencias.
-- [ ] T007 [P] `src/messages.py`: añadir `SUBSCRIPTION_CLINICS_LIMIT_INVALID_MESSAGE`,
+- [X] T007 [P] `src/messages.py`: añadir `SUBSCRIPTION_CLINICS_LIMIT_INVALID_MESSAGE`,
   `SUBSCRIPTION_CLINICS_LIMIT_MUST_BE_ONE_MESSAGE` y `SUBSCRIPTION_CLINICS_LIMIT_IMMUTABLE_MESSAGE`
   (textos exactos en la tabla de Convenciones); en `VALIDATION_MESSAGES["subscriptions"]`, añadir
   `("clinics_limit", "required")` y `("clinics_limit", "invalid")`, ambas →
   `SUBSCRIPTION_CLINICS_LIMIT_INVALID_MESSAGE` (mismo patrón que `consulting_rooms_limit`). Hace
   pasar T004.
-- [ ] T008 [P] `src/exceptions.py`: subir el `@staticmethod field_error(field, message)` de
+- [X] T008 [P] `src/exceptions.py`: subir el `@staticmethod field_error(field, message)` de
   `MonitoredComponentDataError` a `AppError` (clase base; `MonitoredComponentDataError` ya no lo
   redefine, lo hereda); añadir `class SubscriptionDataError(AppError)` en la sección
   `--- Subscriptions ---`: `code = ErrorCode.VALIDATION_ERROR`, `status_code = 422`,
   `__init__(self, errors: list[dict[str, Any]])` que guarda `self.errors = errors` y llama a
   `super().__init__(VALIDATION_ERROR_MESSAGE)` (mismo patrón que `MonitoredComponentDataError`,
-  sin `ErrorCode` nuevo).
-- [ ] T009 [P] `src/dtos/subscription.py`: `SubscriptionRead` gana `clinics_limit: int` (`Field(ge=1,
+  sin `ErrorCode` nuevo). También en `src/error_handlers.py`: `subscription_data_error_handler`
+  (análogo a `component_data_error_handler`, traduce `error.errors` con
+  `translate_validation_errors(error.errors, "subscriptions")`) registrado en
+  `register_error_handlers` antes del `AppError` genérico — sin este registro, `SubscriptionDataError`
+  caería en el manejador genérico de `AppError` y respondería sin `errors[]`.
+- [X] T009 [P] `src/dtos/subscription.py`: `SubscriptionRead` gana `clinics_limit: int` (`Field(ge=1,
   le=100, ...)`), colocado junto a los otros cuatro límites; `SubscriptionCreate` gana
-  `clinics_limit: int` (`Field(ge=1, le=100, ...)`, sin `default`) + el `model_validator(mode=
-  "after")` nuevo (ver Convenciones; importar `SUBSCRIPTION_CLINICS_LIMIT_MUST_BE_ONE_MESSAGE` de
-  `src.messages`); `SubscriptionUpdate` gana `clinics_limit: int | None = Field(default=None, ge=1,
+  `clinics_limit: int` (`Field(ge=1, le=100, ...)`, sin `default`) + el `field_validator` nuevo
+  sobre `clinics_limit` (ver Convenciones; importar `SUBSCRIPTION_CLINICS_LIMIT_MUST_BE_ONE_MESSAGE`
+  de `src.messages` y `ValidationInfo` de `pydantic`); `SubscriptionUpdate` gana
+  `clinics_limit: int | None = Field(default=None, ge=1,
   le=100, ...)` + el `@field_validator("clinics_limit")` "no nulo" (importar
   `SUBSCRIPTION_CLINICS_LIMIT_INVALID_MESSAGE`). Hace pasar T004.
-- [ ] T010 [P] `tests/helpers.py` y `tests/unit/fakes.py`: `insert_subscription(...)` gana
+- [X] T010 [P] `tests/helpers.py` y `tests/unit/fakes.py`: `insert_subscription(...)` gana
   `clinics_limit: int = 1` (incluido en el diccionario `values`); `FakeSubscriptionRepository.add()`
   gana `clinics_limit: int = 1`, pasado al `Subscription(...)` que construye; `.create()` gana el
   mismo parámetro con nombre y lo reenvía a `self.add(...)`.
@@ -219,10 +228,10 @@ cualquier otro tipo, un entero de 1 a 100 (FR-003); fuera de esas reglas no se c
 
 ### Tests for User Story 1 (escribirlas primero; deben fallar)
 
-- [ ] T011 [P] [US1] `tests/unit/test_subscription_service.py`: `create(data, token)` con
+- [X] T011 [P] [US1] `tests/unit/test_subscription_service.py`: `create(data, token)` con
   `data.clinics_limit = 1` (y `subscription_type_id = 1`) pasa `clinics_limit=1` a
   `repository.create(...)`; con `data.clinics_limit = 25` (y `subscription_type_id = 2`) pasa `25`.
-- [ ] T012 [US1] `tests/contract/test_subscriptions_api.py`: `POST /api/v1/subscriptions` con
+- [X] T012 [US1] `tests/contract/test_subscriptions_api.py`: `POST /api/v1/subscriptions` con
   `subscription_type_id: 1, clinics_limit: 1` → 201 con `clinics_limit: 1`; con
   `subscription_type_id: 1` y `clinics_limit` distinto de `1` → 422 con el mensaje exacto «Una
   suscripción Individual debe tener límite de clínicas igual a 1.»; con `subscription_type_id: 2` y
@@ -230,17 +239,17 @@ cualquier otro tipo, un entero de 1 a 100 (FR-003); fuera de esas reglas no se c
   `clinics_limit` en `0` o `101` → 422 con el mensaje exacto «El límite de clínicas debe ser un
   número entero de 1 a 100.»; sin `clinics_limit` → 422 con el mismo mensaje de obligatoriedad; en
   todos los rechazos, la suscripción **no** aparece después en `GET /api/v1/subscriptions`.
-- [ ] T013 [P] [US1] `tests/integration/test_subscription_repository.py`: `create(...)` con
+- [X] T013 [P] [US1] `tests/integration/test_subscription_repository.py`: `create(...)` con
   `clinics_limit=1` (Individual) y con `clinics_limit=30` (Empresarial) persiste y devuelve ese
   valor exacto tras recargar de la base real.
 
 ### Implementation for User Story 1
 
-- [ ] T014 [US1] `src/repositories/subscription_repository.py`: `create(...)` gana el parámetro con
+- [X] T014 [US1] `src/repositories/subscription_repository.py`: `create(...)` gana el parámetro con
   nombre `clinics_limit: int`, incluido en `insert(Subscription).values(...)`. Hace pasar T013.
-- [ ] T015 [US1] `src/services/subscription_service.py`: `create(data, token)` pasa
+- [X] T015 [US1] `src/services/subscription_service.py`: `create(data, token)` pasa
   `clinics_limit=data.clinics_limit` a `repository.create(...)`. Hace pasar T011/T012.
-- [ ] T016 [US1] `src/routers/subscriptions.py`: `CREATED` gana `"clinics_limit": 25`;
+- [X] T016 [US1] `src/routers/subscriptions.py`: `CREATED` gana `"clinics_limit": 25`;
   `CREATE_EXAMPLES["completo"]` gana `"clinics_limit": 25` (es Empresarial) y
   `CREATE_EXAMPLES["minimo"]` gana `"clinics_limit": 1` (es Individual); `WRITE_VALIDATION_ERROR`
   gana `limite_clinicas_obligatorio` (`code: "validation_error"`, `errors: [{"field":
@@ -266,7 +275,7 @@ junto a los otros cuatro límites.
 
 ### Tests for User Story 2
 
-- [ ] T017 [P] [US2] `tests/contract/test_subscriptions_api.py`: crear una suscripción Individual
+- [X] T017 [P] [US2] `tests/contract/test_subscriptions_api.py`: crear una suscripción Individual
   (`clinics_limit: 1`) y una Empresarial (`clinics_limit: 40`); `GET /api/v1/subscriptions` devuelve
   cada una con su propio `clinics_limit`, junto a `consulting_rooms_limit`, `doctors_limit`,
   `assistants_limit` y `new_patients_per_year_limit`; `GET /api/v1/subscriptions/{id}` de cada una
@@ -274,7 +283,7 @@ junto a los otros cuatro límites.
 
 ### Implementation for User Story 2
 
-- [ ] T018 [US2] `src/routers/subscriptions.py`: `LIST_EXAMPLE` gana `"clinics_limit": 5` en el
+- [X] T018 [US2] `src/routers/subscriptions.py`: `LIST_EXAMPLE` gana `"clinics_limit": 5` en el
   primer elemento (Empresarial) y `"clinics_limit": 1` en el segundo (Individual). La Foundational
   (T006, T009) ya basta para que la respuesta real lo haga bien; esta tarea es solo la
   documentación. Hace pasar T017.
@@ -296,7 +305,7 @@ cuatro límites.
 
 ### Tests for User Story 3 (escribirlas primero; deben fallar)
 
-- [ ] T019 [P] [US3] `tests/unit/test_subscription_service.py`: con un `FakeSubscriptionRepository`
+- [X] T019 [P] [US3] `tests/unit/test_subscription_service.py`: con un `FakeSubscriptionRepository`
   que ya tiene una suscripción Individual (`subscription_type_id=1, clinics_limit=1`),
   `update(id, SubscriptionUpdate(clinics_limit=1), token)` levanta `SubscriptionDataError` con
   `errors == [{"field": "clinics_limit", "message": "El límite de clínicas no puede modificarse en
@@ -307,7 +316,7 @@ cuatro límites.
   token)` sí llama a `repository.update(...)` con `{"clinics_limit": 80}` en `changes`. Una
   actualización que no incluye `clinics_limit` no dispara ninguna lectura adicional más allá de la
   que ya existía para `module_keys`.
-- [ ] T020 [US3] `tests/contract/test_subscriptions_api.py`: `PATCH
+- [X] T020 [US3] `tests/contract/test_subscriptions_api.py`: `PATCH
   /api/v1/subscriptions/{id}` sobre una Individual con `{"clinics_limit": 1}` → 422 con el mensaje
   exacto «El límite de clínicas no puede modificarse en una suscripción Individual.»; con
   `{"clinics_limit": 50, "monthly_price": "950.00"}` → también 422, mismo mensaje, y
@@ -319,7 +328,7 @@ cuatro límites.
 
 ### Implementation for User Story 3
 
-- [ ] T021 [US3] `src/services/subscription_service.py`: en `update(subscription_id, data, token)`,
+- [X] T021 [US3] `src/services/subscription_service.py`: en `update(subscription_id, data, token)`,
   cambiar `if "module_keys" in changes:` por una condición que también dispare con
   `"clinics_limit" in changes`, leyendo la suscripción una sola vez con
   `self._repository.get_current_by_id(subscription_id)` y reutilizándola para ambas comprobaciones;
@@ -329,7 +338,7 @@ cuatro límites.
   "clinics_limit", SUBSCRIPTION_CLINICS_LIMIT_IMMUTABLE_MESSAGE)])` antes de resolver `module_keys`
   o llamar al repositorio (importar `SubscriptionType` de `src.models.subscription_type` y
   `AppError`/`SubscriptionDataError` de `src.exceptions`). Hace pasar T019/T020.
-- [ ] T022 [US3] `src/routers/subscriptions.py`: `UPDATE_EXAMPLES` gana `limite_clinicas`
+- [X] T022 [US3] `src/routers/subscriptions.py`: `UPDATE_EXAMPLES` gana `limite_clinicas`
   (`{"clinics_limit": 50}`, resumen "Subir el límite de clínicas (solo válido en una suscripción no
   Individual)"); `WRITE_VALIDATION_ERROR` gana `limite_clinicas_no_permitido_individual`
   (`errors: [{"field": "clinics_limit", "message": "El límite de clínicas no puede modificarse en
@@ -352,26 +361,26 @@ enmienda del Principio V (2026-10-27), esta fase **no** ejecuta Newman ni la col
 puerta de calidad antes de integrar a `main` (pipeline de CI o, mientras no exista, a quien haga el
 merge).
 
-- [ ] T023 [P] `src/__init__.py`: `VERSION = "4.0.0"`; `pyproject.toml`: `[project] version =
+- [X] T023 [P] `src/__init__.py`: `VERSION = "4.0.0"`; `pyproject.toml`: `[project] version =
   "4.0.0"` (igual valor; `tests/unit/test_version.py` exige que las dos y `uv.lock` coincidan);
   correr `uv lock` para que `uv.lock` quede con `4.0.0`. Confirmar que `uv run pytest
   tests/unit/test_version.py tests/contract/test_openapi_contract.py` sigue en verde con la corrida
   normal (ninguna de las dos necesita PostgreSQL) y que `test_openapi_contract.py` sigue esperando
   **18** códigos de error (research R4 — esta feature no agrega ninguno).
-- [ ] T024 [P] `tests/postman/collections/MailySoft-System-Suscripciones.postman_collection.json`:
+- [X] T024 [P] `tests/postman/collections/MailySoft-System-Suscripciones.postman_collection.json`:
   los cuerpos de `create_subscription` existentes ganan `clinics_limit` (coherente con su
   `subscription_type_id`: `1` si Individual, un valor de 1 a 100 si no); + nueva petición
   `create_subscription: límite de clínicas inválido para Individual (422)` en «1. Catálogo»; + nueva
   petición `update_subscription: el límite de clínicas no se puede modificar en una Individual
   (422)` y `update_subscription: subir el límite de clínicas de una Empresarial` en «2. Consultar y
   actualizar». Solo se edita el archivo JSON; **no** se corre Newman aquí (Convenciones).
-- [ ] T025 Verificación final rápida (lo único que corre en esta implementación): `uv run pytest`
+- [X] T025 Verificación final rápida (lo único que corre en esta implementación): `uv run pytest`
   (corrida normal, sin DB) en verde. Dejar anotado para quien integre a `main` que falta correr la
   puerta completa: `docker compose up -d db && uv run pytest -m ""` (incluye T002, T003, T012,
   T013, T017 y T020) y, aparte, Newman sobre
   `MailySoft-System-Suscripciones.postman_collection.json` (nivel 3 de
   [quickstart.md](quickstart.md)) — ninguna de las dos se ejecuta como parte de esta tarea.
-- [ ] T026 [P] Revisión final de documentación (sin ejecutar nada contra una base de datos): los
+- [X] T026 [P] Revisión final de documentación (sin ejecutar nada contra una base de datos): los
   mensajes nuevos coinciden **verbatim** con
   [contracts/error-catalog.md](contracts/error-catalog.md); `project-definition/DATA_SCHEMA.md` y
   `create_database.sql` (ya actualizados durante `/speckit-plan`) siguen coincidiendo, línea a
@@ -427,8 +436,8 @@ Task: "DTOs (crear y actualizar) en tests/unit/test_subscription_dtos.py"
 Task: "alembic/versions/0006_add_clinics_limit.py (nueva)"
 Task: "src/models/subscription.py (columna + CHECK)"
 Task: "src/messages.py (tres mensajes + dos entradas de VALIDATION_MESSAGES)"
-Task: "src/exceptions.py (field_error a AppError + SubscriptionDataError)"
-Task: "src/dtos/subscription.py (clinics_limit en los tres DTOs + model_validator)"
+Task: "src/exceptions.py (field_error a AppError + SubscriptionDataError) y src/error_handlers.py (su handler registrado)"
+Task: "src/dtos/subscription.py (clinics_limit en los tres DTOs + field_validator cruzado)"
 Task: "tests/helpers.py y tests/unit/fakes.py"
 ```
 

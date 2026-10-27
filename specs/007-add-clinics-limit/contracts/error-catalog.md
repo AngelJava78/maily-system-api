@@ -12,7 +12,7 @@ códigos sigue siendo el mismo de
 | Situación | Operación | `field` | Mensaje |
 |---|---|---|---|
 | Falta, es `null`, no es un entero, o está fuera de 1 a 100 | Crear, Actualizar | `clinics_limit` | «El límite de clínicas debe ser un número entero de 1 a 100.» |
-| El tipo de la suscripción es Individual y `clinics_limit` no es `1` | Crear | `clinics_limit` | «Una suscripción Individual debe tener límite de clínicas igual a 1.» *(validación cruzada de Pydantic, `model_validator`, research R2)* |
+| El tipo de la suscripción es Individual y `clinics_limit` no es `1` | Crear | `clinics_limit` | «Una suscripción Individual debe tener límite de clínicas igual a 1.» *(validación cruzada de Pydantic, `field_validator` sobre `clinics_limit` con `info.data`, research R2)* |
 | Se envía en la actualización de una suscripción Individual (con cualquier valor, igual o distinto al que ya tiene) | Actualizar | `clinics_limit` | «El límite de clínicas no puede modificarse en una suscripción Individual.» *(decidida por el Service, no por el DTO — research R3; misma forma de respuesta que si la hubiera decidido Pydantic)* |
 
 ## Qué operaciones pueden devolver cada mensaje

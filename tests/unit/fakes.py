@@ -114,6 +114,7 @@ class FakeSubscriptionRepository:
         doctors_limit: int = 1,
         assistants_limit: int = 1,
         new_patients_per_year_limit: int = 100,
+        clinics_limit: int = 1,
         created_at: datetime | None = None,
     ) -> Subscription:
         subscription_id = self._next_id
@@ -134,6 +135,7 @@ class FakeSubscriptionRepository:
             doctors_limit=doctors_limit,
             assistants_limit=assistants_limit,
             new_patients_per_year_limit=new_patients_per_year_limit,
+            clinics_limit=clinics_limit,
             status_id=status_id,
             created_at=moment,
             updated_at=moment,
@@ -189,6 +191,7 @@ class FakeSubscriptionRepository:
         doctors_limit: int,
         assistants_limit: int,
         new_patients_per_year_limit: int,
+        clinics_limit: int,
     ) -> Subscription:
         self.calls["create"] += 1
         if self._is_name_taken(name):
@@ -207,6 +210,7 @@ class FakeSubscriptionRepository:
             doctors_limit=doctors_limit,
             assistants_limit=assistants_limit,
             new_patients_per_year_limit=new_patients_per_year_limit,
+            clinics_limit=clinics_limit,
         )
 
     async def update(

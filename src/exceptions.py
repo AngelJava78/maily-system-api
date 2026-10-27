@@ -43,6 +43,17 @@ class AppError(Exception):
         self.message = message
         self.headers = headers  # extra response headers (e.g. `WWW-Authenticate` in a 401)
 
+    @staticmethod
+    def field_error(field: str, message: str) -> dict[str, Any]:
+        """One error on a field of the body, with its message in Spanish (never the value)."""
+        return {
+            "type": "value_error",
+            "loc": ("body", field),
+            "msg": message,
+            "input": None,
+            "ctx": {"error": ValueError(message)},
+        }
+
 
 # --- Access control (the decision comes from the users API) ---
 
@@ -200,6 +211,22 @@ class SubscriptionTypeNotFoundError(AppError):
         )
 
 
+class SubscriptionDataError(AppError):
+    """Data that the Service rejects on a current subscription's state, not on the DTO alone.
+
+    Used by `clinics_limit`'s immutability on an Individual subscription (spec 007): the DTO
+    cannot know the subscription's current type, so the Service decides and reports it with the
+    same shape as any other field validation error (`AppError.field_error`, no new `ErrorCode`).
+    """
+
+    code = ErrorCode.VALIDATION_ERROR
+    status_code = 422
+
+    def __init__(self, errors: list[dict[str, Any]]) -> None:
+        super().__init__(VALIDATION_ERROR_MESSAGE)
+        self.errors = errors
+
+
 # --- Registry of monitored components (spec 005) ---
 
 
@@ -236,14 +263,3 @@ class MonitoredComponentDataError(AppError):
     def __init__(self, errors: list[dict[str, Any]]) -> None:
         super().__init__(VALIDATION_ERROR_MESSAGE)
         self.errors = errors
-
-    @staticmethod
-    def field_error(field: str, message: str) -> dict[str, Any]:
-        """One error on a field of the body, with its message in Spanish (never the value)."""
-        return {
-            "type": "value_error",
-            "loc": ("body", field),
-            "msg": message,
-            "input": None,
-            "ctx": {"error": ValueError(message)},
-        }

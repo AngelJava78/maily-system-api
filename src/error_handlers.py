@@ -3,7 +3,8 @@
 - `AppError` (domain errors) -> its own status with `ErrorResponse(code, message)`.
 - `RequestValidationError` -> 422 with `errors[]`, one element per invalid piece of data and
   with its message in Spanish (never the English text of Pydantic).
-- `MonitoredComponentDataError` (what the Service of the registry rejects) -> the same 422 body.
+- `MonitoredComponentDataError`/`SubscriptionDataError` (what a Service rejects on its own data,
+  not on the DTO alone) -> the same 422 body.
 - Any other exception -> 500 with a generic message; the detail only goes to the server log, and
   never the body of the request.
 """
@@ -17,7 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from src.dtos.errors import ErrorResponse, FieldError
-from src.exceptions import AppError, MonitoredComponentDataError
+from src.exceptions import AppError, MonitoredComponentDataError, SubscriptionDataError
 from src.messages import (
     FIELD_MESSAGES,
     FORBIDDEN_FIELD_MESSAGE,
@@ -160,6 +161,17 @@ async def component_data_error_handler(
     return _error_response(422, body)
 
 
+async def subscription_data_error_handler(
+    request: Request, error: SubscriptionDataError
+) -> JSONResponse:
+    body = ErrorResponse(
+        code=ErrorCode.VALIDATION_ERROR,
+        message=VALIDATION_ERROR_MESSAGE,
+        errors=translate_validation_errors(error.errors, "subscriptions"),
+    )
+    return _error_response(422, body)
+
+
 async def unexpected_error_handler(request: Request, error: Exception) -> JSONResponse:
     # The trace goes to the log (in English); the request body and headers never do.
     logger.error(
@@ -171,8 +183,10 @@ async def unexpected_error_handler(request: Request, error: Exception) -> JSONRe
 
 
 def register_error_handlers(app: FastAPI) -> None:
-    # The most specific handler wins: a `MonitoredComponentDataError` is also an `AppError`.
+    # The most specific handler wins: a `MonitoredComponentDataError`/`SubscriptionDataError` is
+    # also an `AppError`.
     app.add_exception_handler(MonitoredComponentDataError, component_data_error_handler)
+    app.add_exception_handler(SubscriptionDataError, subscription_data_error_handler)
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(Exception, unexpected_error_handler)

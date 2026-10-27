@@ -239,7 +239,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"Pro {{suffix}}\", \"subscription_type_id\": 2, \"description\": \"Para clínicas en crecimiento.\", \"monthly_price\": 1299, \"annual_price\": 12990, \"trial_days\": 14, \"self_service\": true, \"module_keys\": [\"scheduling\"], \"other_features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"], \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000}"
+              "raw": "{\"name\": \"Pro {{suffix}}\", \"subscription_type_id\": 2, \"description\": \"Para clínicas en crecimiento.\", \"monthly_price\": 1299, \"annual_price\": 12990, \"trial_days\": 14, \"self_service\": true, \"module_keys\": [\"scheduling\"], \"other_features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"], \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000, \"clinics_limit\": 25}"
             }
           },
           "response": [],
@@ -296,7 +296,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"Sin tipo {{suffix}}\", \"monthly_price\": 1, \"annual_price\": 1, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 1}"
+              "raw": "{\"name\": \"Sin tipo {{suffix}}\", \"monthly_price\": 1, \"annual_price\": 1, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 1, \"clinics_limit\": 1}"
             }
           },
           "response": [],
@@ -338,7 +338,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"Tipo inexistente {{suffix}}\", \"subscription_type_id\": 99, \"monthly_price\": 1, \"annual_price\": 1, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 1}"
+              "raw": "{\"name\": \"Tipo inexistente {{suffix}}\", \"subscription_type_id\": 99, \"monthly_price\": 1, \"annual_price\": 1, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 1, \"clinics_limit\": 1}"
             }
           },
           "response": [],
@@ -352,6 +352,48 @@
                   "const error = pm.response.json();",
                   "pm.test(\"codigo subscription_type_not_found\", function () { pm.expect(error.code).to.eql(\"subscription_type_not_found\"); });",
                   "pm.test(\"mensaje con el identificador\", function () { pm.expect(error.message).to.eql(\"No se encontró el tipo de suscripción con el identificador 99.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: límite de clínicas inválido para Individual (422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Limite invalido {{suffix}}\", \"subscription_type_id\": 1, \"monthly_price\": 1, \"annual_price\": 1, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 1, \"clinics_limit\": 5}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"campo clinics_limit\", function () { pm.expect(error.errors[0].field).to.eql(\"clinics_limit\"); });",
+                  "pm.test(\"mensaje Individual igual a 1\", function () { pm.expect(error.errors[0].message).to.eql(\"Una suscripción Individual debe tener límite de clínicas igual a 1.\"); });"
                 ]
               }
             }
@@ -497,7 +539,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"Otra {{suffix}}\", \"subscription_type_id\": 1, \"monthly_price\": 100, \"annual_price\": 1000, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 100}"
+              "raw": "{\"name\": \"Otra {{suffix}}\", \"subscription_type_id\": 1, \"monthly_price\": 100, \"annual_price\": 1000, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 100, \"clinics_limit\": 1}"
             }
           },
           "response": [],
@@ -638,6 +680,90 @@
                   "const error = pm.response.json();",
                   "pm.test(\"campo subscription_type_id\", function () { pm.expect(error.errors[0].field).to.eql(\"subscription_type_id\"); });",
                   "pm.test(\"mensaje de inmutabilidad\", function () { pm.expect(error.errors[0].message).to.eql(\"El tipo de suscripción no puede modificarse una vez creada.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_subscription: el límite de clínicas no se puede modificar en una Individual (422)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{otherSubscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{otherSubscriptionId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"clinics_limit\": 1}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"campo clinics_limit\", function () { pm.expect(error.errors[0].field).to.eql(\"clinics_limit\"); });",
+                  "pm.test(\"mensaje de inmutabilidad\", function () { pm.expect(error.errors[0].message).to.eql(\"El límite de clínicas no puede modificarse en una suscripción Individual.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_subscription: subir el límite de clínicas de una Empresarial",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"clinics_limit\": 50}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"nuevo limite de clinicas\", function () { pm.expect(pm.response.json().clinics_limit).to.eql(50); });"
                 ]
               }
             }
@@ -1181,7 +1307,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"{{proName}}\", \"subscription_type_id\": 1, \"monthly_price\": 1299, \"annual_price\": 12990, \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000}"
+              "raw": "{\"name\": \"{{proName}}\", \"subscription_type_id\": 1, \"monthly_price\": 1299, \"annual_price\": 12990, \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000, \"clinics_limit\": 1}"
             }
           },
           "response": [],
@@ -1570,7 +1696,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"Degradación {{suffix}}\", \"subscription_type_id\": 1, \"monthly_price\": 1, \"annual_price\": 10, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 1}"
+              "raw": "{\"name\": \"Degradación {{suffix}}\", \"subscription_type_id\": 1, \"monthly_price\": 1, \"annual_price\": 10, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 1, \"clinics_limit\": 1}"
             }
           },
           "response": [],

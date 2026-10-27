@@ -31,15 +31,17 @@ async def create_minimal(
     monthly_price: Decimal = Decimal("1"),
     other_features: list[str] | None = None,
     module_keys: list[str] | None = None,
+    subscription_type_id: int = 1,
+    clinics_limit: int = 1,
 ):
-    """`repository.create(...)` with sensible defaults for the seven fields this module does not
+    """`repository.create(...)` with sensible defaults for the fields this module does not
     exercise (module validation is the Service's job, already covered in test_subscription_service.py).
     """
     return await repository.create(
         name,
         description,
         monthly_price,
-        subscription_type_id=1,
+        subscription_type_id=subscription_type_id,
         annual_price=Decimal("10"),
         trial_days=0,
         self_service=False,
@@ -49,6 +51,7 @@ async def create_minimal(
         doctors_limit=1,
         assistants_limit=1,
         new_patients_per_year_limit=100,
+        clinics_limit=clinics_limit,
     )
 
 
@@ -132,6 +135,7 @@ async def test_create_inserts_an_active_subscription_and_returns_it_reloaded(
         doctors_limit=3,
         assistants_limit=2,
         new_patients_per_year_limit=15000,
+        clinics_limit=25,
     )
 
     assert created.id >= 1
@@ -147,6 +151,7 @@ async def test_create_inserts_an_active_subscription_and_returns_it_reloaded(
     assert created.other_features == ["Hasta 5 consultorios", "Usuarios ilimitados"]  # same order
     assert (created.consulting_rooms_limit, created.doctors_limit) == (2, 3)
     assert (created.assistants_limit, created.new_patients_per_year_limit) == (2, 15000)
+    assert created.clinics_limit == 25
     assert created.description == "Para clínicas"
     assert created.created_at == created.updated_at
 
@@ -157,6 +162,22 @@ async def test_create_without_description_stores_none(db_session: AsyncSession):
     assert created.description is None
     assert created.other_features == []
     assert created.monthly_price == Decimal("1.00")
+
+
+async def test_create_persists_the_exact_clinics_limit_for_individual_and_enterprise(
+    db_session: AsyncSession,
+):
+    repository = SubscriptionRepository(db_session)
+
+    individual = await create_minimal(
+        repository, "Solo", subscription_type_id=1, clinics_limit=1
+    )
+    enterprise = await create_minimal(
+        repository, "Corporativo", subscription_type_id=2, clinics_limit=30
+    )
+
+    assert individual.clinics_limit == 1
+    assert enterprise.clinics_limit == 30
 
 
 async def test_a_repeated_name_with_other_capitals_is_a_unique_violation_of_the_name_index(

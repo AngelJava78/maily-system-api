@@ -55,6 +55,7 @@ class SubscriptionRepository:
         doctors_limit: int,
         assistants_limit: int,
         new_patients_per_year_limit: int,
+        clinics_limit: int,
     ) -> Subscription:
         """Insert an active subscription and commit (the unique index decides name conflicts).
 
@@ -80,6 +81,7 @@ class SubscriptionRepository:
                 doctors_limit=doctors_limit,
                 assistants_limit=assistants_limit,
                 new_patients_per_year_limit=new_patients_per_year_limit,
+                clinics_limit=clinics_limit,
             )
             .returning(Subscription.id)
         )

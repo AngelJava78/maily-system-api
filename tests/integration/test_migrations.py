@@ -163,3 +163,57 @@ async def test_the_default_assigns_individual_to_rows_that_existed_before_0005(
         # tests in this session assume the table starts empty.
         async with engine.begin() as connection:
             await connection.execute(text("DELETE FROM subscriptions WHERE name = 'Previa'"))
+
+
+async def test_upgrade_to_0006_adds_the_clinics_limit_column(
+    migrator: Migrator, engine: AsyncEngine, restore_head
+):
+    await migrator.downgrade("base")
+    await migrator.upgrade("head")
+
+    assert "clinics_limit" in await columns(engine, "subscriptions")
+
+
+async def test_downgrade_to_0005_removes_the_clinics_limit_column(
+    migrator: Migrator, engine: AsyncEngine, restore_head
+):
+    await migrator.upgrade("head")
+    await migrator.downgrade("0005")
+
+    assert "clinics_limit" not in await columns(engine, "subscriptions")
+
+
+async def test_the_default_assigns_one_to_rows_that_existed_before_0006(
+    migrator: Migrator, engine: AsyncEngine, restore_head
+):
+    """FR-007: 1 is valid for Individual (the only value it allows) and for Empresarial (the
+    lowest of its 1-100 range), so no pre-existing row, of either type, needs a guess."""
+    await migrator.downgrade("base")
+    await migrator.upgrade("0005")
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO subscriptions (name, subscription_type_id, monthly_price, "
+                    "annual_price, consulting_rooms_limit, doctors_limit, assistants_limit, "
+                    "new_patients_per_year_limit) VALUES "
+                    "('PreviaIndividual', 1, 1, 1, 1, 1, 1, 100), "
+                    "('PreviaEmpresarial', 2, 1, 1, 1, 1, 1, 100)"
+                )
+            )
+
+        await migrator.upgrade("0006")
+
+        assert await fetch_all(
+            engine,
+            "SELECT name, clinics_limit FROM subscriptions "
+            "WHERE name IN ('PreviaIndividual', 'PreviaEmpresarial') ORDER BY name",
+        ) == [("PreviaEmpresarial", 1), ("PreviaIndividual", 1)]
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM subscriptions WHERE name IN "
+                    "('PreviaIndividual', 'PreviaEmpresarial')"
+                )
+            )

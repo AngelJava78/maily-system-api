@@ -129,6 +129,15 @@ SUBSCRIPTION_ASSISTANTS_LIMIT_INVALID_MESSAGE = (
 SUBSCRIPTION_NEW_PATIENTS_PER_YEAR_LIMIT_INVALID_MESSAGE = (
     "El límite de pacientes nuevos al año debe ser un número entero de 0 a 1 000 000."
 )
+SUBSCRIPTION_CLINICS_LIMIT_INVALID_MESSAGE = (
+    "El límite de clínicas debe ser un número entero de 1 a 100."
+)
+SUBSCRIPTION_CLINICS_LIMIT_MUST_BE_ONE_MESSAGE = (
+    "Una suscripción Individual debe tener límite de clínicas igual a 1."
+)
+SUBSCRIPTION_CLINICS_LIMIT_IMMUTABLE_MESSAGE = (
+    "El límite de clínicas no puede modificarse en una suscripción Individual."
+)
 SUBSCRIPTION_STATUS_NOT_ALLOWED_MESSAGE = (
     "El estatus debe ser uno de los que admite esta operación (1, 2 o 3)."
 )
@@ -236,6 +245,8 @@ VALIDATION_MESSAGES: dict[str, dict[tuple[str, str], str]] = {
         ("new_patients_per_year_limit", "invalid"): (
             SUBSCRIPTION_NEW_PATIENTS_PER_YEAR_LIMIT_INVALID_MESSAGE
         ),
+        ("clinics_limit", "required"): SUBSCRIPTION_CLINICS_LIMIT_INVALID_MESSAGE,
+        ("clinics_limit", "invalid"): SUBSCRIPTION_CLINICS_LIMIT_INVALID_MESSAGE,
         ("status_id", "required"): _STATUS_REQUIRED_MESSAGE,
         ("status_id", "invalid"): _STATUS_REQUIRED_MESSAGE,
         ("subscription_id", "invalid"): (

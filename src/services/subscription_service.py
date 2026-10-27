@@ -9,8 +9,10 @@ from src.dtos.subscription import (
     SubscriptionUpdate,
 )
 from src.exceptions import (
+    AppError,
     ClinicsCheckUnavailableError,
     ModuleCheckUnavailableError,
+    SubscriptionDataError,
     SubscriptionHasClinicsError,
     SubscriptionModuleNotFoundError,
     SubscriptionModulePrerequisiteMissingError,
@@ -22,7 +24,9 @@ from src.exceptions import (
 from src.integrations.clinics_api import ClinicsApiClient
 from src.integrations.errors import ClinicsApiUnavailable, UsersApiUnavailable
 from src.integrations.users_api import UsersApiClient
+from src.messages import SUBSCRIPTION_CLINICS_LIMIT_IMMUTABLE_MESSAGE
 from src.models.subscription import SUBSCRIPTION_NAME_INDEX, SUBSCRIPTION_TYPE_FK_NAME, Subscription
+from src.models.subscription_type import SubscriptionType
 from src.repositories.errors import ForeignKeyViolationError, UniqueViolationError
 from src.repositories.subscription_repository import SubscriptionRepository
 
@@ -132,6 +136,7 @@ class SubscriptionService:
                 doctors_limit=data.doctors_limit,
                 assistants_limit=data.assistants_limit,
                 new_patients_per_year_limit=data.new_patients_per_year_limit,
+                clinics_limit=data.clinics_limit,
             )
         except UniqueViolationError as error:
             if error.constraint_name == SUBSCRIPTION_NAME_INDEX:
@@ -162,15 +167,30 @@ class SubscriptionService:
     ) -> SubscriptionView:
         """Apply only the fields that were sent; the database decides the name conflicts.
 
-        If `module_keys` is part of the request, existence is checked first (one extra read) so a
-        missing or deleted subscription is answered without spending a call on the users API
-        (research R6); updates that do not touch modules keep the original single-statement path.
+        If `module_keys` and/or `clinics_limit` are part of the request, the subscription is read
+        first (one lookup, shared by both) so a missing one is answered without spending a call
+        on the users API (research R6), and so an Individual subscription's `clinics_limit` can
+        be rejected —it is fixed forever there (spec 007 FR-005)— before writing anything. An
+        update that touches neither keeps the original single-statement path.
         """
         changes = data.model_dump(exclude_unset=True)  # a description sent as null is kept
-        if "module_keys" in changes:
-            if await self._repository.get_current_by_id(subscription_id) is None:
+        if "module_keys" in changes or "clinics_limit" in changes:
+            current = await self._repository.get_current_by_id(subscription_id)
+            if current is None:
                 raise SubscriptionNotFoundError(subscription_id)
-            changes["module_keys"] = await self._resolve_modules(changes["module_keys"], token)
+            if (
+                "clinics_limit" in changes
+                and current.subscription_type_id == SubscriptionType.INDIVIDUAL
+            ):
+                raise SubscriptionDataError(
+                    [
+                        AppError.field_error(
+                            "clinics_limit", SUBSCRIPTION_CLINICS_LIMIT_IMMUTABLE_MESSAGE
+                        )
+                    ]
+                )
+            if "module_keys" in changes:
+                changes["module_keys"] = await self._resolve_modules(changes["module_keys"], token)
         try:
             subscription = await self._repository.update(subscription_id, changes)
         except UniqueViolationError as error:

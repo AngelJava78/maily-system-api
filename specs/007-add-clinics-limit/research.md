@@ -20,35 +20,47 @@ también la respuesta registrada en el chat de `/speckit-specify` sobre el nombr
 **Decision**: el rango base (`1` a `100`, siempre) es un `Field(ge=1, le=100)` en
 `SubscriptionCreate.clinics_limit` y en `SubscriptionUpdate.clinics_limit` (como ya hace cada uno
 de los otros cuatro límites con su propio rango). La restricción adicional —"si
-`subscription_type_id` es Individual (1), debe ser exactamente 1"— es un `model_validator(mode=
-"after")` nuevo en `SubscriptionCreate`, que compara los dos campos ya validados individualmente:
+`subscription_type_id` es Individual (1), debe ser exactamente 1"— es un `field_validator` nuevo
+en `SubscriptionCreate`, sobre el propio `clinics_limit`, que lee `subscription_type_id` desde
+`info.data` (los campos ya validados, en orden de declaración — `subscription_type_id` se declara
+antes que `clinics_limit` en esta clase):
 
 ```python
-@model_validator(mode="after")
-def clinics_limit_matches_type(self) -> "SubscriptionCreate":
-    if self.subscription_type_id == 1 and self.clinics_limit != 1:
+@field_validator("clinics_limit")
+@classmethod
+def clinics_limit_matches_type(cls, value: int, info: ValidationInfo) -> int:
+    if info.data.get("subscription_type_id") == 1 and value != 1:
         raise ValueError(SUBSCRIPTION_CLINICS_LIMIT_MUST_BE_ONE_MESSAGE)
-    return self
+    return value
 ```
 
 El `1` se escribe literal (no se importa `SubscriptionType.INDIVIDUAL` del modelo): mismo criterio
 que ya usa `SubscriptionStatusChange.status_id` (`value not in (1, 2, 3)`) — los DTOs de este
 proyecto nunca importan constantes de `src/models/` (capas, Principio I/II).
 
-**Rationale**: `model_validator(mode="after")` ya es el mecanismo que usa este mismo archivo para
-una regla entre dos o más campos (`SubscriptionUpdate.at_least_one_field`); no hace falta ningún
-mecanismo nuevo. Pydantic solo ejecuta los validadores "after" cuando los campos individuales ya
-son válidos, así que si falta `clinics_limit` o `subscription_type_id`, o están fuera de su propio
-rango, el error de ESE campo se reporta solo, sin un segundo error confuso de esta regla cruzada.
+**Rationale**: un `field_validator` sobre `clinics_limit` (no un `model_validator(mode="after")`
+a nivel del modelo) es necesario para que el error salga con `field: "clinics_limit"` en la
+respuesta, como exige el contrato ([contracts/error-catalog.md](contracts/error-catalog.md)):
+Pydantic v2 atribuye el error de un `model_validator` a la raíz del modelo (`"body"`), no a un
+campo — es exactamente lo que ya se quiere para `SubscriptionUpdate.at_least_one_field` (un error
+que no es de ningún campo en particular), pero no lo que se quiere aquí. `info.data` resuelve el
+acceso a `subscription_type_id` sin necesitar un validador de modelo completo. Pydantic solo
+ejecuta el `field_validator` de `clinics_limit` cuando el propio campo ya es válido, así que si
+falta o está fuera de su rango, ese error se reporta solo, sin un segundo error confuso de esta
+regla cruzada; si `subscription_type_id` en sí no fue válido, simplemente no está en `info.data`
+y la comparación no dispara nada.
 
 **Alternatives considered**:
+- `model_validator(mode="after")` a nivel de clase (la decisión original de este documento):
+  descartada durante la implementación al confirmar con una prueba que el error salía como
+  `field: "body"`, no `field: "clinics_limit"` — no cumplía el contrato ya documentado.
 - Resolverlo solo con una restricción `CHECK` en la base de datos (sin nada en el DTO): rechazada
   porque una violación de `CHECK` llega como un error interno (500) salvo que se traduzca a mano, y
   porque esta API nunca comprueba datos de negocio contra la base si puede resolverse sin E/S
   (mismo criterio que ya aplica a los otros cuatro límites y a los rangos de precios).
 - Un tipo de dato condicional en el esquema (p. ej. dos esquemas de creación distintos según el
-  tipo, con `discriminator`): rechazada por sobre-ingeniería frente a un `model_validator` de tres
-  líneas; FastAPI/Pydantic expondría un contrato más confuso para un caso tan acotado.
+  tipo, con `discriminator`): rechazada por sobre-ingeniería frente a un validador de pocas líneas;
+  FastAPI/Pydantic expondría un contrato más confuso para un caso tan acotado.
 
 ## R3 — Inmutabilidad en Individual al actualizar: una comprobación en el Service, no en el DTO
 
@@ -88,7 +100,8 @@ función para `module_keys`.
 (inmutable en Individual) agregan un código a `ErrorCode`. Ambas se presentan como
 `validation_error` (422) con `errors: [{field: "clinics_limit", message: "…"}]`, igual forma que
 cualquier error de un campo de la solicitud. La de creación ya sale así gratis (es un
-`ValueError` de un `model_validator` de Pydantic). La de actualización necesita una excepción nueva
+`ValueError` de un `field_validator` de Pydantic, research R2). La de actualización necesita una
+excepción nueva
 en `src/exceptions.py`, `SubscriptionDataError`, que es la versión para suscripciones de
 `MonitoredComponentDataError` (ya existe, spec 005): `code = ErrorCode.VALIDATION_ERROR`,
 `status_code = 422`, recibe `errors: list[dict]` armados con `field_error(field, message)`. Ese
@@ -154,7 +167,7 @@ CHECK (
 nunca debería necesitar en la práctica, porque Pydantic (creación) y el Service (actualización) ya
 impiden que una fila inválida llegue a escribirse. Se confirma por construcción, no por prueba de
 extremo a extremo:
-- **Crear**: el DTO exige `clinics_limit` entre 1 y 100 siempre, y el `model_validator` de R2 exige
+- **Crear**: el DTO exige `clinics_limit` entre 1 y 100 siempre, y el `field_validator` de R2 exige
   exactamente 1 cuando el tipo es Individual (1) → el `CHECK` se cumple por los dos casos.
 - **Actualizar**: si la solicitud trae `clinics_limit`, el Service (R3) ya rechazó la operación
   cuando el tipo vigente es Individual, así que el repositorio solo recibe ese cambio para una

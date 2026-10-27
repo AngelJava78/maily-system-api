@@ -57,6 +57,11 @@ class Subscription(Base):
             "new_patients_per_year_limit BETWEEN 0 AND 1000000",
             name="new_patients_per_year_limit_check",
         ),
+        CheckConstraint(
+            "(subscription_type_id = 1 AND clinics_limit = 1) "
+            "OR (subscription_type_id <> 1 AND clinics_limit BETWEEN 1 AND 100)",
+            name="clinics_limit_check",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -90,6 +95,10 @@ class Subscription(Base):
     doctors_limit: Mapped[int] = mapped_column(Integer)
     assistants_limit: Mapped[int] = mapped_column(Integer)
     new_patients_per_year_limit: Mapped[int] = mapped_column(Integer)
+    # Fifth limit; its range depends on subscription_type_id (see subscriptions_clinics_limit_check
+    # above): exactly 1 if Individual, 1 to 100 otherwise (spec 007). `server_default` matters for
+    # the rows that already existed when the column was added (1 is valid for either branch).
+    clinics_limit: Mapped[int] = mapped_column(Integer, server_default=text("1"))
     # 1 = Active, 2 = Inactive, 3 = Blocked, 4 = Deleted (see SubscriptionStatus); new ones are Active.
     status_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("subscription_statuses.id"), server_default=text("1")

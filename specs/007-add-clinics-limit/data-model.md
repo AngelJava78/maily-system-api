@@ -41,7 +41,7 @@ explícito, mismo estilo que `consulting_rooms_limit_check`).
 | DTO | Campo | Notas |
 |---|---|---|
 | `SubscriptionRead` | `clinics_limit: int` (`ge=1, le=100`) | Quinto límite, junto a los otros cuatro; siempre presente |
-| `SubscriptionCreate` | `clinics_limit: int` (`ge=1, le=100`) | Obligatorio, como los otros cuatro límites; además sujeto al `model_validator` de abajo |
+| `SubscriptionCreate` | `clinics_limit: int` (`ge=1, le=100`) | Obligatorio, como los otros cuatro límites; además sujeto al `field_validator` de abajo |
 | `SubscriptionUpdate` | `clinics_limit: int \| None` (`ge=1, le=100`, `default=None`) | A diferencia de `subscription_type_id`, **sí** se agrega a este DTO: es modificable para las suscripciones no Individual (research R3) |
 
 ### Validación de `clinics_limit`
@@ -49,7 +49,7 @@ explícito, mismo estilo que `consulting_rooms_limit_check`).
 | Campo | Capa | Regla | Mensaje si falla |
 |---|---|---|---|
 | `clinics_limit` (crear) | DTO (`Field`, sin E/S) | Entero obligatorio, de 1 a 100 | «El límite de clínicas debe ser un número entero de 1 a 100.» (falta, `null`, no es entero, o fuera de 1–100) |
-| `clinics_limit` + `subscription_type_id` (crear) | DTO (`model_validator(mode="after")`, sin E/S, research R2) | Si `subscription_type_id == 1` (Individual), `clinics_limit` MUST ser `1` | «Una suscripción Individual debe tener límite de clínicas igual a 1.» |
+| `clinics_limit` + `subscription_type_id` (crear) | DTO (`field_validator` sobre `clinics_limit`, lee `subscription_type_id` de `info.data`; sin E/S, research R2) | Si `subscription_type_id == 1` (Individual), `clinics_limit` MUST ser `1` | «Una suscripción Individual debe tener límite de clínicas igual a 1.» |
 | `clinics_limit` (actualizar) | DTO (`Field` + validador "no nulo", sin E/S) | Si se envía, entero de 1 a 100; no puede ser `null` (la columna es `NOT NULL`) | Mismo mensaje que al crear |
 | `clinics_limit` (actualizar) | Service (lee la suscripción vigente, research R3) | Si se envía y la suscripción vigente es Individual (`subscription_type_id == SubscriptionType.INDIVIDUAL`), se rechaza la solicitud completa, cambie o no el valor | «El límite de clínicas no puede modificarse en una suscripción Individual.» |
 

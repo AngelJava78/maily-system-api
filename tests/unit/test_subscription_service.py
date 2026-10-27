@@ -14,6 +14,7 @@ from src.clinic_modules import PATIENTS_KEY
 from src.exceptions import (
     ClinicsCheckUnavailableError,
     ModuleCheckUnavailableError,
+    SubscriptionDataError,
     SubscriptionHasClinicsError,
     SubscriptionModuleNotFoundError,
     SubscriptionModulePrerequisiteMissingError,
@@ -23,6 +24,7 @@ from src.exceptions import (
     SubscriptionTypeNotFoundError,
 )
 from src.integrations.errors import ClinicsApiUnavailable
+from src.messages import SUBSCRIPTION_CLINICS_LIMIT_IMMUTABLE_MESSAGE
 from src.models.subscription_type import SubscriptionType
 from src.repositories.errors import ForeignKeyViolationError, UniqueViolationError
 from src.services.subscription_service import SubscriptionService
@@ -159,6 +161,7 @@ def create_data(**values) -> SubscriptionCreate:
         "doctors_limit": 1,
         "assistants_limit": 1,
         "new_patients_per_year_limit": 100,
+        "clinics_limit": 1,
     }
     return SubscriptionCreate.model_validate({**base, **values})
 
@@ -201,6 +204,19 @@ async def test_create_passes_the_subscription_type_id_through_unchanged(subscrip
     )
 
     assert repository.items[view.subscription.id].subscription_type_id == subscription_type_id
+
+
+@pytest.mark.parametrize(
+    ("subscription_type_id", "clinics_limit"), [(1, 1), (2, 25)]
+)
+async def test_create_passes_the_clinics_limit_through_unchanged(subscription_type_id, clinics_limit):
+    repository = FakeSubscriptionRepository()
+
+    view = await service(repository).create(
+        create_data(subscription_type_id=subscription_type_id, clinics_limit=clinics_limit), TOKEN
+    )
+
+    assert repository.items[view.subscription.id].clinics_limit == clinics_limit
 
 
 async def test_a_nonexistent_subscription_type_id_becomes_the_type_not_found_error():
@@ -451,6 +467,57 @@ async def test_update_asks_the_clinics_api_after_writing_and_degrades_to_unavail
         1, SubscriptionUpdate(name="Otro"), TOKEN
     )
     assert degraded.clinics_count is None  # the update itself succeeded
+
+
+# --- US3 (007-add-clinics-limit): clinics_limit depends on the subscription's current type ---
+
+
+def fields_of(error: pytest.ExceptionInfo) -> list[str]:
+    return [item["loc"][-1] for item in error.value.errors]
+
+
+@pytest.mark.parametrize("new_value", [1, 50])
+async def test_sending_clinics_limit_on_an_individual_subscription_is_rejected(new_value):
+    # Sending it at all is "trying to change it", even with the value it already has (1).
+    repository = RecordingRepository()
+    repository.add(subscription_type_id=SubscriptionType.INDIVIDUAL, clinics_limit=1)
+
+    with pytest.raises(SubscriptionDataError) as error:
+        await service(repository).update(1, SubscriptionUpdate(clinics_limit=new_value), TOKEN)
+
+    assert fields_of(error) == ["clinics_limit"]
+    assert error.value.errors[0]["msg"] == SUBSCRIPTION_CLINICS_LIMIT_IMMUTABLE_MESSAGE
+    assert repository.received == []
+
+
+async def test_sending_clinics_limit_with_another_valid_field_on_an_individual_is_rejected_whole():
+    repository = RecordingRepository()
+    repository.add(
+        subscription_type_id=SubscriptionType.INDIVIDUAL, clinics_limit=1, monthly_price="900"
+    )
+
+    with pytest.raises(SubscriptionDataError):
+        await service(repository).update(
+            1, SubscriptionUpdate(clinics_limit=1, monthly_price=Decimal("950.00")), TOKEN
+        )
+
+    assert repository.received == []
+    assert repository.items[1].monthly_price == Decimal("900.00")
+
+
+async def test_updating_clinics_limit_of_an_enterprise_subscription_works_normally():
+    repository = RecordingRepository()
+    repository.add(subscription_type_id=SubscriptionType.ENTERPRISE, clinics_limit=10)
+
+    view = await service(repository).update(1, SubscriptionUpdate(clinics_limit=80), TOKEN)
+
+    assert repository.received == [{"clinics_limit": 80}]
+    assert view.subscription.clinics_limit == 80
+
+
+async def test_updating_clinics_limit_of_a_missing_subscription_is_not_found():
+    with pytest.raises(SubscriptionNotFoundError):
+        await service().update(99, SubscriptionUpdate(clinics_limit=50), TOKEN)
 
 
 # --- US5: module validation on update (research R6) ---

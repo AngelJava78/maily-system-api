@@ -35,6 +35,7 @@ def subscription_row(**overrides) -> SimpleNamespace:
         doctors_limit=3,
         assistants_limit=2,
         new_patients_per_year_limit=15000,
+        clinics_limit=5,
         status=SimpleNamespace(id=1, name="Activa"),
         created_at=datetime(2026, 10, 23, tzinfo=UTC),
         updated_at=datetime(2026, 10, 23, tzinfo=UTC),
@@ -66,6 +67,7 @@ def test_every_new_field_round_trips():
     assert (read.trial_days, read.self_service) == (14, True)
     assert (read.consulting_rooms_limit, read.doctors_limit) == (2, 3)
     assert (read.assistants_limit, read.new_patients_per_year_limit) == (2, 15000)
+    assert read.clinics_limit == 5
 
 
 def test_the_subscription_type_is_exposed_as_an_object_with_id_and_name():
@@ -83,6 +85,7 @@ BASE_LIMITS = {
     "doctors_limit": 1,
     "assistants_limit": 1,
     "new_patients_per_year_limit": 100,
+    "clinics_limit": 1,
 }
 
 
@@ -163,7 +166,7 @@ def test_an_empty_description_means_no_description(description):
 def test_valid_prices_are_accepted_exactly(raw, expected):
     body = f'{{"name": "Pro", "subscription_type_id": 1, "monthly_price": {raw}, "annual_price": {raw}, ' + (
         '"consulting_rooms_limit": 1, "doctors_limit": 1, "assistants_limit": 1, '
-        '"new_patients_per_year_limit": 1}'
+        '"new_patients_per_year_limit": 1, "clinics_limit": 1}'
     )
     data = SubscriptionCreate.model_validate_json(body)
 
@@ -369,6 +372,66 @@ def test_a_subscription_type_id_that_does_not_exist_is_not_the_dtos_job():
     assert create(subscription_type_id=99).subscription_type_id == 99
 
 
+# --- clinics_limit: required; exactly 1 if Individual, 1 to 100 otherwise (spec 007) ---
+
+CLINICS_LIMIT_RANGE = "El límite de clínicas debe ser un número entero de 1 a 100."
+CLINICS_LIMIT_MUST_BE_ONE = "Una suscripción Individual debe tener límite de clínicas igual a 1."
+
+
+def test_clinics_limit_is_required():
+    without = {k: v for k, v in BASE_LIMITS.items() if k != "clinics_limit"}
+    found = messages_of({"name": "Pro", "monthly_price": 1, **without})
+
+    assert found == [("clinics_limit", CLINICS_LIMIT_RANGE)]
+
+
+@pytest.mark.parametrize("value", [None, 1.5, []])
+def test_a_clinics_limit_that_is_not_an_integer_is_rejected(value):
+    # Plain `int`, like the other four limits: a numeric string or a bool still coerces (lax mode).
+    found = messages_of({"name": "Pro", "monthly_price": 1, **BASE_LIMITS, "clinics_limit": value})
+
+    assert found == [("clinics_limit", CLINICS_LIMIT_RANGE)]
+
+
+@pytest.mark.parametrize("value", [0, -1, 101])
+def test_a_clinics_limit_outside_one_to_a_hundred_is_rejected_for_a_non_individual_type(value):
+    payload = {**BASE_LIMITS, "subscription_type_id": 2, "clinics_limit": value}
+    found = messages_of({"name": "Pro", "monthly_price": 1, **payload})
+
+    assert found == [("clinics_limit", CLINICS_LIMIT_RANGE)]
+
+
+def test_clinics_limit_one_and_a_hundred_are_accepted_for_a_non_individual_type():
+    assert create(subscription_type_id=2, clinics_limit=1).clinics_limit == 1
+    assert create(subscription_type_id=2, clinics_limit=100).clinics_limit == 100
+
+
+def test_clinics_limit_one_is_accepted_for_individual():
+    assert create(subscription_type_id=1, clinics_limit=1).clinics_limit == 1
+
+
+@pytest.mark.parametrize("value", [2, 50, 100])
+def test_an_individual_subscription_rejects_any_clinics_limit_other_than_one(value):
+    # Within the generic 1-100 range, so only the cross-field rule (not the plain Field range)
+    # catches this: subscription_type_id == 1 forces clinics_limit == 1.
+    payload = {**BASE_LIMITS, "subscription_type_id": 1, "clinics_limit": value}
+    found = messages_of({"name": "Pro", "monthly_price": 1, **payload})
+
+    assert found == [("clinics_limit", CLINICS_LIMIT_MUST_BE_ONE)]
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_an_individual_subscription_with_an_out_of_range_clinics_limit_gets_the_generic_message(
+    value,
+):
+    # Field(ge=1) already rejects it before the cross-field rule (Individual => exactly 1) gets a
+    # chance to run: Pydantic only calls `model_validator(mode="after")` once every field is valid.
+    payload = {**BASE_LIMITS, "subscription_type_id": 1, "clinics_limit": value}
+    found = messages_of({"name": "Pro", "monthly_price": 1, **payload})
+
+    assert found == [("clinics_limit", CLINICS_LIMIT_RANGE)]
+
+
 # --- fields that cannot be sent ---
 
 
@@ -435,9 +498,18 @@ def test_an_update_has_the_same_limits_as_a_creation():
         {"other_features": [""]},
         {"consulting_rooms_limit": -1},
         {"consulting_rooms_limit": 1_000_001},
+        {"clinics_limit": 0},
+        {"clinics_limit": 101},
     ):
         with pytest.raises(ValidationError):
             update(**payload)
+
+
+@pytest.mark.parametrize("value", [1, 50, 100])
+def test_clinics_limit_can_be_updated_within_its_generic_range(value):
+    # The DTO only checks the generic 1-100 range; whether the subscription is Individual (and
+    # therefore this field is immutable) is the Service's job, which knows the current row.
+    assert update(clinics_limit=value).model_dump(exclude_unset=True) == {"clinics_limit": value}
 
 
 @pytest.mark.parametrize(
@@ -481,6 +553,11 @@ def test_an_update_has_the_same_limits_as_a_creation():
             {"new_patients_per_year_limit": None},
             "new_patients_per_year_limit",
             "El límite de pacientes nuevos al año debe ser un número entero de 0 a 1 000 000.",
+        ),
+        (
+            {"clinics_limit": None},
+            "clinics_limit",
+            "El límite de clínicas debe ser un número entero de 1 a 100.",
         ),
     ],
 )

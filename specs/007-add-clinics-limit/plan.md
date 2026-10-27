@@ -6,6 +6,13 @@
 
 **Note**: This template is filled in by the `/speckit-plan` command; its definition describes the execution workflow.
 
+**Revisión (2026-10-27)**: el diseño de la feature (Summary, Technical Context salvo lo de
+pruebas, Constitution Check salvo el Principio V, Project Structure) no cambia; se actualiza este
+plan porque, entre la primera pasada y ahora, el responsable del proyecto enmendó la constitución a
+v1.1.0 (dos niveles de ejecución de pruebas, Postman diferido a CI). Se ajustan el campo
+**Testing** y la fila del Principio V para reflejarlo; `tasks.md` ya se había corregido en la misma
+conversación en que se acordó la enmienda.
+
 ## Summary
 
 `006-add-subscription-type` ya está implementada en `main`. Esta feature agrega un quinto límite
@@ -20,9 +27,10 @@ Enfoque técnico (decisiones y evidencia en [research.md](research.md)):
   `subscription_type_id`, aquí no hay un conjunto cerrado de valores con nombre.
 - **Validación en dos capas, sin ninguna consulta nueva (R2, R3)**: el rango base (1–100) es un
   `Field` de Pydantic en `SubscriptionCreate`/`SubscriptionUpdate`, igual que los otros cuatro
-  límites. La restricción "exactamente 1 si es Individual" al crear es un `model_validator(mode=
-  "after")` nuevo en `SubscriptionCreate` (cruza `clinics_limit` con `subscription_type_id`, ambos
-  ya validados). La inmutabilidad al actualizar una Individual no puede vivir en el DTO (no conoce
+  límites. La restricción "exactamente 1 si es Individual" al crear es un `field_validator` nuevo
+  sobre `clinics_limit` en `SubscriptionCreate`, que lee `subscription_type_id` de `info.data`
+  (así el error sale con `field: "clinics_limit"`, no con la raíz del modelo). La inmutabilidad al
+  actualizar una Individual no puede vivir en el DTO (no conoce
   el tipo vigente): `SubscriptionService.update()` la comprueba leyendo la suscripción primero,
   reutilizando la misma lectura que ya dispara `module_keys` cuando ambos llegan juntos. Sin
   carrera posible: `subscription_type_id` es fijo para siempre (006), así que el tipo leído antes
@@ -52,7 +60,15 @@ httpx. Sin dependencias nuevas.
 (`int4 NOT NULL DEFAULT 1`) y una restricción `CHECK` de dos columnas.
 
 **Testing**: pytest + pytest-asyncio + httpx, igual que `001`/`004`/`006`. `tests/unit/fakes.py`
-(`FakeSubscriptionRepository`) gana `clinics_limit` en `add`/`create`/`update`.
+(`FakeSubscriptionRepository`) gana `clinics_limit` en `add`/`create`/`update`. **Dos niveles de
+ejecución** (Principio V, enmienda v1.1.0 del 2026-10-27, posterior al resto de este plan): un hook
+en `tests/conftest.py` marca `slow` automáticamente cualquier prueba que necesite PostgreSQL real
+(`engine`/`migrated_db` u otra fixture que dependa de ellas), excluida por defecto
+(`pyproject.toml`, `addopts = "-m 'not slow'"`). `/speckit-implement` de esta feature MUST
+limitarse a la corrida por defecto (solo unitarias); las de integración/contrato de esta feature
+(T002, T003, T012, T013, T017, T020 en [tasks.md](tasks.md)) y la colección de Postman
+automatizada quedan para la puerta de calidad antes de integrar a `main`, no para el ciclo de
+desarrollo.
 
 **Target Platform**: igual que `006` (contenedor Linux, Docker Compose). Sin componentes nuevos de
 despliegue (a diferencia de 006, que sí agregó un script de reconciliación).
@@ -81,7 +97,7 @@ reutilizando un mecanismo que ya existe (`MonitoredComponentDataError`).
 | II. Modelos ≠ DTOs | ✅ | ✅ `clinics_limit` es una columna del modelo ORM y, por separado, un campo de los tres DTOs; la regla cruzada de `SubscriptionCreate` compara dos campos del propio DTO (sin tocar el modelo); el DTO sigue sin importar constantes de `src/models/` (el `1` de Individual se escribe literal, igual que ya hace `SubscriptionStatusChange.status_id`) |
 | III. Asincronía | ✅ | ✅ La lectura que decide la inmutabilidad en `update()` ya era async (reutiliza `get_current_by_id`, ya existente); no se agrega ninguna llamada nueva a otro sistema |
 | IV. OpenAPI y REST | ✅ | ✅ [openapi-subscriptions.yaml](contracts/openapi-subscriptions.yaml) actualizado (`version: 4.0.0`, cambio incompatible declarado); `clinics_limit` documentado en los tres esquemas y en los ejemplos 422 de `create_subscription`/`update_subscription` |
-| V. Pruebas pytest | ✅ | ✅ Mismo patrón que los otros cuatro límites (DTO, Service, Repository, contrato) más un caso nuevo de inmutabilidad condicionada al tipo en `test_subscription_service.py`/`test_subscriptions_api.py` |
+| V. Pruebas pytest | ✅ | ✅ Mismo patrón que los otros cuatro límites (DTO, Service, Repository, contrato) más un caso nuevo de inmutabilidad condicionada al tipo en `test_subscription_service.py`/`test_subscriptions_api.py`; además, ya con la enmienda v1.1.0 (dos niveles de ejecución): las pruebas de integración/contrato de esta feature quedan marcadas `slow` por el hook de `tests/conftest.py` y no se corren dentro de `/speckit-implement`, solo en la puerta de calidad antes de `main` (ver `tasks.md`) |
 | VI. Migraciones Alembic | ✅ | ✅ `0006_add_clinics_limit` (nueva, reversible); `project-definition/DATA_SCHEMA.md` y `create_database.sql` ya actualizados con la columna y el `CHECK` nuevos (incluido `alembic_version` → `'0006'`); ninguna migración llama a otro servicio |
 | VII. Idioma | ✅ | ✅ `clinics_limit` en inglés (identificador); sus mensajes, en español |
 | VIII. Control de acceso delegado | ✅ Sin cambios | ✅ Sin cambios: mismos 4 permisos, sin ninguno nuevo para este campo |
@@ -146,7 +162,7 @@ src/
 └── dtos/
     └── subscription.py           # MODIFICA: SubscriptionRead gana clinics_limit: int;
                                    #   SubscriptionCreate gana clinics_limit: int (Field ge=1,
-                                   #   le=100) + model_validator(mode="after") que lo cruza con
+                                   #   le=100) + field_validator (con info.data) que lo cruza con
                                    #   subscription_type_id; SubscriptionUpdate gana
                                    #   clinics_limit: int | None (mismo Field, + validador
                                    #   "no nulo" como los otros cuatro límites)

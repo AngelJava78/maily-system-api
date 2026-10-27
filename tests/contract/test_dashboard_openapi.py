@@ -138,7 +138,7 @@ def test_every_operation_of_the_api_declares_security_and_permission(schema):
 
 
 def test_the_version_of_the_api_does_not_change_when_an_operation_is_added(schema):
-    # The dashboard (spec 003) added an operation without bumping the version; spec 004 and spec
-    # 006 later bumped it on their own (breaking changes to the subscriptions schema), not because
+    # The dashboard (spec 003) added an operation without bumping the version; spec 004, 006 and
+    # 007 later bumped it on their own (breaking changes to the subscriptions schema), not because
     # of this operation.
-    assert schema["info"]["version"] == "3.0.0"
+    assert schema["info"]["version"] == "4.0.0"

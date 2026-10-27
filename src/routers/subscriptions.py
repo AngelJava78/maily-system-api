@@ -81,6 +81,7 @@ LIST_EXAMPLE = example_response(
             "doctors_limit": 3,
             "assistants_limit": 2,
             "new_patients_per_year_limit": 15000,
+            "clinics_limit": 5,
             "status": {"id": 1, "name": "Activa"},
             "clinics_count": 0,
             "created_at": "2026-10-23T15:00:00Z",
@@ -101,6 +102,7 @@ LIST_EXAMPLE = example_response(
             "doctors_limit": 1,
             "assistants_limit": 0,
             "new_patients_per_year_limit": 5000,
+            "clinics_limit": 1,
             "status": {"id": 2, "name": "Inactiva"},
             "clinics_count": None,
             "created_at": "2026-10-17T15:05:00Z",
@@ -135,8 +137,8 @@ VALIDATION_ERROR = error_response(
     },
 )
 WRITE_VALIDATION_ERROR = error_response(
-    "Algún dato no es válido, se envió un campo no permitido, o un módulo no es reconocido por la "
-    "API de usuarios.",
+    "Algún dato no es válido (incluido un límite de clínicas que no corresponde al tipo elegido), "
+    "se envió un campo no permitido, o un módulo no es reconocido por la API de usuarios.",
     nombre_obligatorio={
         "code": "validation_error",
         "message": "Hay datos no válidos en la solicitud.",
@@ -162,6 +164,46 @@ WRITE_VALIDATION_ERROR = error_response(
     tipo_no_encontrado={
         "code": "subscription_type_not_found",
         "message": "No se encontró el tipo de suscripción con el identificador 99.",
+    },
+    limite_clinicas_obligatorio={
+        "code": "validation_error",
+        "message": "Hay datos no válidos en la solicitud.",
+        "errors": [
+            {
+                "field": "clinics_limit",
+                "message": "El límite de clínicas debe ser un número entero de 1 a 100.",
+            }
+        ],
+    },
+    limite_clinicas_no_valido_para_individual={
+        "code": "validation_error",
+        "message": "Hay datos no válidos en la solicitud.",
+        "errors": [
+            {
+                "field": "clinics_limit",
+                "message": "Una suscripción Individual debe tener límite de clínicas igual a 1.",
+            }
+        ],
+    },
+    limite_clinicas_no_permitido_individual={
+        "code": "validation_error",
+        "message": "Hay datos no válidos en la solicitud.",
+        "errors": [
+            {
+                "field": "clinics_limit",
+                "message": "El límite de clínicas no puede modificarse en una suscripción Individual.",
+            }
+        ],
+    },
+    limite_clinicas_fuera_de_rango={
+        "code": "validation_error",
+        "message": "Hay datos no válidos en la solicitud.",
+        "errors": [
+            {
+                "field": "clinics_limit",
+                "message": "El límite de clínicas debe ser un número entero de 1 a 100.",
+            }
+        ],
     },
     modulo_no_reconocido={
         "code": "subscription_module_not_found",
@@ -221,6 +263,7 @@ CREATED = {
                         "doctors_limit": 3,
                         "assistants_limit": 2,
                         "new_patients_per_year_limit": 15000,
+                        "clinics_limit": 25,
                         "status": {"id": 1, "name": "Activa"},
                         "clinics_count": 0,
                         "created_at": "2026-10-23T15:00:00Z",
@@ -254,6 +297,7 @@ CREATE_EXAMPLES = {
             "doctors_limit": 3,
             "assistants_limit": 2,
             "new_patients_per_year_limit": 15000,
+            "clinics_limit": 25,
         },
     },
     "minimo": {
@@ -267,6 +311,7 @@ CREATE_EXAMPLES = {
             "doctors_limit": 1,
             "assistants_limit": 1,
             "new_patients_per_year_limit": 5000,
+            "clinics_limit": 1,
         },
     },
 }
@@ -309,6 +354,10 @@ UPDATE_EXAMPLES = {
     "modulos": {
         "summary": "Reemplazar el conjunto de módulos",
         "value": {"module_keys": ["scheduling", "reminders"]},
+    },
+    "limite_clinicas": {
+        "summary": "Subir el límite de clínicas (solo válido en una suscripción no Individual)",
+        "value": {"clinics_limit": 50},
     },
 }
 
@@ -354,6 +403,9 @@ async def list_subscriptions(
         "catálogo `subscription_types`) y queda fijo para siempre: ninguna otra operación de "
         "esta API lo modifica. Un identificador que no exista en el catálogo se rechaza con "
         "`subscription_type_not_found`.\n\n"
+        "`clinics_limit` es obligatorio y su valor permitido depende de `subscription_type_id`: "
+        "si es Individual (`1`), MUST ser exactamente `1`; si no, MUST ser un entero de `1` a "
+        "`100`. Fuera de esa regla se rechaza toda la solicitud, sin crear nada.\n\n"
         "`module_keys` siempre incluye `patients`, se envíe o no. Si pide algún módulo además de "
         "`patients`, se valida contra la API de usuarios (módulo reconocido y de tipo Clínica) y "
         "contra las dependencias de esta API (Recordatorios exige Agenda y citas; Plantillas de "
@@ -421,6 +473,11 @@ async def get_subscription(
         "`subscription_type_id` (es fijo desde la creación: enviarlo, con cualquier valor, "
         "rechaza toda la solicitud). Una suscripción puede conservar su propio nombre (incluso "
         "cambiando solo las mayúsculas).\n\n"
+        "`clinics_limit` se modifica como cualquier otro límite **salvo** en una suscripción "
+        "Individual: ahí es fijo desde la creación, igual criterio que `subscription_type_id` "
+        "— enviarlo, con el valor que sea (incluso el mismo que ya tiene), rechaza toda la "
+        "solicitud. En una suscripción no Individual, el nuevo valor MUST seguir entre `1` y "
+        "`100`.\n\n"
         "Si la solicitud trae `module_keys`, primero se comprueba que la suscripción exista (404 "
         "si no, antes de llamar a la API de usuarios) y luego se valida igual que al crear; "
         "`patients` nunca puede excluirse, se envíe o no en la lista.\n\n"

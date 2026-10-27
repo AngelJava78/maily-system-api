@@ -54,6 +54,10 @@ límites de la clínica y otras funcionalidades.
   catálogo administrado a mano, igual que el estatus. Se devuelve como un objeto con `id` y `name`.
   Al crear se envía `subscription_type_id` (el entero); es obligatorio y fijo para siempre:
   ninguna operación permite modificarlo después.
+- `clinics_limit` es un quinto límite de la clínica cuyo rango depende del tipo: exactamente `1`
+  y fijo para siempre si es Individual; de `1` a `100` y modificable si no lo es. Es un techo
+  informativo (como los otros cuatro): no se compara contra el número real de clínicas
+  (`clinics_count`, de solo lectura).
 - Cada suscripción tiene un estatus tomado de un catálogo (1 Activa, 2 Inactiva, 3 Bloqueada,
   4 Eliminada). Se devuelve como un objeto con `id` y `name`; quien consume la API debe basarse en
   el `id`: el nombre puede cambiar. Las suscripciones eliminadas no aparecen.

@@ -7,6 +7,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationInfo,
     field_serializer,
     field_validator,
     model_validator,
@@ -17,6 +18,8 @@ from src.dtos.subscription_type import SubscriptionTypeRead
 from src.messages import (
     SUBSCRIPTION_ANNUAL_PRICE_REQUIRED_MESSAGE,
     SUBSCRIPTION_ASSISTANTS_LIMIT_INVALID_MESSAGE,
+    SUBSCRIPTION_CLINICS_LIMIT_INVALID_MESSAGE,
+    SUBSCRIPTION_CLINICS_LIMIT_MUST_BE_ONE_MESSAGE,
     SUBSCRIPTION_CONSULTING_ROOMS_LIMIT_INVALID_MESSAGE,
     SUBSCRIPTION_DOCTORS_LIMIT_INVALID_MESSAGE,
     SUBSCRIPTION_EMPTY_UPDATE_MESSAGE,
@@ -118,6 +121,15 @@ class SubscriptionRead(BaseModel):
         ge=0,
         le=1_000_000,
         description="Techo de pacientes nuevos que puede registrar la clínica cada año.",
+    )
+    clinics_limit: int = Field(
+        ge=1,
+        le=100,
+        description=(
+            "Techo de clínicas que puede tener asociadas la suscripción. Exactamente 1 si el "
+            "tipo es Individual (fijo para siempre); de 1 a 100 si no lo es (modificable)."
+        ),
+        examples=[5],
     )
     status: StatusRead = Field(
         description=(
@@ -246,11 +258,30 @@ class SubscriptionCreate(BaseModel):
     new_patients_per_year_limit: int = Field(
         ge=0, le=1_000_000, description="Techo de pacientes nuevos al año. Obligatorio."
     )
+    clinics_limit: int = Field(
+        ge=1,
+        le=100,
+        description=(
+            "Techo de clínicas. Obligatorio. Si `subscription_type_id` corresponde a Individual "
+            "(1), MUST ser exactamente 1; si no, MUST ser un entero de 1 a 100."
+        ),
+        examples=[5],
+    )
 
     @field_validator("description")
     @classmethod
     def empty_description_means_none(cls, value: str | None) -> str | None:
         return value or None
+
+    @field_validator("clinics_limit")
+    @classmethod
+    def clinics_limit_matches_type(cls, value: int, info: ValidationInfo) -> int:
+        # `info.data` has the fields already validated, in declaration order: subscription_type_id
+        # comes before clinics_limit in this class, so it is there whenever it was itself valid.
+        # The `1` is literal, not `SubscriptionType.INDIVIDUAL`: DTOs do not import src/models/.
+        if info.data.get("subscription_type_id") == 1 and value != 1:
+            raise ValueError(SUBSCRIPTION_CLINICS_LIMIT_MUST_BE_ONE_MESSAGE)
+        return value
 
 
 class SubscriptionUpdate(BaseModel):
@@ -339,6 +370,15 @@ class SubscriptionUpdate(BaseModel):
         le=1_000_000,
         description="Nuevo techo de pacientes nuevos al año. No puede ser nulo.",
     )
+    clinics_limit: int | None = Field(
+        default=None,
+        ge=1,
+        le=100,
+        description=(
+            "Nuevo techo de clínicas, de 1 a 100. No puede ser nulo. Se rechaza por completo si "
+            "la suscripción vigente es Individual (fijo para siempre), cambie o no el valor."
+        ),
+    )
 
     # The validators below only run for a field that is in the body, so a `null` that was sent on
     # purpose is reported on the field itself instead of reaching the database.
@@ -418,6 +458,13 @@ class SubscriptionUpdate(BaseModel):
     def new_patients_per_year_limit_cannot_be_null(cls, value: int | None) -> int:
         if value is None:
             raise ValueError(SUBSCRIPTION_NEW_PATIENTS_PER_YEAR_LIMIT_INVALID_MESSAGE)
+        return value
+
+    @field_validator("clinics_limit")
+    @classmethod
+    def clinics_limit_cannot_be_null(cls, value: int | None) -> int:
+        if value is None:
+            raise ValueError(SUBSCRIPTION_CLINICS_LIMIT_INVALID_MESSAGE)
         return value
 
     @field_validator("description")

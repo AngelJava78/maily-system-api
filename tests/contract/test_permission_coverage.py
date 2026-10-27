@@ -65,6 +65,7 @@ REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
             "doctors_limit": 1,
             "assistants_limit": 1,
             "new_patients_per_year_limit": 1,
+            "clinics_limit": 1,
         },
     ),
     "update_subscription": ("PATCH", f"{URL}/1", {"name": "Cambio"}),

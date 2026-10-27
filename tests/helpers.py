@@ -182,6 +182,7 @@ async def insert_subscription(
     doctors_limit: int = 1,
     assistants_limit: int = 1,
     new_patients_per_year_limit: int = 100,
+    clinics_limit: int = 1,
     status_id: int = 1,
     created_at: datetime | None = None,
 ) -> int:
@@ -204,6 +205,7 @@ async def insert_subscription(
         "doctors_limit": doctors_limit,
         "assistants_limit": assistants_limit,
         "new_patients_per_year_limit": new_patients_per_year_limit,
+        "clinics_limit": clinics_limit,
         "status_id": status_id,
     }
     if created_at is not None:
