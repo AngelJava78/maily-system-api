@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
@@ -8,6 +8,7 @@ from sqlalchemy.orm import joinedload
 
 from src.models.subscription import Subscription
 from src.models.subscription_status import SubscriptionStatus
+from src.models.subscription_type import SubscriptionType
 from src.repositories import INT4_MAX
 from src.repositories.transactions import execute_and_commit
 
@@ -15,22 +16,24 @@ from src.repositories.transactions import execute_and_commit
 class SubscriptionRepository:
     """All the persistence of the subscriptions: the only layer that builds queries over them.
 
-    Every read loads the status together with the subscription (`SubscriptionRead` always includes
-    it and the relationship is `lazy="raise"`). A subscription is "current" when its status is
-    not Deleted: a status added by hand counts as current.
+    Every read loads the status and the type together with the subscription (`SubscriptionRead`
+    always includes both and the relationships are `lazy="raise"`). A subscription is "current"
+    when its status is not Deleted: a status added by hand counts as current.
     """
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     @staticmethod
-    def _select_with_status() -> Select[tuple[Subscription]]:
-        return select(Subscription).options(joinedload(Subscription.status))
+    def _select_with_relations() -> Select[tuple[Subscription]]:
+        return select(Subscription).options(
+            joinedload(Subscription.status), joinedload(Subscription.subscription_type)
+        )
 
     async def list_current(self) -> list[Subscription]:
         """Every current subscription, oldest first (creation date, then id)."""
         statement = (
-            self._select_with_status()
+            self._select_with_relations()
             .where(Subscription.status_id != SubscriptionStatus.DELETED)
             .order_by(Subscription.created_at, Subscription.id)
         )
@@ -42,6 +45,7 @@ class SubscriptionRepository:
         description: str | None,
         monthly_price: Decimal,
         *,
+        subscription_type_id: int,
         annual_price: Decimal,
         trial_days: int,
         self_service: bool,
@@ -56,13 +60,16 @@ class SubscriptionRepository:
 
         `module_keys` MUST already be the final, validated set (including 'patients'); this layer
         does not know about modules, only persists what the Service already resolved.
-        A repeated name raises `UniqueViolationError`; any other failure is re-raised as it is.
+        A repeated name raises `UniqueViolationError`; a `subscription_type_id` that does not
+        exist in `subscription_types` raises `ForeignKeyViolationError`; any other failure is
+        re-raised as it is.
         """
         statement = (
             insert(Subscription)
             .values(
                 name=name,
                 description=description,
+                subscription_type_id=subscription_type_id,
                 monthly_price=monthly_price,
                 annual_price=annual_price,
                 trial_days=trial_days,
@@ -87,7 +94,7 @@ class SubscriptionRepository:
         What a client sees is what the database stored (for instance the price with two decimals).
         """
         statement = (
-            self._select_with_status()
+            self._select_with_relations()
             .where(Subscription.id == subscription_id)
             .execution_options(populate_existing=True)
         )
@@ -97,7 +104,7 @@ class SubscriptionRepository:
         """The current subscription with that identifier, or `None` (also for one that cannot exist)."""
         if subscription_id > INT4_MAX:
             return None
-        statement = self._select_with_status().where(
+        statement = self._select_with_relations().where(
             Subscription.id == subscription_id,
             Subscription.status_id != SubscriptionStatus.DELETED,
         )
@@ -156,6 +163,25 @@ class SubscriptionRepository:
             return None
         statement = select(Subscription.status_id).where(Subscription.id == subscription_id)
         return (await self._session.scalars(statement)).one_or_none()
+
+    async def mark_enterprise(self, ids: Sequence[int]) -> int:
+        """Set `subscription_type_id = SubscriptionType.ENTERPRISE` for exactly these ids (FR-009,
+        research R7).
+
+        No status condition: a deleted subscription is reached too (defensive; by construction it
+        should already have no clinics). Returns how many rows changed; an empty `ids` is a no-op
+        (not even a statement is sent).
+        """
+        if not ids:
+            return 0
+        statement = (
+            update(Subscription)
+            .where(Subscription.id.in_(ids))
+            .values(subscription_type_id=SubscriptionType.ENTERPRISE)
+        )
+        result = await self._session.execute(statement)
+        await self._session.commit()
+        return result.rowcount
 
     async def soft_delete(self, subscription_id: int) -> bool:
         """Mark a current subscription as deleted (status 4); no row is removed.

@@ -66,6 +66,10 @@ FORBIDDEN_IMPORTS = {
         "src.models",
         "sqlalchemy",
     ),
+    # One-off deploy entrypoints (spec 006): they build their own Repository/Service/integration
+    # clients like a tiny composition root, so they need those layers; they never serve an HTTP
+    # request, so routers, security and DTOs (and touching sqlalchemy directly) stay forbidden.
+    "scripts": ("src.routers", "src.security", "src.dtos", "fastapi", "sqlalchemy"),
 }
 
 # Modules that live directly in `src/` (composition root and shared vocabulary).

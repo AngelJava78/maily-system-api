@@ -26,6 +26,7 @@ class ErrorCode(StrEnum):
     SUBSCRIPTION_MODULE_NOT_FOUND = "subscription_module_not_found"
     SUBSCRIPTION_MODULE_PREREQUISITE_MISSING = "subscription_module_prerequisite_missing"
     MODULE_CHECK_UNAVAILABLE = "module_check_unavailable"
+    SUBSCRIPTION_TYPE_NOT_FOUND = "subscription_type_not_found"
     VALIDATION_ERROR = "validation_error"
     INTERNAL_ERROR = "internal_error"
     MONITORED_COMPONENT_NOT_FOUND = "monitored_component_not_found"
@@ -71,6 +72,9 @@ MODULE_CHECK_UNAVAILABLE_MESSAGE = (
     "No se pudo comprobar los módulos de la suscripción por ahora. No se guardó ningún cambio; "
     "inténtelo de nuevo más tarde."
 )
+SUBSCRIPTION_TYPE_NOT_FOUND_MESSAGE = (
+    "No se encontró el tipo de suscripción con el identificador {subscription_type_id}."
+)
 
 # --- Domain errors of the registry of monitored components (spec 005) ---
 
@@ -96,6 +100,12 @@ INVALID_VALUE_MESSAGE = "El valor del campo «{field}» no es válido."
 # because `SubscriptionUpdate` reuses them for its "cannot be null" validators, not only
 # `VALIDATION_MESSAGES` below.
 SUBSCRIPTION_EMPTY_UPDATE_MESSAGE = "Hay que enviar al menos un dato para modificar."
+SUBSCRIPTION_TYPE_REQUIRED_MESSAGE = (
+    "El tipo de suscripción es obligatorio y debe ser un número entero positivo."
+)
+SUBSCRIPTION_TYPE_IMMUTABLE_MESSAGE = (
+    "El tipo de suscripción no puede modificarse una vez creada."
+)
 SUBSCRIPTION_NAME_REQUIRED_MESSAGE = "El nombre de la suscripción es obligatorio."
 SUBSCRIPTION_PRICE_REQUIRED_MESSAGE = "El precio mensual es obligatorio."
 SUBSCRIPTION_ANNUAL_PRICE_REQUIRED_MESSAGE = "El precio anual es obligatorio."
@@ -190,6 +200,9 @@ FIELD_MESSAGES: dict[tuple[str, str], str] = {}
 
 VALIDATION_MESSAGES: dict[str, dict[tuple[str, str], str]] = {
     "subscriptions": {
+        ("subscription_type_id", "required"): SUBSCRIPTION_TYPE_REQUIRED_MESSAGE,
+        ("subscription_type_id", "invalid"): SUBSCRIPTION_TYPE_REQUIRED_MESSAGE,
+        ("subscription_type_id", "forbidden"): SUBSCRIPTION_TYPE_IMMUTABLE_MESSAGE,
         ("name", "required"): SUBSCRIPTION_NAME_REQUIRED_MESSAGE,
         ("name", "too_long"): "El nombre de la suscripción no puede tener más de 100 caracteres.",
         ("name", "not_text"): "El nombre de la suscripción debe ser un texto.",

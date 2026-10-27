@@ -239,7 +239,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"Pro {{suffix}}\", \"description\": \"Para clínicas en crecimiento.\", \"monthly_price\": 1299, \"annual_price\": 12990, \"trial_days\": 14, \"self_service\": true, \"module_keys\": [\"scheduling\"], \"other_features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"], \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000}"
+              "raw": "{\"name\": \"Pro {{suffix}}\", \"subscription_type_id\": 2, \"description\": \"Para clínicas en crecimiento.\", \"monthly_price\": 1299, \"annual_price\": 12990, \"trial_days\": 14, \"self_service\": true, \"module_keys\": [\"scheduling\"], \"other_features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"], \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000}"
             }
           },
           "response": [],
@@ -268,6 +268,90 @@
                   "pm.test(\"informa dónde quedó\", function () { pm.expect(pm.response.headers.get(\"Location\")).to.eql(\"/api/v1/subscriptions/\" + subscription.id); });",
                   "pm.collectionVariables.set(\"subscriptionId\", String(subscription.id));",
                   "pm.collectionVariables.set(\"proName\", subscription.name);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: sin tipo (422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Sin tipo {{suffix}}\", \"monthly_price\": 1, \"annual_price\": 1, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 1}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"campo subscription_type_id\", function () { pm.expect(error.errors[0].field).to.eql(\"subscription_type_id\"); });",
+                  "pm.test(\"mensaje obligatorio\", function () { pm.expect(error.errors[0].message).to.eql(\"El tipo de suscripción es obligatorio y debe ser un número entero positivo.\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: tipo inexistente (422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Tipo inexistente {{suffix}}\", \"subscription_type_id\": 99, \"monthly_price\": 1, \"annual_price\": 1, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 1}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"codigo subscription_type_not_found\", function () { pm.expect(error.code).to.eql(\"subscription_type_not_found\"); });",
+                  "pm.test(\"mensaje con el identificador\", function () { pm.expect(error.message).to.eql(\"No se encontró el tipo de suscripción con el identificador 99.\"); });"
                 ]
               }
             }
@@ -413,7 +497,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"Otra {{suffix}}\", \"monthly_price\": 100, \"annual_price\": 1000, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 100}"
+              "raw": "{\"name\": \"Otra {{suffix}}\", \"subscription_type_id\": 1, \"monthly_price\": 100, \"annual_price\": 1000, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 100}"
             }
           },
           "response": [],
@@ -511,6 +595,49 @@
                   "const error = pm.response.json();",
                   "pm.test(\"el código es validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
                   "pm.test(\"indica el campo\", function () { pm.expect(error.errors[0]).to.eql({ field: \"status\", message: \"El campo «status» no está permitido.\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_subscription: el tipo no se puede modificar (422)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"subscription_type_id\": 1}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"campo subscription_type_id\", function () { pm.expect(error.errors[0].field).to.eql(\"subscription_type_id\"); });",
+                  "pm.test(\"mensaje de inmutabilidad\", function () { pm.expect(error.errors[0].message).to.eql(\"El tipo de suscripción no puede modificarse una vez creada.\"); });"
                 ]
               }
             }
@@ -1054,7 +1181,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"{{proName}}\", \"monthly_price\": 1299, \"annual_price\": 12990, \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000}"
+              "raw": "{\"name\": \"{{proName}}\", \"subscription_type_id\": 1, \"monthly_price\": 1299, \"annual_price\": 12990, \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000}"
             }
           },
           "response": [],
@@ -1443,7 +1570,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"Degradación {{suffix}}\", \"monthly_price\": 1, \"annual_price\": 10, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 1}"
+              "raw": "{\"name\": \"Degradación {{suffix}}\", \"subscription_type_id\": 1, \"monthly_price\": 1, \"annual_price\": 10, \"consulting_rooms_limit\": 1, \"doctors_limit\": 1, \"assistants_limit\": 1, \"new_patients_per_year_limit\": 1}"
             }
           },
           "response": [],

@@ -21,6 +21,7 @@ from src.messages import (
     SUBSCRIPTION_NAME_ALREADY_EXISTS_MESSAGE,
     SUBSCRIPTION_NOT_FOUND_MESSAGE,
     SUBSCRIPTION_STATUS_UNCHANGED_MESSAGE,
+    SUBSCRIPTION_TYPE_NOT_FOUND_MESSAGE,
     TOKEN_EXPIRED_MESSAGE,
     UNAUTHENTICATED_MESSAGE,
     VALIDATION_ERROR_MESSAGE,
@@ -185,6 +186,18 @@ class ModuleCheckUnavailableError(AppError):
 
     def __init__(self) -> None:
         super().__init__(MODULE_CHECK_UNAVAILABLE_MESSAGE)
+
+
+class SubscriptionTypeNotFoundError(AppError):
+    """`subscription_type_id` is a positive integer but no catalog row has that identifier."""
+
+    code = ErrorCode.SUBSCRIPTION_TYPE_NOT_FOUND
+    status_code = 422
+
+    def __init__(self, subscription_type_id: int) -> None:
+        super().__init__(
+            SUBSCRIPTION_TYPE_NOT_FOUND_MESSAGE.format(subscription_type_id=subscription_type_id)
+        )
 
 
 # --- Registry of monitored components (spec 005) ---

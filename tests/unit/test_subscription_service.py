@@ -20,9 +20,11 @@ from src.exceptions import (
     SubscriptionNameAlreadyExistsError,
     SubscriptionNotFoundError,
     SubscriptionStatusUnchangedError,
+    SubscriptionTypeNotFoundError,
 )
 from src.integrations.errors import ClinicsApiUnavailable
-from src.repositories.errors import UniqueViolationError
+from src.models.subscription_type import SubscriptionType
+from src.repositories.errors import ForeignKeyViolationError, UniqueViolationError
 from src.services.subscription_service import SubscriptionService
 from tests.unit.fakes import FakeClinicsApi, FakeSubscriptionRepository, FakeUsersApi
 
@@ -150,6 +152,7 @@ def test_the_clinics_double_really_raises_the_integration_error():
 def create_data(**values) -> SubscriptionCreate:
     base = {
         "name": "Pro",
+        "subscription_type_id": 1,
         "monthly_price": "4500",
         "annual_price": "45000",
         "consulting_rooms_limit": 1,
@@ -187,6 +190,37 @@ async def test_create_passes_the_validated_values_to_the_repository():
     assert stored.self_service is True
     assert stored.module_keys == [PATIENTS_KEY, "scheduling"]
     assert stored.status_id == 1
+
+
+@pytest.mark.parametrize("subscription_type_id", [1, 2])
+async def test_create_passes_the_subscription_type_id_through_unchanged(subscription_type_id):
+    repository = FakeSubscriptionRepository()
+
+    view = await service(repository).create(
+        create_data(subscription_type_id=subscription_type_id), TOKEN
+    )
+
+    assert repository.items[view.subscription.id].subscription_type_id == subscription_type_id
+
+
+async def test_a_nonexistent_subscription_type_id_becomes_the_type_not_found_error():
+    class Broken(FakeSubscriptionRepository):
+        async def create(self, *args, **kwargs):
+            raise ForeignKeyViolationError("subscriptions_subscription_type_id_fkey")
+
+    with pytest.raises(SubscriptionTypeNotFoundError) as error:
+        await service(Broken()).create(create_data(subscription_type_id=99), TOKEN)
+
+    assert "99" in error.value.message
+
+
+async def test_another_foreign_key_violation_is_not_mistaken_for_the_type_not_found():
+    class Broken(FakeSubscriptionRepository):
+        async def create(self, *args, **kwargs):
+            raise ForeignKeyViolationError("some_other_constraint")
+
+    with pytest.raises(ForeignKeyViolationError):
+        await service(Broken()).create(create_data(), TOKEN)
 
 
 async def test_a_new_subscription_has_a_true_zero_without_asking_the_clinics_api():
@@ -570,6 +604,57 @@ async def test_when_it_still_cannot_decide_after_the_retry_it_reports_the_curren
         await service(repository).change_status(1, to_status(1), TOKEN)
 
     assert "Bloqueada" in error.value.message
+
+
+# --- Datos existentes: reconciliación de tipos (FR-009, FR-010; sin historia de usuario) ---
+
+
+async def test_reconcile_marks_only_the_subscriptions_with_more_than_one_clinic():
+    repository = FakeSubscriptionRepository()
+    repository.add(name="Una")
+    repository.add(name="Dos")
+    repository.add(name="Varias")
+    clinics = FakeClinicsApi({1: 1, 2: 2, 3: 5})
+
+    marked = await service(repository, clinics).reconcile_types_from_clinic_counts(TOKEN)
+
+    assert marked == 2
+    assert repository.calls["mark_enterprise"] == 1
+    assert sorted(
+        s.id for s in repository.items.values() if s.subscription_type_id == SubscriptionType.ENTERPRISE
+    ) == [2, 3]
+    assert repository.items[1].subscription_type_id == SubscriptionType.INDIVIDUAL
+
+
+async def test_reconcile_asks_for_every_subscription_without_a_filter():
+    repository = FakeSubscriptionRepository()
+    repository.add(name="Una")
+    clinics = FakeClinicsApi({1: 2})
+
+    await service(repository, clinics).reconcile_types_from_clinic_counts(TOKEN)
+
+    assert clinics.calls == [(TOKEN, None)]
+
+
+async def test_reconcile_does_not_write_anything_when_nobody_has_more_than_one_clinic():
+    repository = FakeSubscriptionRepository()
+    repository.add(name="Una")
+    clinics = FakeClinicsApi({1: 1})
+
+    marked = await service(repository, clinics).reconcile_types_from_clinic_counts(TOKEN)
+
+    assert marked == 0
+    assert repository.calls["mark_enterprise"] == 0
+
+
+async def test_reconcile_propagates_the_clinics_failure_without_retrying_it_itself():
+    repository = FakeSubscriptionRepository()
+    repository.add(name="Una")
+
+    with pytest.raises(ClinicsApiUnavailable):
+        await service(repository, FakeClinicsApi(fail=True)).reconcile_types_from_clinic_counts(TOKEN)
+
+    assert repository.calls["mark_enterprise"] == 0
 
 
 # --- US7: delete ---

@@ -170,6 +170,7 @@ async def insert_subscription(
     session: AsyncSession,
     *,
     name: str = "Plan",
+    subscription_type_id: int = 1,
     monthly_price: str | Decimal = "100.00",
     annual_price: str | Decimal = "1000.00",
     trial_days: int = 0,
@@ -192,6 +193,7 @@ async def insert_subscription(
     values: dict[str, Any] = {
         "name": name,
         "description": description,
+        "subscription_type_id": subscription_type_id,
         "monthly_price": Decimal(str(monthly_price)),
         "annual_price": Decimal(str(annual_price)),
         "trial_days": trial_days,

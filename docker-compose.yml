@@ -28,6 +28,26 @@ services:
     command: ["alembic", "upgrade", "head"]
     restart: "no"
 
+  # Reconciliación de tipos de suscripción (spec 006, FR-009/FR-010): paso manual de un solo uso,
+  # después de `migrate`. `docker compose run --rm -e BACKFILL_ACCESS_TOKEN=... backfill-subscription-types`.
+  # No bloquea `api`: toda suscripción ya tiene un tipo válido (individual) desde que se aplica la
+  # migración 0005; este paso solo ascciende a enterprise las que ya tenían más de una clínica.
+  backfill-subscription-types:
+    build: .
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/maily_system
+      CLINICS_API_BASE_URL: ${CLINICS_API_BASE_URL:-}
+      CLINICS_API_TIMEOUT_SECONDS: ${CLINICS_API_TIMEOUT_SECONDS:-}
+      USERS_API_BASE_URL: ${USERS_API_BASE_URL:-}
+      USERS_API_TIMEOUT_SECONDS: ${USERS_API_TIMEOUT_SECONDS:-}
+      BACKFILL_ACCESS_TOKEN: ${BACKFILL_ACCESS_TOKEN:-}
+    command: ["python", "-m", "src.scripts.backfill_subscription_types"]
+    restart: "no"
+    profiles: ["tools"]
+
   # API REST: `docker compose up -d api` (aprovisiona el esquema antes con `migrate`).
   api:
     # El commit y la fecha del build se pasan a la imagen (`/info` los publica); sin ellos valen

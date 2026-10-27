@@ -1,0 +1,780 @@
+openapi: 3.1.0
+info:
+  title: MailySoft System API — Suscripciones
+  version: 3.0.0
+  description: |
+    API REST de suscripciones (planes) de MailySoft. Es el contrato objetivo de la feature
+    `006-add-subscription-type`: reemplaza al de `004-correct-subscriptions-api` (`version: 2.0.0`)
+    con un cambio incompatible de forma (`subscription_type_id` pasa a ser obligatorio al crear, y
+    `subscription_type` de las lecturas pasa a ser un objeto `{id, name}`). La ruta
+    sigue siendo `/api/v1` (sin publicar un `/api/v2` en paralelo): no hay consumidores reales del
+    contrato anterior que proteger. El esquema que publica la aplicación (`/openapi.json`) debe
+    coincidir con este.
+
+    - **Tipo**: cada suscripción tiene un `subscription_type` (objeto `{id, name}`, igual que
+      `status`), tomado de un catálogo administrado a mano (hoy, 1 Individual y 2 Empresarial; se
+      amplía insertando una fila, no con un cambio de contrato). Al crear se envía
+      `subscription_type_id` (el entero); es obligatorio y fijo para siempre: ninguna operación de
+      esta API permite modificarlo después (ni siquiera reenviando el mismo valor). Acota cuántas
+      clínicas puede tener asociadas (una si es Individual, cualquier cantidad si es Empresarial),
+      pero esa asociación la administra el sistema que administra las clínicas, no esta API: le
+      basta con leer este campo por su `id`, nunca por su `name`.
+    - **Estatus**: cada suscripción tiene un estatus tomado de un catálogo (1 Activa, 2 Inactiva,
+      3 Bloqueada, 4 Eliminada). Quien consume la API debe basarse en el `id` del estatus: el nombre
+      puede cambiar. Las suscripciones Eliminadas no aparecen y se comportan como inexistentes.
+    - **Acceso**: toda operación exige un token de acceso (`Authorization: Bearer …`) y un permiso, que
+      decide el API de usuarios en cada petición. La documentación no exige token.
+    - **Módulos**: `module_keys` son claves de un catálogo de módulos de tipo Clínica que es propiedad
+      de la API de usuarios, no de este servicio; esta API solo guarda y valida las claves (nunca su
+      nombre ni su descripción) y siempre incluye `patients`. Crear o actualizar módulos puede
+      consultar la API de usuarios (nunca listar ni consultar una suscripción).
+    - **Errores**: todos tienen el mismo formato (`code`, `message` y, en las validaciones, `errors`) y
+      sus mensajes están en español.
+    - **Clínicas**: `clinics_count` lo aporta el API de clínicas en cada lectura; si no está disponible
+      vale `null` (nunca 0 inventado).
+servers:
+  - url: http://localhost:8010
+    description: Entorno local (Docker Compose o uvicorn)
+tags:
+  - name: subscriptions
+    description: Catálogo de suscripciones (planes), sus módulos, sus límites y su estatus.
+paths:
+  /api/v1/subscriptions:
+    get:
+      tags: [subscriptions]
+      operationId: list_subscriptions
+      summary: Listar las suscripciones vigentes (sin paginar)
+      description: |
+        Devuelve, en una sola respuesta y sin paginación, todas las suscripciones Activas, Inactivas y
+        Bloqueadas (y las de un estatus añadido a mano), cada una con su estatus. Las Eliminadas no
+        aparecen. Orden: fecha de creación ascendente y, a igualdad, identificador ascendente. Sin
+        suscripciones devuelve una lista vacía. Si el API de clínicas no responde, todas las
+        suscripciones se devuelven con `clinics_count: null`. **No consulta la API de usuarios por
+        módulos**: `module_keys` son las claves ya guardadas, sin resolver su nombre.
+
+        **Permiso requerido: `subscriptions:read`.**
+      x-required-permission: subscriptions:read
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Lista de suscripciones vigentes.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SubscriptionRead"
+              examples:
+                catalogo:
+                  value:
+                    - id: 2
+                      name: Profesional
+                      description: Para consultorios con varios doctores que llevan expediente y recetas.
+                      subscription_type: { id: 2, name: Empresarial }
+                      monthly_price: "1299.00"
+                      annual_price: "12990.00"
+                      trial_days: 14
+                      self_service: true
+                      module_keys: [clinical_record_templates, clinical_records, patients, prescriptions, reminders, scheduling]
+                      other_features: [Soporte por correo y WhatsApp, Capacitación inicial en línea]
+                      consulting_rooms_limit: 2
+                      doctors_limit: 3
+                      assistants_limit: 2
+                      new_patients_per_year_limit: 15000
+                      status: { id: 1, name: Activa }
+                      clinics_count: 0
+                      created_at: "2026-10-23T15:00:00Z"
+                      updated_at: "2026-10-23T15:00:00Z"
+                    - id: 5
+                      name: Solo
+                      description: Para el médico que trabaja por su cuenta.
+                      subscription_type: { id: 1, name: Individual }
+                      monthly_price: "900.00"
+                      annual_price: "9000.00"
+                      trial_days: 0
+                      self_service: false
+                      module_keys: [patients, scheduling]
+                      other_features: []
+                      consulting_rooms_limit: 1
+                      doctors_limit: 1
+                      assistants_limit: 0
+                      new_patients_per_year_limit: 5000
+                      status: { id: 2, name: Inactiva }
+                      clinics_count: null
+                      created_at: "2026-10-23T15:05:00Z"
+                      updated_at: "2026-10-23T16:10:00Z"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/AuthorizationUnavailable" }
+    post:
+      tags: [subscriptions]
+      operationId: create_subscription
+      summary: Crear una suscripción
+      description: |
+        Crea una suscripción con estatus Activa. Los textos se guardan sin espacios al inicio ni al
+        final. El nombre no puede repetirse (sin distinguir mayúsculas) entre las suscripciones no
+        eliminadas; el de una Eliminada se puede reutilizar. Se rechaza toda la solicitud si trae un
+        dato no reconocido (`id`, `status`, `clinics_count`, fechas…). La respuesta trae
+        `clinics_count: 0` porque una suscripción nueva no puede tener clínicas.
+
+        `subscription_type_id` es obligatorio (hoy, `1` Individual o `2` Empresarial, del catálogo
+        `subscription_types`) y queda fijo para siempre: ninguna otra operación de esta API lo
+        modifica. Un identificador que no exista en el catálogo se rechaza con
+        `subscription_type_not_found`.
+
+        `module_keys` siempre incluye `patients`, se envíe o no. Si pide algún módulo además de
+        `patients`, se valida contra la API de usuarios (módulo reconocido y de tipo Clínica) y
+        contra las dependencias de esta API (Recordatorios exige Agenda y citas; Plantillas de
+        expediente y Recetas exigen Expediente clínico; Facturación exige Finanzas).
+
+        **Permiso requerido: `subscriptions:write`.**
+      x-required-permission: subscriptions:write
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubscriptionCreate"
+            examples:
+              completo:
+                summary: Plan «Profesional» del mockup
+                value:
+                  name: Profesional
+                  description: Para consultorios con varios doctores que llevan expediente y recetas.
+                  subscription_type_id: 2
+                  monthly_price: "1299.00"
+                  annual_price: "12990.00"
+                  trial_days: 14
+                  self_service: true
+                  module_keys: [scheduling, reminders, clinical_records, clinical_record_templates, prescriptions]
+                  other_features: [Soporte por correo y WhatsApp, Capacitación inicial en línea]
+                  consulting_rooms_limit: 2
+                  doctors_limit: 3
+                  assistants_limit: 2
+                  new_patients_per_year_limit: 15000
+              minimo:
+                summary: Solo los datos obligatorios (solo incluye Pacientes)
+                value:
+                  name: Esencial
+                  subscription_type_id: 1
+                  monthly_price: 499
+                  annual_price: 4990
+                  consulting_rooms_limit: 1
+                  doctors_limit: 1
+                  assistants_limit: 1
+                  new_patients_per_year_limit: 5000
+      responses:
+        "201":
+          description: Suscripción creada.
+          headers:
+            Location:
+              description: Ruta de la suscripción creada.
+              schema: { type: string }
+              example: /api/v1/subscriptions/7
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionRead" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Ya existe una suscripción no eliminada con ese nombre, o se pidió un módulo sin su prerrequisito.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                nombre_repetido:
+                  value:
+                    code: subscription_name_already_exists
+                    message: Ya existe una suscripción con el nombre «Pro».
+                prerrequisito_faltante:
+                  value:
+                    code: subscription_module_prerequisite_missing
+                    message: El módulo «billing» exige el módulo «finance», que no está incluido.
+        "422":
+          description: Algún dato no es válido, se envió un campo no permitido, el tipo de suscripción no existe en el catálogo, o un módulo no es reconocido por la API de usuarios.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                nombre_obligatorio:
+                  value:
+                    code: validation_error
+                    message: Hay datos no válidos en la solicitud.
+                    errors:
+                      - { field: name, message: El nombre de la suscripción es obligatorio. }
+                campo_no_permitido:
+                  value:
+                    code: validation_error
+                    message: Hay datos no válidos en la solicitud.
+                    errors:
+                      - { field: status, message: "El campo «status» no está permitido." }
+                tipo_obligatorio:
+                  value:
+                    code: validation_error
+                    message: Hay datos no válidos en la solicitud.
+                    errors:
+                      - { field: subscription_type_id, message: El tipo de suscripción es obligatorio y debe ser un número entero positivo. }
+                tipo_no_encontrado:
+                  value:
+                    code: subscription_type_not_found
+                    message: No se encontró el tipo de suscripción con el identificador 99.
+                modulo_no_reconocido:
+                  value:
+                    code: subscription_module_not_found
+                    message: La API de usuarios no reconoce el módulo «facturacion» como un módulo de clínica vigente.
+        "503":
+          description: No se pudo verificar el permiso, o no se pudieron comprobar los módulos pedidos.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                permiso:
+                  value:
+                    code: authorization_unavailable
+                    message: No se pudo verificar su permiso por ahora. Inténtelo de nuevo más tarde.
+                modulos:
+                  value:
+                    code: module_check_unavailable
+                    message: No se pudo comprobar los módulos de la suscripción por ahora. No se guardó ningún cambio; inténtelo de nuevo más tarde.
+  /api/v1/subscriptions/{subscription_id}:
+    parameters:
+      - $ref: "#/components/parameters/SubscriptionId"
+    get:
+      tags: [subscriptions]
+      operationId: get_subscription
+      summary: Consultar una suscripción por su identificador
+      description: |
+        Devuelve la suscripción Activa, Inactiva o Bloqueada con ese identificador. Si no existe o está
+        Eliminada responde «no se encuentra». Si el API de clínicas no responde, `clinics_count` es
+        `null`. **No consulta la API de usuarios por módulos.**
+
+        **Permiso requerido: `subscriptions:read`.**
+      x-required-permission: subscriptions:read
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Suscripción encontrada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionRead" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/AuthorizationUnavailable" }
+    patch:
+      tags: [subscriptions]
+      operationId: update_subscription
+      summary: Actualizar una suscripción
+      description: |
+        Modifica, enviando solo lo que cambia, el nombre, la descripción, el precio mensual, el precio
+        anual, los días de prueba, el autoconsumo, los módulos incluidos, los cuatro límites de la
+        clínica y/o las otras funcionalidades de una suscripción vigente. Hay que enviar al menos uno.
+        Enviar la descripción vacía (o `null`) la borra; enviar `other_features: []` vacía esa lista.
+        No se puede cambiar el identificador, el estatus (ver `change_subscription_status`), las
+        fechas, `clinics_count` ni `subscription_type_id` (es fijo desde la creación: enviarlo, con
+        el valor que sea, rechaza toda la solicitud). Una suscripción puede conservar su propio nombre
+        (incluso cambiando solo las mayúsculas).
+
+        Si la solicitud trae `module_keys`, primero se comprueba que la suscripción exista (404 si no,
+        antes de llamar a la API de usuarios) y luego se valida igual que al crear (módulo reconocido
+        y dependencias); `patients` nunca puede excluirse, se envíe o no en la lista.
+
+        **Permiso requerido: `subscriptions:update`.**
+      x-required-permission: subscriptions:update
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubscriptionUpdate" }
+            examples:
+              precio_anual:
+                summary: Cambiar solo el precio anual
+                value: { annual_price: "13990.00" }
+              modulos:
+                summary: Reemplazar el conjunto de módulos
+                value: { module_keys: [scheduling, reminders] }
+      responses:
+        "200":
+          description: Suscripción actualizada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionRead" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Otra suscripción no eliminada ya tiene ese nombre, o se pidió un módulo sin su prerrequisito.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                nombre_repetido:
+                  value:
+                    code: subscription_name_already_exists
+                    message: Ya existe una suscripción con el nombre «Pro».
+                prerrequisito_faltante:
+                  value:
+                    code: subscription_module_prerequisite_missing
+                    message: El módulo «reminders» exige el módulo «scheduling», que no está incluido.
+        "422":
+          description: Algún dato no es válido, se envió un campo no permitido, o un módulo no es reconocido por la API de usuarios.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                campo_no_permitido:
+                  value:
+                    code: validation_error
+                    message: Hay datos no válidos en la solicitud.
+                    errors:
+                      - { field: status, message: "El campo «status» no está permitido." }
+                tipo_no_permitido:
+                  value:
+                    code: validation_error
+                    message: Hay datos no válidos en la solicitud.
+                    errors:
+                      - { field: subscription_type_id, message: "El tipo de suscripción no puede modificarse una vez creada." }
+                modulo_no_reconocido:
+                  value:
+                    code: subscription_module_not_found
+                    message: La API de usuarios no reconoce el módulo «facturacion» como un módulo de clínica vigente.
+        "503":
+          description: No se pudo verificar el permiso, o no se pudieron comprobar los módulos pedidos.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                permiso:
+                  value:
+                    code: authorization_unavailable
+                    message: No se pudo verificar su permiso por ahora. Inténtelo de nuevo más tarde.
+                modulos:
+                  value:
+                    code: module_check_unavailable
+                    message: No se pudo comprobar los módulos de la suscripción por ahora. No se guardó ningún cambio; inténtelo de nuevo más tarde.
+    delete:
+      tags: [subscriptions]
+      operationId: delete_subscription
+      summary: Eliminar una suscripción (baja lógica)
+      description: |
+        Pasa la suscripción al estatus Eliminada: sus datos se conservan, deja de aparecer en el catálogo
+        y en las consultas, no puede modificarse ni recuperarse con esta API y su nombre queda libre.
+        **Se rechaza si tiene clínicas asignadas** (`subscription_has_clinics`) y también si no puede
+        comprobarse porque el API de clínicas no responde (`clinics_check_unavailable`); en ambos casos
+        no cambia nada. No valida módulos (no los modifica).
+
+        **Permiso requerido: `subscriptions:delete`.**
+      x-required-permission: subscriptions:delete
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Suscripción eliminada (sin contenido).
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: La suscripción tiene clínicas asignadas.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                con_clinicas:
+                  value:
+                    code: subscription_has_clinics
+                    message: No se puede eliminar la suscripción con el identificador 1 porque tiene clínicas asignadas.
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503":
+          description: |
+            No se pudo verificar el permiso (`authorization_unavailable`) o no se pudo comprobar si la
+            suscripción tiene clínicas (`clinics_check_unavailable`). No cambia nada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                permiso:
+                  value:
+                    code: authorization_unavailable
+                    message: No se pudo verificar su permiso por ahora. Inténtelo de nuevo más tarde.
+                clinicas:
+                  value:
+                    code: clinics_check_unavailable
+                    message: No se pudo comprobar si la suscripción con el identificador 1 tiene clínicas asignadas. No se eliminó; inténtelo de nuevo más tarde.
+  /api/v1/subscriptions/{subscription_id}/status:
+    parameters:
+      - $ref: "#/components/parameters/SubscriptionId"
+    patch:
+      tags: [subscriptions]
+      operationId: change_subscription_status
+      summary: Cambiar el estatus de una suscripción
+      description: |
+        Cambia el estatus de una suscripción vigente a Activa (1), Inactiva (2) o Bloqueada (3), en
+        cualquier dirección y tenga o no clínicas. Pedir el estatus que ya tiene se rechaza. «Eliminada»
+        (4) y los estatus desconocidos se rechazan: eliminar tiene su propia operación. No toca
+        módulos, precios ni límites.
+
+        **Permiso requerido: `subscriptions:update`.**
+      x-required-permission: subscriptions:update
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubscriptionStatusChange" }
+            examples:
+              inactivar:
+                summary: Retirar de la oferta
+                value: { status_id: 2 }
+      responses:
+        "200":
+          description: Suscripción con su nuevo estatus.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionRead" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: La suscripción ya tiene ese estatus.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                sin_cambio:
+                  value:
+                    code: subscription_status_unchanged
+                    message: La suscripción con el identificador 1 ya tiene el estatus Inactiva.
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/AuthorizationUnavailable" }
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "Token de acceso emitido por Auth0. Este servicio no lo verifica: lo reenvía al API de usuarios."
+  parameters:
+    SubscriptionId:
+      name: subscription_id
+      in: path
+      required: true
+      description: Identificador de la suscripción (entero positivo).
+      schema: { type: integer, minimum: 1 }
+      example: 1
+  responses:
+    Unauthorized:
+      description: |
+        No hay token, venció o no es válido. No se ejecuta ni se cambia nada. Incluye la cabecera
+        `WWW-Authenticate`.
+      headers:
+        WWW-Authenticate:
+          description: Esquema de autenticación esperado.
+          schema: { type: string }
+          example: Bearer
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            sin_token:
+              value: { code: unauthenticated, message: Debe iniciar sesión para usar esta operación. }
+            vencido:
+              value: { code: token_expired, message: Su sesión venció. Inicie sesión de nuevo. }
+            no_valido:
+              value: { code: invalid_token, message: El token de acceso no es válido. }
+    Forbidden:
+      description: |
+        La persona está autenticada pero no tiene el permiso que exige la operación. No se ejecuta ni se
+        cambia nada, y no se revela si el recurso existe ni si los datos eran válidos.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            sin_permiso:
+              value:
+                code: permission_denied
+                message: "No tiene permiso para realizar esta operación. Permiso requerido: subscriptions:write."
+    AuthorizationUnavailable:
+      description: |
+        No se pudo verificar el permiso por ahora (el API de usuarios no responde o respondió algo
+        inesperado): la petición se rechaza y se puede reintentar más tarde.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            no_disponible:
+              value:
+                code: authorization_unavailable
+                message: No se pudo verificar su permiso por ahora. Inténtelo de nuevo más tarde.
+    NotFound:
+      description: La suscripción no existe o está Eliminada.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            no_encontrada:
+              value:
+                code: subscription_not_found
+                message: No se encontró la suscripción con el identificador 42.
+    ValidationError:
+      description: Algún dato de la solicitud no es válido (o se envió un campo no permitido).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            nombre_obligatorio:
+              value:
+                code: validation_error
+                message: Hay datos no válidos en la solicitud.
+                errors:
+                  - { field: name, message: El nombre de la suscripción es obligatorio. }
+            campo_no_permitido:
+              value:
+                code: validation_error
+                message: Hay datos no válidos en la solicitud.
+                errors:
+                  - { field: status, message: "El campo «status» no está permitido." }
+  schemas:
+    StatusRead:
+      type: object
+      description: Estatus de una suscripción, tomado de su catálogo (se edita a mano).
+      required: [id, name]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+          description: Identificador del estatus (1 Activa, 2 Inactiva, 3 Bloqueada, 4 Eliminada). Es el valor estable en el que debe basarse quien consume la API.
+          examples: [1]
+        name:
+          type: string
+          description: Nombre del estatus (en español). Es un dato del catálogo y puede cambiar.
+          examples: [Activa]
+    ModuleKey:
+      type: string
+      pattern: "^[a-z][a-z0-9_]*$"
+      maxLength: 50
+      description: |
+        Clave de un módulo de tipo Clínica, tal como lo identifica la API de usuarios (no su nombre
+        ni su `id` numérico). Esta API no valida su existencia salvo al crear o actualizar módulos.
+      examples: [scheduling]
+    SubscriptionTypeRead:
+      type: object
+      description: |
+        A quién va dirigida la suscripción, tomado de su catálogo (se edita a mano, igual que el
+        estatus): hoy, 1 Individual (médico independiente; su consultorio se asocia, internamente,
+        a una sola clínica de la que no es consciente) o 2 Empresarial (empresa con varias clínicas
+        y varios consultorios por clínica). Agregar un tercer tipo es una fila nueva en el catálogo,
+        no un cambio de contrato. Obligatorio al crear (`subscription_type_id`) y fijo para
+        siempre: ninguna operación de esta API lo modifica después (por eso `subscription_type_id`
+        no aparece en `SubscriptionUpdate`). Acota cuántas clínicas puede tener la suscripción (una
+        si es Individual, cualquier cantidad si es Empresarial); esa asociación la administra el
+        sistema que administra las clínicas, no esta API.
+      required: [id, name]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+          description: Identificador del tipo (hoy, 1 Individual, 2 Empresarial). Es el valor estable en el que debe basarse quien consume la API.
+          examples: [1]
+        name:
+          type: string
+          description: Nombre del tipo (en español). Es un dato del catálogo y puede cambiar.
+          examples: [Individual]
+    SubscriptionRead:
+      type: object
+      description: Una suscripción (plan) con su estatus, sus módulos y sus límites.
+      required:
+        [id, name, description, subscription_type, monthly_price, annual_price, trial_days,
+         self_service, module_keys, other_features, consulting_rooms_limit, doctors_limit,
+         assistants_limit, new_patients_per_year_limit, status, clinics_count, created_at, updated_at]
+      properties:
+        id: { type: integer, minimum: 1, examples: [1] }
+        name: { type: string, examples: [Profesional] }
+        description:
+          type: [string, "null"]
+          description: Descripción, o `null` si no tiene.
+        subscription_type: { $ref: "#/components/schemas/SubscriptionTypeRead" }
+        monthly_price:
+          type: string
+          pattern: "^[0-9]{1,8}\\.[0-9]{2}$"
+          description: Precio mensual en pesos mexicanos sin IVA, con dos decimales (cadena para no perder precisión).
+          examples: ["1299.00"]
+        annual_price:
+          type: string
+          pattern: "^[0-9]{1,8}\\.[0-9]{2}$"
+          description: Precio anual en pesos mexicanos sin IVA, con dos decimales. Independiente del precio mensual (sin proporción obligatoria).
+          examples: ["12990.00"]
+        trial_days:
+          type: integer
+          minimum: 0
+          maximum: 3650
+          description: Días de prueba del plan. `0` = sin periodo de prueba.
+          examples: [14]
+        self_service:
+          type: boolean
+          description: Si la suscripción está en autoconsumo (visible y contratable por su cuenta en el portal de MailySoft).
+          examples: [true]
+        module_keys:
+          type: array
+          description: Claves de los módulos de clínica que incluye, ordenadas alfabéticamente. Siempre incluye `patients`. El nombre de cada módulo se consulta directamente en la API de usuarios.
+          items: { $ref: "#/components/schemas/ModuleKey" }
+          examples: [[clinical_records, patients, scheduling]]
+        other_features:
+          type: array
+          description: Otras funcionalidades del plan que no son módulos (soporte, capacitación…), en el orden en que se guardaron.
+          items: { type: string }
+        consulting_rooms_limit: { type: integer, minimum: 0, maximum: 1000000, description: Techo de consultorios que puede dar de alta la clínica. }
+        doctors_limit: { type: integer, minimum: 0, maximum: 1000000, description: Techo de doctores que puede dar de alta la clínica. }
+        assistants_limit: { type: integer, minimum: 0, maximum: 1000000, description: Techo de asistentes que puede dar de alta la clínica. }
+        new_patients_per_year_limit: { type: integer, minimum: 0, maximum: 1000000, description: Techo de pacientes nuevos que puede registrar la clínica cada año. }
+        status: { $ref: "#/components/schemas/StatusRead" }
+        clinics_count:
+          type: [integer, "null"]
+          minimum: 0
+          description: Número de clínicas con esta suscripción (dato del API de clínicas). `null` = no disponible.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    SubscriptionCreate:
+      type: object
+      description: Datos para crear una suscripción. No se admiten campos desconocidos.
+      additionalProperties: false
+      required: [name, subscription_type_id, monthly_price, annual_price, consulting_rooms_limit, doctors_limit, assistants_limit, new_patients_per_year_limit]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100, description: "Nombre (1 a 100 caracteres, sin contar espacios al inicio y al final).", examples: [Profesional] }
+        description: { type: [string, "null"], maxLength: 500, description: Descripción opcional. La cadena vacía equivale a no tener. }
+        subscription_type_id:
+          type: integer
+          minimum: 1
+          description: |
+            Identificador de un tipo del catálogo `subscription_types` (hoy, 1 Individual o 2
+            Empresarial). Obligatorio. Fijo para siempre una vez creada la suscripción (no admite
+            cambios posteriores). Un identificador que no exista se rechaza con
+            `subscription_type_not_found` (422).
+          examples: [1]
+        monthly_price:
+          description: Precio mensual en pesos, de 0 a 99999999.99, con hasta dos decimales (número o cadena).
+          anyOf:
+            - { type: number, minimum: 0 }
+            - { type: string, pattern: "^[0-9]{1,8}(\\.[0-9]{1,2})?$" }
+        annual_price:
+          description: Precio anual en pesos, de 0 a 99999999.99, con hasta dos decimales (número o cadena). Obligatorio e independiente del precio mensual.
+          anyOf:
+            - { type: number, minimum: 0 }
+            - { type: string, pattern: "^[0-9]{1,8}(\\.[0-9]{1,2})?$" }
+        trial_days:
+          type: integer
+          minimum: 0
+          maximum: 3650
+          default: 0
+          description: Días de prueba. `0` = sin periodo de prueba (valor por defecto si se omite).
+        self_service:
+          type: boolean
+          default: false
+          description: Si queda en autoconsumo en el portal de MailySoft. Por defecto, en falso (no aparece hasta que se active a propósito).
+        module_keys:
+          type: array
+          maxItems: 50
+          default: []
+          description: Claves de los módulos de clínica, además de `patients` (que siempre se incluye aunque no se envíe). Se validan contra la API de usuarios y contra sus dependencias.
+          items: { $ref: "#/components/schemas/ModuleKey" }
+        other_features:
+          type: array
+          maxItems: 20
+          default: []
+          description: Otras funcionalidades del plan que no son módulos (hasta 20 textos de 1 a 150 caracteres). Puede estar vacía.
+          items: { type: string, minLength: 1, maxLength: 150 }
+        consulting_rooms_limit: { type: integer, minimum: 0, maximum: 1000000, description: Techo de consultorios. Obligatorio. }
+        doctors_limit: { type: integer, minimum: 0, maximum: 1000000, description: Techo de doctores. Obligatorio. }
+        assistants_limit: { type: integer, minimum: 0, maximum: 1000000, description: Techo de asistentes. Obligatorio. }
+        new_patients_per_year_limit: { type: integer, minimum: 0, maximum: 1000000, description: Techo de pacientes nuevos al año. Obligatorio. }
+    SubscriptionUpdate:
+      type: object
+      description: |
+        Datos a modificar. Hay que enviar al menos uno. No se admiten campos desconocidos.
+        `subscription_type_id` a propósito no es una propiedad de este esquema: es fijo desde la
+        creación (FR-004), así que enviarlo (con cualquier valor) se rechaza con un mensaje propio
+        sobre inmutabilidad (distinto del genérico de campo no permitido que sí usan `id`, `status`,
+        las fechas o `clinics_count`).
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100, description: Nuevo nombre. No puede ser nulo ni vacío. }
+        description: { type: [string, "null"], maxLength: 500, description: Nueva descripción. La cadena vacía o `null` la borran. }
+        monthly_price:
+          description: Nuevo precio mensual (mismo formato que al crear). No puede ser nulo.
+          anyOf:
+            - { type: number, minimum: 0 }
+            - { type: string, pattern: "^[0-9]{1,8}(\\.[0-9]{1,2})?$" }
+        annual_price:
+          description: Nuevo precio anual (mismo formato que al crear). No puede ser nulo.
+          anyOf:
+            - { type: number, minimum: 0 }
+            - { type: string, pattern: "^[0-9]{1,8}(\\.[0-9]{1,2})?$" }
+        trial_days: { type: integer, minimum: 0, maximum: 3650, description: Nuevos días de prueba. No puede ser nulo. }
+        self_service: { type: boolean, description: Nuevo autoconsumo. No puede ser nulo. }
+        module_keys:
+          type: array
+          maxItems: 50
+          description: Nuevo conjunto completo de módulos (sustituye al anterior; `patients` se conserva aunque no se envíe). No puede ser nulo.
+          items: { $ref: "#/components/schemas/ModuleKey" }
+        other_features:
+          type: array
+          maxItems: 20
+          description: Nueva lista completa de otras funcionalidades (sustituye a la anterior). `[]` la vacía. No puede ser nula.
+          items: { type: string, minLength: 1, maxLength: 150 }
+        consulting_rooms_limit: { type: integer, minimum: 0, maximum: 1000000, description: Nuevo techo de consultorios. No puede ser nulo. }
+        doctors_limit: { type: integer, minimum: 0, maximum: 1000000, description: Nuevo techo de doctores. No puede ser nulo. }
+        assistants_limit: { type: integer, minimum: 0, maximum: 1000000, description: Nuevo techo de asistentes. No puede ser nulo. }
+        new_patients_per_year_limit: { type: integer, minimum: 0, maximum: 1000000, description: Nuevo techo de pacientes nuevos al año. No puede ser nulo. }
+    SubscriptionStatusChange:
+      type: object
+      description: Estatus al que pasa la suscripción.
+      additionalProperties: false
+      required: [status_id]
+      properties:
+        status_id:
+          type: integer
+          enum: [1, 2, 3]
+          description: 1 Activa, 2 Inactiva o 3 Bloqueada. Eliminar tiene su propia operación.
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field: { type: string, description: "Campo con el problema (el nombre del campo de la API, o `body`).", examples: [name] }
+        message: { type: string, description: Explicación en español. }
+    ErrorResponse:
+      type: object
+      description: Formato uniforme de todos los errores.
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Código estable del error (en inglés). Ver el catálogo de errores.
+          enum:
+            - unauthenticated
+            - token_expired
+            - invalid_token
+            - permission_denied
+            - authorization_unavailable
+            - subscription_not_found
+            - subscription_name_already_exists
+            - subscription_status_unchanged
+            - subscription_has_clinics
+            - clinics_check_unavailable
+            - subscription_module_not_found
+            - subscription_module_prerequisite_missing
+            - module_check_unavailable
+            - validation_error
+            - internal_error
+        message: { type: string, description: Mensaje en español, sin detalles técnicos. }
+        errors:
+          type: array
+          description: "Solo en `validation_error`: un elemento por dato con problema."
+          items: { $ref: "#/components/schemas/FieldError" }

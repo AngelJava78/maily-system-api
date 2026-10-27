@@ -40,7 +40,7 @@ def test_the_application_can_be_built_without_any_variable():
     app = create_app()
 
     assert app.title == "MailySoft System API"
-    assert app.version == "2.0.0"
+    assert app.version == "3.0.0"
 
 
 async def test_the_service_does_not_start_without_the_address_of_the_users_api(

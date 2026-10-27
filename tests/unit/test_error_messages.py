@@ -76,7 +76,7 @@ BEARER = {"WWW-Authenticate": "Bearer"}
 BEARER_INVALID = {"WWW-Authenticate": 'Bearer error="invalid_token"'}
 
 
-def test_the_error_codes_are_exactly_the_seventeen_of_the_catalog():
+def test_the_error_codes_are_exactly_the_eighteen_of_the_catalog():
     assert {code.value for code in ErrorCode} == {
         "unauthenticated",
         "token_expired",
@@ -96,6 +96,8 @@ def test_the_error_codes_are_exactly_the_seventeen_of_the_catalog():
         # spec 005: the registry of monitored components
         "monitored_component_not_found",
         "monitored_component_code_already_exists",
+        # spec 006: the subscription type catalog
+        "subscription_type_not_found",
     }
 
 

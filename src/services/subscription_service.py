@@ -17,12 +17,13 @@ from src.exceptions import (
     SubscriptionNameAlreadyExistsError,
     SubscriptionNotFoundError,
     SubscriptionStatusUnchangedError,
+    SubscriptionTypeNotFoundError,
 )
 from src.integrations.clinics_api import ClinicsApiClient
 from src.integrations.errors import ClinicsApiUnavailable, UsersApiUnavailable
 from src.integrations.users_api import UsersApiClient
-from src.models.subscription import SUBSCRIPTION_NAME_INDEX, Subscription
-from src.repositories.errors import UniqueViolationError
+from src.models.subscription import SUBSCRIPTION_NAME_INDEX, SUBSCRIPTION_TYPE_FK_NAME, Subscription
+from src.repositories.errors import ForeignKeyViolationError, UniqueViolationError
 from src.repositories.subscription_repository import SubscriptionRepository
 
 logger = logging.getLogger(__name__)
@@ -106,11 +107,14 @@ class SubscriptionService:
         return sorted(wanted)
 
     async def create(self, data: SubscriptionCreate, token: str) -> SubscriptionView:
-        """Create an active subscription. The name is not checked beforehand: the database decides.
+        """Create an active subscription. Neither the name nor the type are checked beforehand:
+        the database decides.
 
-        Checking first would leave a race between two requests with the same name (research R11).
-        The clinics count is a true zero without asking the clinics API: a subscription that was
-        just created cannot have clinics yet (research R6).
+        Checking first would leave a race between two requests with the same name (research R11);
+        the same reasoning applies to `subscription_type_id` (research R5): the `INSERT` is tried
+        as is, and the foreign key decides whether the type exists. The clinics count is a true
+        zero without asking the clinics API: a subscription that was just created cannot have
+        clinics yet (research R6).
         """
         module_keys = await self._resolve_modules(data.module_keys, token)
         try:
@@ -118,6 +122,7 @@ class SubscriptionService:
                 data.name,
                 data.description,
                 data.monthly_price,
+                subscription_type_id=data.subscription_type_id,
                 annual_price=data.annual_price,
                 trial_days=data.trial_days,
                 self_service=data.self_service,
@@ -131,6 +136,10 @@ class SubscriptionService:
         except UniqueViolationError as error:
             if error.constraint_name == SUBSCRIPTION_NAME_INDEX:
                 raise SubscriptionNameAlreadyExistsError(data.name) from error
+            raise
+        except ForeignKeyViolationError as error:
+            if error.constraint_name == SUBSCRIPTION_TYPE_FK_NAME:
+                raise SubscriptionTypeNotFoundError(data.subscription_type_id) from error
             raise
         return SubscriptionView(subscription, 0)
 
@@ -200,6 +209,20 @@ class SubscriptionService:
             if current.status_id == target:
                 break
         raise SubscriptionStatusUnchangedError(subscription_id, current.status.name)
+
+    async def reconcile_types_from_clinic_counts(self, token: str) -> int:
+        """Mark `enterprise` every subscription that already has more than one clinic (FR-009).
+
+        Not a request-path operation: no retry here (Principle IX, unchanged) and no degradation —
+        `ClinicsApiUnavailable` propagates so the caller (the one-off backfill script) decides
+        whether to retry (FR-010: never guess a type from a failed answer). Returns how many
+        subscriptions were marked.
+        """
+        counts = await self._clinics_api.get_counts(token, None)
+        ids = [subscription_id for subscription_id, count in counts.items() if count > 1]
+        if not ids:
+            return 0
+        return await self._repository.mark_enterprise(ids)
 
     async def delete(self, subscription_id: int, token: str) -> None:
         """Soft delete a current subscription that has no clinics.

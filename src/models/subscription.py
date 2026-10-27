@@ -24,8 +24,13 @@ from src.models.base import Base
 # `UniqueViolationError`.
 SUBSCRIPTION_NAME_INDEX = "subscriptions_name_not_deleted_key"
 
+# Name of the foreign key of `subscription_type_id`; the Service recognises it in
+# `ForeignKeyViolationError` to translate a nonexistent type into `SubscriptionTypeNotFoundError`.
+SUBSCRIPTION_TYPE_FK_NAME = "subscriptions_subscription_type_id_fkey"
+
 if TYPE_CHECKING:
     from src.models.subscription_status import SubscriptionStatus
+    from src.models.subscription_type import SubscriptionType
 
 
 class Subscription(Base):
@@ -57,6 +62,12 @@ class Subscription(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
     description: Mapped[str | None] = mapped_column(String(500))
+    # Who the subscription is for; fixed forever once created (spec 006). A hand-administered
+    # catalog like the status (today Individual=1, Enterprise=2); the application never writes it
+    # outside `create()`.
+    subscription_type_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("subscription_types.id"), server_default=text("1")
+    )
     # Mexican pesos, never float (Principle VI); independent of each other (no enforced ratio).
     monthly_price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     annual_price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
@@ -94,6 +105,7 @@ class Subscription(Base):
     # lazy="raise": an AsyncSession has no implicit loads; the Repository loads the relationship
     # explicitly (joinedload).
     status: Mapped["SubscriptionStatus"] = relationship(lazy="raise")
+    subscription_type: Mapped["SubscriptionType"] = relationship(lazy="raise")
 
 
 # The only uniqueness rule of the name (FR-014): unique among the subscriptions that are not deleted

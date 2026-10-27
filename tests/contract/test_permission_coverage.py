@@ -58,6 +58,7 @@ REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
         URL,
         {
             "name": "Nueva",
+            "subscription_type_id": 1,
             "monthly_price": 1,
             "annual_price": 10,
             "consulting_rooms_limit": 1,

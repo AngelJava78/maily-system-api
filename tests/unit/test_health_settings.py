@@ -323,7 +323,7 @@ def test_an_invalid_environment_is_invalid(monkeypatch, value):
 def test_without_build_variables_the_build_is_unknown_with_the_version_of_the_code():
     info = build_info_from(BuildSettings(_env_file=None))
 
-    assert info == BuildInfo("maily-system-api", "2.0.0", "unknown", "unknown", "unknown")
+    assert info == BuildInfo("maily-system-api", "3.0.0", "unknown", "unknown", "unknown")
     assert info.version == VERSION
 
 

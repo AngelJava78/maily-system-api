@@ -24,6 +24,7 @@ def subscription_row(**overrides) -> SimpleNamespace:
         id=1,
         name="Profesional",
         description=None,
+        subscription_type=SimpleNamespace(id=1, name="Individual"),
         monthly_price=Decimal("1299"),
         annual_price=Decimal("12990"),
         trial_days=14,
@@ -67,7 +68,16 @@ def test_every_new_field_round_trips():
     assert (read.assistants_limit, read.new_patients_per_year_limit) == (2, 15000)
 
 
+def test_the_subscription_type_is_exposed_as_an_object_with_id_and_name():
+    read = SubscriptionRead.model_validate(
+        subscription_row(subscription_type=SimpleNamespace(id=2, name="Empresarial"))
+    )
+
+    assert (read.subscription_type.id, read.subscription_type.name) == (2, "Empresarial")
+
+
 BASE_LIMITS = {
+    "subscription_type_id": 1,
     "annual_price": 1000,
     "consulting_rooms_limit": 1,
     "doctors_limit": 1,
@@ -151,7 +161,7 @@ def test_an_empty_description_means_no_description(description):
     ],
 )
 def test_valid_prices_are_accepted_exactly(raw, expected):
-    body = f'{{"name": "Pro", "monthly_price": {raw}, "annual_price": {raw}, ' + (
+    body = f'{{"name": "Pro", "subscription_type_id": 1, "monthly_price": {raw}, "annual_price": {raw}, ' + (
         '"consulting_rooms_limit": 1, "doctors_limit": 1, "assistants_limit": 1, '
         '"new_patients_per_year_limit": 1}'
     )
@@ -309,6 +319,56 @@ def test_each_limit_accepts_zero_and_the_maximum(field):
     assert getattr(create(**{field: 1_000_000}), field) == 1_000_000
 
 
+# --- subscription_type_id: a strict positive integer, required, immutable (spec 006) ---
+
+SUBSCRIPTION_TYPE_REQUIRED = (
+    "El tipo de suscripción es obligatorio y debe ser un número entero positivo."
+)
+
+
+@pytest.mark.parametrize("value", [1, 2])
+def test_each_subscription_type_id_is_accepted(value):
+    assert create(subscription_type_id=value).subscription_type_id == value
+
+
+@pytest.mark.parametrize("value", [None, "missing"])
+def test_the_subscription_type_id_is_required(value):
+    without = {k: v for k, v in BASE_LIMITS.items() if k != "subscription_type_id"}
+    payload = {"name": "Pro", "monthly_price": 1, **without}
+    if value != "missing":
+        payload["subscription_type_id"] = value
+
+    found = messages_of(payload)
+
+    assert found == [("subscription_type_id", SUBSCRIPTION_TYPE_REQUIRED)]
+
+
+@pytest.mark.parametrize("value", ["1", True, 1.5, [], {}])
+def test_a_subscription_type_id_that_is_not_a_strict_integer_is_rejected(value):
+    without = {k: v for k, v in BASE_LIMITS.items() if k != "subscription_type_id"}
+    found = messages_of(
+        {"name": "Pro", "monthly_price": 1, **without, "subscription_type_id": value}
+    )
+
+    assert found == [("subscription_type_id", SUBSCRIPTION_TYPE_REQUIRED)]
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_a_subscription_type_id_that_is_not_positive_is_rejected(value):
+    without = {k: v for k, v in BASE_LIMITS.items() if k != "subscription_type_id"}
+    found = messages_of(
+        {"name": "Pro", "monthly_price": 1, **without, "subscription_type_id": value}
+    )
+
+    assert found == [("subscription_type_id", SUBSCRIPTION_TYPE_REQUIRED)]
+
+
+def test_a_subscription_type_id_that_does_not_exist_is_not_the_dtos_job():
+    # research R5: the DTO only checks the shape (strict positive integer); whether it exists in
+    # `subscription_types` is the Service's job, discovered at the database with no extra read.
+    assert create(subscription_type_id=99).subscription_type_id == 99
+
+
 # --- fields that cannot be sent ---
 
 
@@ -449,6 +509,20 @@ def test_an_empty_list_of_module_keys_is_accepted_patients_is_added_later_by_the
 )
 def test_an_update_rejects_the_fields_of_the_system(field):
     assert update_messages({field: 1}) == [(field, f"El campo «{field}» no está permitido.")]
+
+
+@pytest.mark.parametrize("value", [1, 2])
+def test_an_update_rejects_the_subscription_type_id_with_its_own_immutability_message(value):
+    # Sending it at all is "trying to change it" (spec FR-004), even with the value it already has.
+    assert update_messages({"subscription_type_id": value}) == [
+        ("subscription_type_id", "El tipo de suscripción no puede modificarse una vez creada.")
+    ]
+
+
+def test_an_update_with_the_subscription_type_id_and_another_valid_field_is_rejected_whole():
+    assert update_messages({"subscription_type_id": 2, "monthly_price": "950.00"}) == [
+        ("subscription_type_id", "El tipo de suscripción no puede modificarse una vez creada.")
+    ]
 
 
 # --- SubscriptionStatusChange: a strict integer that must be 1, 2 or 3 ---

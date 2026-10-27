@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from tests.helpers import Api
 
 URL = "/api/v1/subscriptions"
@@ -9,6 +11,7 @@ FIELDS = {
     "id",
     "name",
     "description",
+    "subscription_type",
     "monthly_price",
     "annual_price",
     "trial_days",
@@ -36,6 +39,7 @@ BASE_LIMITS = {
 }
 PRO = {
     "name": "Profesional",
+    "subscription_type_id": 1,
     "monthly_price": 1299,
     "trial_days": 14,
     "self_service": True,
@@ -49,6 +53,7 @@ def minimal_body(name: str, monthly_price: float = 1, **extra) -> dict:
     """The smallest valid `SubscriptionCreate` body (no modules beyond `patients`)."""
     return {
         "name": name,
+        "subscription_type_id": extra.pop("subscription_type_id", 1),
         "monthly_price": monthly_price,
         "annual_price": extra.pop("annual_price", 10),
         "consulting_rooms_limit": extra.pop("consulting_rooms_limit", 1),
@@ -86,6 +91,7 @@ async def test_the_catalog_is_a_json_array_with_exactly_the_fields_of_the_contra
     subscription = body[0]
     assert set(subscription) == FIELDS
     assert subscription["name"] == "Básico"
+    assert subscription["subscription_type"] == {"id": 1, "name": "Individual"}
     assert subscription["description"] is None
     assert subscription["monthly_price"] == "1500.00"  # a string with two decimals
     assert subscription["annual_price"] == "15000.00"
@@ -188,6 +194,31 @@ async def test_the_catalog_asks_the_users_api_for_the_read_permission_but_not_fo
     assert not [call for call in users_calls if call["path"] == "/api/v1/modules"]
 
 
+async def test_the_catalog_shows_each_subscriptions_own_type_without_mixing_them_up(api: Api):
+    await api.insert(name="Solo", subscription_type_id=1)
+    await api.insert(name="Corporativo", subscription_type_id=2)
+
+    body = (await api.client.get(URL)).json()
+
+    assert [(s["name"], s["subscription_type"]) for s in body] == [
+        ("Solo", {"id": 1, "name": "Individual"}),
+        ("Corporativo", {"id": 2, "name": "Empresarial"}),
+    ]
+
+
+async def test_getting_by_id_shows_the_correct_type_for_each(api: Api):
+    individual = await api.insert(name="Solo", subscription_type_id=1)
+    enterprise = await api.insert(name="Corporativo", subscription_type_id=2)
+
+    first = (await api.client.get(f"{URL}/{individual}")).json()
+    second = (await api.client.get(f"{URL}/{enterprise}")).json()
+
+    assert (first["subscription_type"], second["subscription_type"]) == (
+        {"id": 1, "name": "Individual"},
+        {"id": 2, "name": "Empresarial"},
+    )
+
+
 async def test_without_the_read_permission_the_catalog_is_forbidden(api: Api):
     await api.insert(name="Visible")
     await api.set_permissions(["subscriptions:write", "subscriptions:update"])
@@ -235,6 +266,56 @@ async def test_creating_does_not_ask_the_clinics_api_and_the_new_one_is_in_the_c
     assert await api.clinics_calls() == []
     names = [s["name"] for s in (await api.client.get(URL)).json()]
     assert names == ["Profesional"]
+
+
+async def test_creating_with_each_subscription_type_id_is_accepted_and_shown(api: Api):
+    individual = await api.client.post(URL, json=minimal_body("Solo", 900, subscription_type_id=1))
+    enterprise = await api.client.post(URL, json=minimal_body("Corporativo", 5000, subscription_type_id=2))
+
+    assert individual.status_code == enterprise.status_code == 201
+    assert individual.json()["subscription_type"] == {"id": 1, "name": "Individual"}
+    assert enterprise.json()["subscription_type"] == {"id": 2, "name": "Empresarial"}
+
+
+async def test_creating_without_a_subscription_type_id_is_rejected_and_creates_nothing(api: Api):
+    body = minimal_body("Sin tipo", 1)
+    del body["subscription_type_id"]
+
+    response = await api.client.post(URL, json=body)
+
+    assert response.status_code == 422
+    assert response.json()["errors"] == [
+        {
+            "field": "subscription_type_id",
+            "message": "El tipo de suscripción es obligatorio y debe ser un número entero positivo.",
+        }
+    ]
+    assert await api.fetch_all("SELECT id FROM subscriptions") == []
+
+
+@pytest.mark.parametrize("value", ["", "Individual", "premium", 0, -1, 1.5, True])
+async def test_creating_with_a_malformed_subscription_type_id_is_rejected(api: Api, value):
+    response = await api.client.post(URL, json=minimal_body("Inválido", 1, subscription_type_id=value))
+
+    assert response.status_code == 422
+    assert response.json()["errors"] == [
+        {
+            "field": "subscription_type_id",
+            "message": "El tipo de suscripción es obligatorio y debe ser un número entero positivo.",
+        }
+    ]
+    assert await api.fetch_all("SELECT id FROM subscriptions") == []
+
+
+async def test_creating_with_a_subscription_type_id_that_does_not_exist_is_rejected(api: Api):
+    response = await api.client.post(URL, json=minimal_body("Inexistente", 1, subscription_type_id=99))
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "code": "subscription_type_not_found",
+        "message": "No se encontró el tipo de suscripción con el identificador 99.",
+    }
+    assert await api.fetch_all("SELECT id FROM subscriptions") == []
 
 
 async def test_only_the_required_data_is_enough(api: Api):
@@ -516,6 +597,48 @@ async def test_updating_only_the_annual_price_keeps_everything_else_and_moves_th
     for field in ("id", "name", "description", "monthly_price", "other_features", "status", "created_at"):
         assert after[field] == before[field], field
     assert datetime.fromisoformat(after["updated_at"]) > datetime.fromisoformat(before["updated_at"])
+
+
+async def test_trying_to_change_the_subscription_type_id_rejects_the_whole_update(api: Api):
+    subscription_id = await api.insert(name="Pro", subscription_type_id=1, monthly_price="900")
+
+    response = await api.client.patch(
+        f"{URL}/{subscription_id}",
+        json={"subscription_type_id": 2, "monthly_price": "950.00"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errors"] == [
+        {
+            "field": "subscription_type_id",
+            "message": "El tipo de suscripción no puede modificarse una vez creada.",
+        }
+    ]
+    unchanged = (await api.client.get(f"{URL}/{subscription_id}")).json()
+    assert (unchanged["subscription_type"], unchanged["monthly_price"]) == (
+        {"id": 1, "name": "Individual"},
+        "900.00",
+    )
+
+
+async def test_sending_the_same_subscription_type_id_it_already_has_is_still_rejected(api: Api):
+    subscription_id = await api.insert(name="Pro", subscription_type_id=1)
+
+    response = await api.client.patch(
+        f"{URL}/{subscription_id}", json={"subscription_type_id": 1}
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["field"] == "subscription_type_id"
+
+
+async def test_updating_without_the_subscription_type_id_field_works_normally_and_the_type_stays(api: Api):
+    subscription_id = await api.insert(name="Pro", subscription_type_id=2)
+
+    response = await api.client.patch(f"{URL}/{subscription_id}", json={"monthly_price": "950.00"})
+
+    assert response.status_code == 200
+    assert response.json()["subscription_type"] == {"id": 2, "name": "Empresarial"}
 
 
 async def test_a_name_can_change_its_capitals_but_not_take_the_one_of_another(api: Api):

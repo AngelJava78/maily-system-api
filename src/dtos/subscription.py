@@ -13,6 +13,7 @@ from pydantic import (
 )
 
 from src.dtos.status import StatusRead
+from src.dtos.subscription_type import SubscriptionTypeRead
 from src.messages import (
     SUBSCRIPTION_ANNUAL_PRICE_REQUIRED_MESSAGE,
     SUBSCRIPTION_ASSISTANTS_LIMIT_INVALID_MESSAGE,
@@ -54,6 +55,13 @@ class SubscriptionRead(BaseModel):
     description: str | None = Field(
         description="Descripción de la suscripción, o `null` si no tiene.",
         examples=["Para clínicas en crecimiento."],
+    )
+    subscription_type: SubscriptionTypeRead = Field(
+        description=(
+            "A quién va dirigida la suscripción, tomado de su catálogo (se edita a mano): quien "
+            "consume la API debe basarse en su `id`. Obligatorio desde la creación y fijo para "
+            "siempre."
+        )
     )
     monthly_price: Decimal = Field(
         description=(
@@ -165,6 +173,15 @@ class SubscriptionCreate(BaseModel):
             "descripción."
         ),
         examples=["Para clínicas en crecimiento."],
+    )
+    subscription_type_id: Annotated[int, Field(strict=True, gt=0)] = Field(
+        description=(
+            "Identificador de un tipo del catálogo `subscription_types` (hoy, 1 Individual o 2 "
+            "Empresarial). Obligatorio. Fijo para siempre una vez creada la suscripción: ninguna "
+            "operación posterior lo modifica. Un identificador que no exista en el catálogo se "
+            "rechaza con `subscription_type_not_found`."
+        ),
+        examples=[1],
     )
     monthly_price: Decimal = Field(
         ge=0,

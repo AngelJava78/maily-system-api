@@ -104,6 +104,33 @@ async def test_each_new_column_rejects_a_value_outside_its_range(
     assert_pg_error(error, "23514", constraint=constraint)
 
 
+async def test_a_subscription_type_id_that_does_not_exist_in_the_catalog_is_rejected(
+    db_session: AsyncSession,
+):
+    with pytest.raises(DBAPIError) as error:
+        await insert_with(db_session, "Tipo invalido", subscription_type_id=99)
+
+    assert_pg_error(error, "23503", constraint="subscriptions_subscription_type_id_fkey")
+
+
+@pytest.mark.parametrize("value", [1, 2])
+async def test_subscription_type_id_individual_and_enterprise_are_accepted(
+    db_session: AsyncSession, value: int
+):
+    await insert_with(db_session, "Tipo valido", subscription_type_id=value)
+
+
+async def test_subscription_type_id_defaults_to_individual_when_omitted(db_session: AsyncSession):
+    await insert_with(db_session, "Sin tipo")
+
+    value = (
+        await db_session.execute(
+            text("SELECT subscription_type_id FROM subscriptions WHERE name = 'Sin tipo'")
+        )
+    ).scalar_one()
+    assert value == 1
+
+
 async def test_trial_days_zero_and_the_default_are_accepted(db_session: AsyncSession):
     await insert_with(db_session, "Sin prueba", trial_days=0)
     await insert_with(db_session, "Por defecto")  # trial_days toma su DEFAULT (0)

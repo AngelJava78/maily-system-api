@@ -18,9 +18,11 @@ from src.integrations.errors import (
 )
 from src.models.subscription import SUBSCRIPTION_NAME_INDEX, Subscription
 from src.models.subscription_status import SubscriptionStatus
+from src.models.subscription_type import SubscriptionType
 from src.repositories.errors import UniqueViolationError
 
 STATUS_NAMES = {1: "Activa", 2: "Inactiva", 3: "Bloqueada", 4: "Eliminada", 5: "Manual"}
+TYPE_NAMES = {1: "Individual", 2: "Empresarial"}
 DELETED = 4
 _EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -100,6 +102,7 @@ class FakeSubscriptionRepository:
         *,
         name: str = "Plan",
         status_id: int = 1,
+        subscription_type_id: int = 1,
         monthly_price: str | Decimal = "100.00",
         annual_price: str | Decimal = "1000.00",
         trial_days: int = 0,
@@ -120,6 +123,7 @@ class FakeSubscriptionRepository:
             id=subscription_id,
             name=name,
             description=description,
+            subscription_type_id=subscription_type_id,
             monthly_price=Decimal(str(monthly_price)).quantize(Decimal("0.01")),
             annual_price=Decimal(str(annual_price)).quantize(Decimal("0.01")),
             trial_days=trial_days,
@@ -135,6 +139,9 @@ class FakeSubscriptionRepository:
             updated_at=moment,
         )
         subscription.status = SubscriptionStatus(id=status_id, name=STATUS_NAMES[status_id])
+        subscription.subscription_type = SubscriptionType(
+            id=subscription_type_id, name=TYPE_NAMES[subscription_type_id]
+        )
         self.items[subscription_id] = subscription
         return subscription
 
@@ -172,6 +179,7 @@ class FakeSubscriptionRepository:
         description: str | None,
         monthly_price: Decimal,
         *,
+        subscription_type_id: int,
         annual_price: Decimal,
         trial_days: int,
         self_service: bool,
@@ -188,6 +196,7 @@ class FakeSubscriptionRepository:
         return self.add(
             name=name,
             description=description,
+            subscription_type_id=subscription_type_id,
             monthly_price=monthly_price,
             annual_price=annual_price,
             trial_days=trial_days,
@@ -228,6 +237,19 @@ class FakeSubscriptionRepository:
         self.calls["get_status_id"] += 1
         subscription = self.items.get(subscription_id)
         return None if subscription is None else subscription.status_id
+
+    async def mark_enterprise(self, ids: Sequence[int]) -> int:
+        self.calls["mark_enterprise"] += 1
+        changed = 0
+        for subscription_id in ids:
+            subscription = self.items.get(subscription_id)
+            if subscription is not None:
+                subscription.subscription_type_id = SubscriptionType.ENTERPRISE
+                subscription.subscription_type = SubscriptionType(
+                    id=SubscriptionType.ENTERPRISE, name=TYPE_NAMES[SubscriptionType.ENTERPRISE]
+                )
+                changed += 1
+        return changed
 
     async def soft_delete(self, subscription_id: int) -> bool:
         self.calls["soft_delete"] += 1

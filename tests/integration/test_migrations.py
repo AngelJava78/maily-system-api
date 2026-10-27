@@ -1,6 +1,7 @@
 """Las migraciones crean y deshacen el esquema (Principio VI)."""
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from tests.helpers import Migrator, fetch_all
@@ -25,7 +26,7 @@ async def test_upgrade_creates_the_schema(migrator: Migrator, engine: AsyncEngin
     await migrator.downgrade("base")
     await migrator.upgrade("head")
 
-    assert {"subscription_statuses", "subscriptions"} <= await tables(engine)
+    assert {"subscription_statuses", "subscription_types", "subscriptions"} <= await tables(engine)
     assert "subscriptions_name_not_deleted_key" in await names(
         engine, "SELECT indexname FROM pg_indexes WHERE tablename = 'subscriptions'"
     )
@@ -40,7 +41,7 @@ async def test_downgrade_to_base_removes_everything(
 ):
     await migrator.downgrade("base")
 
-    assert not {"subscription_statuses", "subscriptions"} & await tables(engine)
+    assert not {"subscription_statuses", "subscription_types", "subscriptions"} & await tables(engine)
     assert "set_updated_at" not in await names(engine, "SELECT proname FROM pg_proc")
 
 
@@ -52,7 +53,7 @@ async def test_the_migrations_are_reversible_and_repeatable(
     await migrator.downgrade("base")
     await migrator.upgrade("head")
 
-    assert {"subscription_statuses", "subscriptions"} <= await tables(engine)
+    assert {"subscription_statuses", "subscription_types", "subscriptions"} <= await tables(engine)
 
 
 async def test_downgrading_only_the_seed_leaves_the_status_table_empty(
@@ -112,3 +113,53 @@ async def test_downgrade_to_0002_removes_the_new_subscription_columns(
         "assistants_limit",
         "new_patients_per_year_limit",
     }
+
+
+async def test_upgrade_to_0005_creates_the_catalog_seeded_and_the_subscription_column(
+    migrator: Migrator, engine: AsyncEngine, restore_head
+):
+    await migrator.downgrade("base")
+    await migrator.upgrade("head")
+
+    assert "subscription_type_id" in await columns(engine, "subscriptions")
+    assert await fetch_all(
+        engine, "SELECT id, name FROM subscription_types ORDER BY id"
+    ) == [(1, "Individual"), (2, "Empresarial")]
+
+
+async def test_downgrade_to_0004_removes_the_catalog_and_the_subscription_column(
+    migrator: Migrator, engine: AsyncEngine, restore_head
+):
+    await migrator.upgrade("head")
+    await migrator.downgrade("0004")
+
+    assert "subscription_type_id" not in await columns(engine, "subscriptions")
+    assert "subscription_types" not in await tables(engine)
+
+
+async def test_the_default_assigns_individual_to_rows_that_existed_before_0005(
+    migrator: Migrator, engine: AsyncEngine, restore_head
+):
+    """FR-001/FR-008: no subscription ever goes without a type, not even one already on disk."""
+    await migrator.downgrade("base")
+    await migrator.upgrade("0004")
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO subscriptions (name, monthly_price, annual_price, "
+                    "consulting_rooms_limit, doctors_limit, assistants_limit, "
+                    "new_patients_per_year_limit) VALUES ('Previa', 1, 1, 1, 1, 1, 100)"
+                )
+            )
+
+        await migrator.upgrade("0005")
+
+        assert await fetch_all(
+            engine, "SELECT subscription_type_id FROM subscriptions WHERE name = 'Previa'"
+        ) == [(1,)]
+    finally:
+        # The row survives `restore_head` (which only brings the schema back, not the data): other
+        # tests in this session assume the table starts empty.
+        async with engine.begin() as connection:
+            await connection.execute(text("DELETE FROM subscriptions WHERE name = 'Previa'"))

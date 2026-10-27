@@ -213,6 +213,18 @@ docker compose up -d api                 # API en http://localhost:8010 (puerto 
 Con la API arriba, `http://localhost:8010/docs` muestra la documentación interactiva. Cada operación
 necesita un token válido para el API de usuarios que hayas configurado.
 
+**Tipo de suscripción, una sola vez por entorno** (spec 006): después de `migrate`, toda suscripción
+que ya existiera queda con el tipo `individual` (lo asigna la propia migración `0005`). Para que las
+que ya tenían más de una clínica queden como `enterprise`, ejecuta a mano, una vez por entorno (no es
+parte del arranque normal ni bloquea `api`):
+
+```powershell
+docker compose run --rm -e BACKFILL_ACCESS_TOKEN=<token-con-permiso-para-leer-conteos> backfill-subscription-types
+```
+
+El token necesita el mismo permiso que ya exige el API de clínicas para leer conteos (no hay
+credencial de servicio nueva). Reintenta sin límite si esa API no responde: nunca adivina un tipo.
+
 Sin Docker para la API (con la base ya migrada y las variables en el entorno o en `.env`):
 
 ```powershell
@@ -236,7 +248,7 @@ Revertir `0002` borra el catálogo de estatus y falla si hay suscripciones que l
 bases de desarrollo.
 
 **Sin Alembic**: [`project-definition/create_database.sql`](project-definition/create_database.sql) crea
-todo el esquema (equivale a las migraciones `0001` y `0002`), carga los 4 estatus y registra la versión
+todo el esquema (equivale a las migraciones `0001` a `0005`), carga los 4 estatus y registra la versión
 de Alembic, en una sola transacción. Úsalo en una base **propia** de este servicio (no en la de
 mailySoft-usuarios: comparten el nombre de `alembic_version` y de `set_updated_at()`; si ya existen, el
 script se detiene sin cambiar nada):
@@ -468,8 +480,11 @@ src/
 │                      # chequeos de salud (`health_probe.py`) con el contrato v1 (`health_contract.py`)
 ├── dtos/              # esquemas de entrada y salida (Pydantic)
 ├── database/          # engine y sesiones async
-└── models/            # modelos SQLAlchemy (sin lógica de negocio)
-alembic/versions/      # 0001 esquema, 0002 catálogo de estatus, 0003 corrección de suscripciones, 0004 registro de componentes
+├── models/            # modelos SQLAlchemy (sin lógica de negocio)
+└── scripts/           # pasos de despliegue de un solo uso (p. ej. backfill_subscription_types.py);
+                       # no son rutas de la API ni los ejecuta Alembic
+alembic/versions/      # 0001 esquema, 0002 catálogo de estatus, 0003 corrección de suscripciones,
+                       # 0004 registro de componentes, 0005 tipo de suscripción
 tests/unit/            # sin base de datos (DTOs, Services, seguridad, configuración, capas)
 tests/integration/     # PostgreSQL real (esquema, migraciones y Repositories)
 tests/contract/        # la API por HTTP, el documento OpenAPI, la cobertura de permisos y las colecciones de Postman

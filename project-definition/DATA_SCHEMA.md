@@ -4,10 +4,17 @@ Este es el **esquema objetivo** del proyecto (Principio VI de la constitución):
 —tablas, restricciones, índices, funciones, disparadores y datos iniciales— que exigen las
 especificaciones. Cada regla lleva el comentario `-- [spec NNN-nombre]` de la especificación que la
 introduce. Hoy coincide con lo que entregan las migraciones `0001` y `0002` (esquema y datos
-iniciales de `001-subscriptions-api`), `0003` (`004-correct-subscriptions-api`) y `0004`
-(`005-health-monitoring`), y con `specs/004-correct-subscriptions-api/contracts/database-schema.sql` (el
-esquema completo vigente de `subscriptions`; el de `001-subscriptions-api` quedó superado por esa
-corrección) y `specs/005-health-monitoring/contracts/database-schema.sql` (`monitored_components`).
+iniciales de `001-subscriptions-api`), `0003` (`004-correct-subscriptions-api`), `0004`
+(`005-health-monitoring`) y `0005` (`006-add-subscription-type`), y con
+`specs/006-add-subscription-type/contracts/database-schema.sql` (el esquema completo vigente de
+`subscriptions` y la tabla nueva `subscription_types`; el de `004-correct-subscriptions-api` quedó
+superado por esta feature) y `specs/005-health-monitoring/contracts/database-schema.sql`
+(`monitored_components`).
+
+La asignación del tipo a las suscripciones que ya existían (FR-009/FR-010 de `006-add-subscription-type`)
+no es parte de este esquema: la ejecuta, una sola vez, `src/scripts/backfill_subscription_types.py`
+(ver `specs/006-add-subscription-type/data-model.md`), porque depende de una llamada a la API de
+clínicas que ninguna migración de este proyecto hace.
 
 Debe mantenerse al día: toda especificación o plan que cambie una regla de datos debe reflejarla aquí.
 
@@ -22,6 +29,8 @@ PostgreSQL les pone el automático (`<tabla>_pkey`, `<tabla>_<columna>_key`, `<t
 | `subscription_statuses_name_key` | Los nombres del catálogo de estatus son únicos |
 | `subscriptions_name_check` | El nombre no puede estar en blanco |
 | `subscriptions_monthly_price_check` | El precio mensual no puede ser negativo |
+| `subscription_types_name_key` | Los nombres del catálogo de tipos son únicos -- [spec 006-add-subscription-type] |
+| `subscriptions_subscription_type_id_fkey` | El tipo debe existir en el catálogo `subscription_types` -- [spec 006-add-subscription-type] |
 | `subscriptions_annual_price_check` | El precio anual no puede ser negativo -- [spec 004-correct-subscriptions-api] |
 | `subscriptions_trial_days_check` | Los días de prueba van de 0 a 3650 -- [spec 004-correct-subscriptions-api] |
 | `subscriptions_module_keys_check` | `module_keys` siempre contiene `patients` -- [spec 004-correct-subscriptions-api] |
@@ -47,11 +56,12 @@ porque PostgreSQL no da un nombre estable a una restricción de varias columnas.
 
 ```sql
 -- Esquema vigente tras 001-subscriptions-api (migraciones 0001, 0002), su corrección
--- 004-correct-subscriptions-api (migración 0003) y 005-health-monitoring (migración 0004), PostgreSQL 17.
--- Es el contenido que entregan esas migraciones y el que se refleja en
--- project-definition/DATA_SCHEMA.md (esquema objetivo del proyecto). `subscriptions` se muestra ya
--- corregida (no el estado intermedio de solo 0001); el delta que aplica 0003 está documentado en
--- specs/004-correct-subscriptions-api/contracts/database-schema.sql.
+-- 004-correct-subscriptions-api (migración 0003), 005-health-monitoring (migración 0004) y
+-- 006-add-subscription-type (migración 0005), PostgreSQL 17. Es el contenido que entregan esas
+-- migraciones y el que se refleja en project-definition/DATA_SCHEMA.md (esquema objetivo del
+-- proyecto). `subscriptions` se muestra ya con el tipo (no el estado intermedio de antes de 0005);
+-- el delta que aplica 0005 está documentado en
+-- specs/006-add-subscription-type/contracts/database-schema.sql.
 --
 -- Las claves primarias, únicas y foráneas y las restricciones CHECK NO se declaran con nombre:
 -- PostgreSQL las crea solas con su nombre automático (<tabla>_pkey, <tabla>_<columna>_key,
@@ -72,16 +82,32 @@ CREATE TABLE subscription_statuses (
 );
 
 -- ---------------------------------------------------------------------------------------------
+-- Tipos de suscripción  -- [spec 006-add-subscription-type FR-001]
+-- Catálogo administrado a mano, misma forma que subscription_statuses: id estable (quien consume
+-- la API MUST basarse en él, no en name), name editable. Sin operación de la API para
+-- administrarlo; se amplía insertando una fila, no con una migración que reescriba una restricción.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE subscription_types (
+	id serial4 PRIMARY KEY,
+	name varchar(50) NOT NULL UNIQUE,
+	description text
+);
+
+-- ---------------------------------------------------------------------------------------------
 -- Suscripciones  -- [spec 001-subscriptions-api FR-008, FR-011 a FR-015]
 -- [spec 004-correct-subscriptions-api FR-008, FR-011 a FR-024]: precio anual, días de prueba,
 -- autoconsumo, módulos (claves de un catálogo EXTERNO, propiedad de la API de usuarios: no hay
 -- tabla de módulos en este esquema, Principio IX) y los cuatro límites de la clínica. `features`
 -- se renombró a `other_features` (mismo contenido, acotado a lo que no es un módulo).
+-- [spec 006-add-subscription-type FR-001 a FR-010]: `subscription_type_id` (a quién va dirigida
+-- la suscripción), obligatorio, inmutable por la aplicación, referencia al catálogo
+-- subscription_types (igual patrón que status_id).
 -- ---------------------------------------------------------------------------------------------
 CREATE TABLE subscriptions (
 	id serial4 PRIMARY KEY,
 	name varchar(100) NOT NULL CHECK (btrim(name) <> ''),
 	description varchar(500),
+	subscription_type_id int4 NOT NULL DEFAULT 1 REFERENCES subscription_types (id), -- [spec 006 FR-001, FR-002, FR-008] 1 = Individual; fija desde la creación (FR-004); el DEFAULT asigna 1 a toda fila existente al aplicar 0005
 	monthly_price numeric(10,2) NOT NULL CHECK (monthly_price >= 0), -- [spec 001 FR-013] pesos mexicanos, sin IVA, nunca float
 	annual_price numeric(10,2) NOT NULL CHECK (annual_price >= 0), -- [spec 004 FR-012] independiente de monthly_price
 	trial_days int4 NOT NULL DEFAULT 0 CHECK (trial_days BETWEEN 0 AND 3650), -- [spec 004 FR-013] 0 = sin periodo de prueba
@@ -126,6 +152,18 @@ INSERT INTO subscription_statuses (id, name, description) VALUES
 
 -- Los estatus añadidos a mano empiezan en 5.
 SELECT setval(pg_get_serial_sequence('subscription_statuses', 'id'), 4);
+
+-- ---------------------------------------------------------------------------------------------
+-- Datos iniciales: los dos tipos de hoy (migración 0005)  -- [spec 006-add-subscription-type FR-001]
+-- Constantes SubscriptionType.INDIVIDUAL=1 / .ENTERPRISE=2 (research R8, data-model.md). Un
+-- tercer tipo se agregaría aquí, a mano, sin tocar esta tabla ni ningún CHECK.
+-- ---------------------------------------------------------------------------------------------
+INSERT INTO subscription_types (id, name, description) VALUES
+	(1, 'Individual',  'Para médicos independientes; su consultorio se asocia a una sola clínica.'),
+	(2, 'Empresarial', 'Para empresas con varias clínicas y varios consultorios por clínica.');
+
+-- Los tipos añadidos a mano empiezan en 3.
+SELECT setval(pg_get_serial_sequence('subscription_types', 'id'), 2);
 
 -- ---------------------------------------------------------------------------------------------
 -- Registro de componentes monitoreados  -- [spec 005-health-monitoring FR-023 a FR-032]

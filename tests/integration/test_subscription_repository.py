@@ -39,6 +39,7 @@ async def create_minimal(
         name,
         description,
         monthly_price,
+        subscription_type_id=1,
         annual_price=Decimal("10"),
         trial_days=0,
         self_service=False,
@@ -121,6 +122,7 @@ async def test_create_inserts_an_active_subscription_and_returns_it_reloaded(
         "Pro",
         "Para clínicas",
         Decimal("4500"),
+        subscription_type_id=2,
         annual_price=Decimal("45000"),
         trial_days=14,
         self_service=True,
@@ -133,6 +135,7 @@ async def test_create_inserts_an_active_subscription_and_returns_it_reloaded(
     )
 
     assert created.id >= 1
+    assert created.subscription_type_id == 2
     assert created.status_id == 1
     assert (created.status.id, created.status.name) == (1, "Activa")
     assert created.monthly_price == Decimal("4500.00")  # two decimals even if sent without them
@@ -314,6 +317,52 @@ async def test_update_of_an_identifier_above_int4_does_not_query_the_database():
     repository = SubscriptionRepository(ForbiddenSession())
 
     assert await repository.update(INT4_MAX + 1, {"name": "X"}) is None
+
+
+# --- Datos existentes: mark_enterprise (FR-009; sin historia de usuario) ---
+
+
+async def test_mark_enterprise_changes_only_the_given_ids(db_session: AsyncSession):
+    first = await insert_subscription(db_session, name="Una")
+    second = await insert_subscription(db_session, name="Dos")
+    third = await insert_subscription(db_session, name="Tres")
+
+    changed = await SubscriptionRepository(db_session).mark_enterprise([second, third])
+
+    assert changed == 2
+    types = await db_session.execute(
+        text("SELECT id, subscription_type_id FROM subscriptions ORDER BY id")
+    )
+    assert dict(types.all()) == {first: 1, second: 2, third: 2}
+
+
+async def test_mark_enterprise_with_an_empty_list_does_nothing(db_session: AsyncSession):
+    subscription_id = await insert_subscription(db_session, name="Una")
+
+    changed = await SubscriptionRepository(db_session).mark_enterprise([])
+
+    assert changed == 0
+    value = (
+        await db_session.execute(
+            text("SELECT subscription_type_id FROM subscriptions WHERE id = :id"),
+            {"id": subscription_id},
+        )
+    ).scalar_one()
+    assert value == 1
+
+
+async def test_mark_enterprise_also_reaches_a_deleted_subscription(db_session: AsyncSession):
+    deleted = await insert_subscription(db_session, name="Eliminada", status_id=4)
+
+    changed = await SubscriptionRepository(db_session).mark_enterprise([deleted])
+
+    assert changed == 1
+    value = (
+        await db_session.execute(
+            text("SELECT subscription_type_id FROM subscriptions WHERE id = :id"), {"id": deleted}
+        )
+    ).scalar_one()
+    assert value == 2
 
 
 # --- US6: change_status and get_status_id ---
