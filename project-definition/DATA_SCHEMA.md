@@ -5,12 +5,12 @@ Este es el **esquema objetivo** del proyecto (Principio VI de la constitución):
 especificaciones. Cada regla lleva el comentario `-- [spec NNN-nombre]` de la especificación que la
 introduce. Hoy coincide con lo que entregan las migraciones `0001` y `0002` (esquema y datos
 iniciales de `001-subscriptions-api`), `0003` (`004-correct-subscriptions-api`), `0004`
-(`005-health-monitoring`), `0005` (`006-add-subscription-type`) y `0006`
-(`007-add-clinics-limit`), y con
-`specs/007-add-clinics-limit/contracts/database-schema.sql` (el esquema completo vigente de
-`subscriptions`, incluido el límite de clínicas; el de `006-add-subscription-type` quedó superado
-por esta feature) y `specs/005-health-monitoring/contracts/database-schema.sql`
-(`monitored_components`).
+(`005-health-monitoring`), `0005` (`006-add-subscription-type`), `0006`
+(`007-add-clinics-limit`) y `0007` (`008-subscription-modules-table`), y con
+`specs/008-subscription-modules-table/contracts/database-schema.sql` (el esquema completo vigente
+de `subscriptions`, ya sin `module_keys`, y de la tabla nueva `subscription_modules`; el de
+`007-add-clinics-limit` quedó superado por esta feature solo en esos dos puntos) y
+`specs/005-health-monitoring/contracts/database-schema.sql` (`monitored_components`).
 
 La asignación del tipo a las suscripciones que ya existían (FR-009/FR-010 de `006-add-subscription-type`)
 no es parte de este esquema: la ejecuta, una sola vez, `src/scripts/backfill_subscription_types.py`
@@ -34,10 +34,10 @@ PostgreSQL les pone el automático (`<tabla>_pkey`, `<tabla>_<columna>_key`, `<t
 | `subscriptions_subscription_type_id_fkey` | El tipo debe existir en el catálogo `subscription_types` -- [spec 006-add-subscription-type] |
 | `subscriptions_annual_price_check` | El precio anual no puede ser negativo -- [spec 004-correct-subscriptions-api] |
 | `subscriptions_trial_days_check` | Los días de prueba van de 0 a 3650 -- [spec 004-correct-subscriptions-api] |
-| `subscriptions_module_keys_check` | `module_keys` siempre contiene `patients` -- [spec 004-correct-subscriptions-api] |
 | `subscriptions_other_features_check` | Lo que incluye una suscripción (otras funcionalidades) tiene como máximo 20 elementos -- [spec 004-correct-subscriptions-api] (reemplaza a `subscriptions_features_check` de 001: columna renombrada) |
 | `subscriptions_consulting_rooms_limit_check`, `subscriptions_doctors_limit_check`, `subscriptions_assistants_limit_check`, `subscriptions_new_patients_per_year_limit_check` | Cada límite de la clínica va de 0 a 1 000 000 -- [spec 004-correct-subscriptions-api] |
 | `subscriptions_clinics_limit_check` | El límite de clínicas es exactamente 1 si el tipo es Individual, o de 1 a 100 si no lo es (restricción de dos columnas, con nombre explícito porque PostgreSQL no le da uno estable) -- [spec 007-add-clinics-limit] |
+| ~~`subscriptions_module_keys_check`~~ | Quitada por `008-subscription-modules-table`: los módulos ya no viven en una columna de `subscriptions`, sino en la tabla `subscription_modules` (abajo); esa regla («patients» siempre incluido) ya no es una restricción de base de datos, porque un `CHECK` no puede ver otras filas de la misma tabla -- [spec 008-subscription-modules-table, research R2] |
 | `subscriptions_status_id_fkey` | El estatus debe existir en el catálogo |
 | `monitored_components_code_check` | El código tiene de 2 a 50 caracteres (minúsculas, dígitos y guiones; empieza con letra; sin guion final ni doble) y no es `maily-system-api` ni `database` -- [spec 005-health-monitoring] |
 | `monitored_components_name_check` | El nombre no está en blanco ni tiene espacios en los extremos -- [spec 005-health-monitoring] |
@@ -60,19 +60,21 @@ nombre estable a una restricción de varias columnas.
 ```sql
 -- Esquema vigente tras 001-subscriptions-api (migraciones 0001, 0002), su corrección
 -- 004-correct-subscriptions-api (migración 0003), 005-health-monitoring (migración 0004),
--- 006-add-subscription-type (migración 0005) y 007-add-clinics-limit (migración 0006),
--- PostgreSQL 17. Es el contenido que entregan esas migraciones y el que se refleja en
--- project-definition/DATA_SCHEMA.md (esquema objetivo del proyecto). `subscriptions` se muestra
--- ya con el tipo y el límite de clínicas (no el estado intermedio de antes de 0005/0006); el
--- delta que aplica 0006 está documentado en
--- specs/007-add-clinics-limit/contracts/database-schema.sql.
+-- 006-add-subscription-type (migración 0005), 007-add-clinics-limit (migración 0006) y
+-- 008-subscription-modules-table (migración 0007), PostgreSQL 17. Es el contenido que entregan
+-- esas migraciones y el que se refleja en project-definition/DATA_SCHEMA.md (esquema objetivo del
+-- proyecto). `subscriptions` se muestra ya sin `module_keys` (movida a `subscription_modules`,
+-- abajo) y con el tipo y el límite de clínicas; el delta que aplica 0007 está documentado en
+-- specs/008-subscription-modules-table/contracts/database-schema.sql.
 --
 -- Las claves primarias, únicas y foráneas y las restricciones CHECK de una sola columna NO se
 -- declaran con nombre: PostgreSQL las crea solas con su nombre automático (<tabla>_pkey,
--- <tabla>_<columna>_key, <tabla>_<columna>_fkey, <tabla>_<columna>_check). Llevan nombre
--- explícito el CHECK de dos columnas de `subscriptions` (`subscriptions_clinics_limit_check`), el
--- índice parcial del nombre (la aplicación lo usa para traducir un nombre repetido a un 409), la
--- función y el disparador de updated_at.
+-- <tabla>_<columna>_key, <tabla>_<columna>_fkey, <tabla>_<columna>_check) — incluida la clave
+-- primaria compuesta de `subscription_modules` (`subscription_modules_pkey`), que no necesita
+-- nombre explícito por ser estable. Llevan nombre explícito el CHECK de dos columnas de
+-- `subscriptions` (`subscriptions_clinics_limit_check`), el índice parcial del nombre (la
+-- aplicación lo usa para traducir un nombre repetido a un 409), la función y el disparador de
+-- updated_at.
 
 -- ---------------------------------------------------------------------------------------------
 -- Catálogo de estatus  -- [spec 001-subscriptions-api FR-022]
@@ -101,14 +103,16 @@ CREATE TABLE subscription_types (
 -- ---------------------------------------------------------------------------------------------
 -- Suscripciones  -- [spec 001-subscriptions-api FR-008, FR-011 a FR-015]
 -- [spec 004-correct-subscriptions-api FR-008, FR-011 a FR-024]: precio anual, días de prueba,
--- autoconsumo, módulos (claves de un catálogo EXTERNO, propiedad de la API de usuarios: no hay
--- tabla de módulos en este esquema, Principio IX) y los cuatro límites de la clínica. `features`
--- se renombró a `other_features` (mismo contenido, acotado a lo que no es un módulo).
+-- autoconsumo y los cuatro límites de la clínica. `features` se renombró a `other_features`
+-- (mismo contenido, acotado a lo que no es un módulo).
 -- [spec 006-add-subscription-type FR-001 a FR-010]: `subscription_type_id` (a quién va dirigida
 -- la suscripción), obligatorio, inmutable por la aplicación, referencia al catálogo
 -- subscription_types (igual patrón que status_id).
 -- [spec 007-add-clinics-limit FR-001 a FR-007]: `clinics_limit`, el quinto límite de la clínica,
 -- con su rango acotado por `subscription_type_id` (exactamente 1 si es Individual; 1 a 100 si no).
+-- [spec 008-subscription-modules-table FR-001]: ya NO lleva `module_keys` (claves de un catálogo
+-- EXTERNO, propiedad de la API de usuarios: no hay tabla de módulos en este esquema, Principio
+-- IX); sus módulos viven ahora en `subscription_modules`, una fila por módulo (abajo).
 -- ---------------------------------------------------------------------------------------------
 CREATE TABLE subscriptions (
 	id serial4 PRIMARY KEY,
@@ -119,7 +123,6 @@ CREATE TABLE subscriptions (
 	annual_price numeric(10,2) NOT NULL CHECK (annual_price >= 0), -- [spec 004 FR-012] independiente de monthly_price
 	trial_days int4 NOT NULL DEFAULT 0 CHECK (trial_days BETWEEN 0 AND 3650), -- [spec 004 FR-013] 0 = sin periodo de prueba
 	self_service bool NOT NULL DEFAULT false, -- [spec 004 FR-014] autoconsumo en el portal de MailySoft
-	module_keys text[] NOT NULL DEFAULT ARRAY['patients']::text[] CHECK ('patients' = ANY(module_keys)), -- [spec 004 FR-015 a FR-019] claves de módulos de tipo Clínica de la API de usuarios
 	other_features text[] NOT NULL DEFAULT '{}' CHECK (cardinality(other_features) <= 20), -- [spec 004 FR-024] lista ordenada de textos libres que no son módulos
 	consulting_rooms_limit int4 NOT NULL CHECK (consulting_rooms_limit BETWEEN 0 AND 1000000), -- [spec 004 FR-021] techo informativo
 	doctors_limit int4 NOT NULL CHECK (doctors_limit BETWEEN 0 AND 1000000), -- [spec 004 FR-021]
@@ -152,6 +155,22 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER subscriptions_set_updated_at
 	BEFORE UPDATE ON subscriptions
 	FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------------------------------------------------------------------------------------------
+-- Módulo incluido en una suscripción  -- [spec 008-subscription-modules-table FR-001, FR-002]
+-- Una fila por cada módulo de clínica que incluye una suscripción. `module_key` es la clave de un
+-- catálogo EXTERNO, propiedad de la API de usuarios (Principio IX): esta tabla no lo copia, solo
+-- registra qué claves eligió cada suscripción (antes, en la columna `module_keys` que esta
+-- migración quita de `subscriptions`). Sin columna `id` propia: la clave primaria compuesta ya
+-- impide un módulo repetido para la misma suscripción, y la FOREIGN KEY impide una fila sin su
+-- suscripción. Sin CHECK de "patients siempre incluido": un CHECK no ve otras filas de la misma
+-- tabla; esa regla sigue siendo responsabilidad exclusiva del servicio, no de la base de datos.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE subscription_modules (
+	subscription_id int4 NOT NULL REFERENCES subscriptions (id),
+	module_key text NOT NULL,
+	PRIMARY KEY (subscription_id, module_key)
+);
 
 -- ---------------------------------------------------------------------------------------------
 -- Datos iniciales (migración 0002)  -- [spec 001-subscriptions-api FR-022]

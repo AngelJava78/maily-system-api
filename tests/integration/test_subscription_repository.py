@@ -340,6 +340,31 @@ async def test_update_of_an_identifier_above_int4_does_not_query_the_database():
     assert await repository.update(INT4_MAX + 1, {"name": "X"}) is None
 
 
+async def test_update_replaces_the_module_rows_atomically_leaving_no_orphan(
+    db_session: AsyncSession,
+):
+    """FR-009: a full module replacement leaves exactly the new set, nothing from the old one."""
+    subscription_id = await insert_subscription(
+        db_session, name="Pro", module_keys=["patients", "scheduling", "reminders"]
+    )
+    repository = SubscriptionRepository(db_session)
+
+    updated = await repository.update(subscription_id, {"module_keys": ["patients", "finance"]})
+
+    assert updated is not None
+    assert updated.module_keys == ["finance", "patients"]
+    rows = (
+        await db_session.execute(
+            text(
+                "SELECT module_key FROM subscription_modules "
+                "WHERE subscription_id = :id ORDER BY module_key"
+            ),
+            {"id": subscription_id},
+        )
+    ).all()
+    assert [row[0] for row in rows] == ["finance", "patients"]
+
+
 # --- Datos existentes: mark_enterprise (FR-009; sin historia de usuario) ---
 
 

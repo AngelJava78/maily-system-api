@@ -190,6 +190,7 @@ async def insert_subscription(
     from sqlalchemy import insert
 
     from src.models.subscription import Subscription
+    from src.models.subscription_module import SubscriptionModule
 
     values: dict[str, Any] = {
         "name": name,
@@ -199,7 +200,6 @@ async def insert_subscription(
         "annual_price": Decimal(str(annual_price)),
         "trial_days": trial_days,
         "self_service": self_service,
-        "module_keys": sorted(module_keys),
         "other_features": list(other_features),
         "consulting_rooms_limit": consulting_rooms_limit,
         "doctors_limit": doctors_limit,
@@ -212,5 +212,10 @@ async def insert_subscription(
         values["created_at"] = created_at
     result = await session.execute(insert(Subscription).values(**values).returning(Subscription.id))
     subscription_id = result.scalar_one()
+    await session.execute(
+        insert(SubscriptionModule).values(
+            [{"subscription_id": subscription_id, "module_key": key} for key in sorted(module_keys)]
+        )
+    )
     await session.commit()
     return subscription_id

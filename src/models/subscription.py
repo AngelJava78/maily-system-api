@@ -29,6 +29,7 @@ SUBSCRIPTION_NAME_INDEX = "subscriptions_name_not_deleted_key"
 SUBSCRIPTION_TYPE_FK_NAME = "subscriptions_subscription_type_id_fkey"
 
 if TYPE_CHECKING:
+    from src.models.subscription_module import SubscriptionModule
     from src.models.subscription_status import SubscriptionStatus
     from src.models.subscription_type import SubscriptionType
 
@@ -36,8 +37,9 @@ if TYPE_CHECKING:
 class Subscription(Base):
     """Subscription (plan) assigned to clinics: price, modules, limits and its status.
 
-    The clinic module catalog itself is not stored here (Principle IX): `module_keys` only holds
-    the keys this service already validated against the users API (spec 004).
+    The clinic module catalog itself is not stored here (Principle IX): `module_keys` (backed by
+    the `modules` relationship, spec 008) only holds the keys this service already validated
+    against the users API (spec 004).
     """
 
     __tablename__ = "subscriptions"
@@ -46,7 +48,6 @@ class Subscription(Base):
         CheckConstraint("monthly_price >= 0", name="monthly_price_check"),
         CheckConstraint("annual_price >= 0", name="annual_price_check"),
         CheckConstraint("trial_days BETWEEN 0 AND 3650", name="trial_days_check"),
-        CheckConstraint("'patients' = ANY(module_keys)", name="module_keys_check"),
         CheckConstraint("cardinality(other_features) <= 20", name="other_features_check"),
         CheckConstraint(
             "consulting_rooms_limit BETWEEN 0 AND 1000000", name="consulting_rooms_limit_check"
@@ -80,11 +81,6 @@ class Subscription(Base):
     trial_days: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     # Whether the plan is self-service in the MailySoft portal; born off (fail closed).
     self_service: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
-    # Keys of a clinic-module catalog owned by the users API (src/clinic_modules.py); always
-    # includes 'patients'.
-    module_keys: Mapped[list[str]] = mapped_column(
-        ARRAY(Text), server_default=text("ARRAY['patients']::text[]")
-    )
     # Ordered list of free texts that are not modules; at most 20 (each of 1 to 150 characters in
     # the DTO). Renamed from `features` (spec 004).
     other_features: Mapped[list[str]] = mapped_column(
@@ -112,9 +108,20 @@ class Subscription(Base):
     )
 
     # lazy="raise": an AsyncSession has no implicit loads; the Repository loads the relationship
-    # explicitly (joinedload).
+    # explicitly (joinedload for these two, selectinload for the module rows below).
     status: Mapped["SubscriptionStatus"] = relationship(lazy="raise")
     subscription_type: Mapped["SubscriptionType"] = relationship(lazy="raise")
+    # Keys of a clinic-module catalog owned by the users API (src/clinic_modules.py); always
+    # includes 'patients' (guaranteed by SubscriptionService._resolve_modules, not by the database,
+    # spec 008 research R2). One row per module (spec 008), ordered alphabetically here so callers
+    # never need to sort `module_keys` themselves.
+    modules: Mapped[list["SubscriptionModule"]] = relationship(
+        lazy="raise", order_by="SubscriptionModule.module_key"
+    )
+
+    @property
+    def module_keys(self) -> list[str]:
+        return [module.module_key for module in self.modules]
 
 
 # The only uniqueness rule of the name (FR-014): unique among the subscriptions that are not deleted

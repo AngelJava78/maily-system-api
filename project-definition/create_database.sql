@@ -1,13 +1,15 @@
 -- =============================================================================================
 -- MailySoft System API: creación de la base de datos completa (equivale a las migraciones
--- 0001 a 0006: esquema de suscripciones, catálogo de estatus con sus 4 estatus iniciales,
+-- 0001 a 0007: esquema de suscripciones, catálogo de estatus con sus 4 estatus iniciales,
 -- corrección del modelo de suscripciones -- spec 004--, registro de componentes monitoreados
--- -- spec 005--, el tipo de suscripción -- spec 006-- y el límite de clínicas -- spec 007--).
+-- -- spec 005--, el tipo de suscripción -- spec 006--, el límite de clínicas -- spec 007-- y los
+-- módulos de la suscripción en su propia tabla -- spec 008--).
 --
 -- Contenido: catálogo de estatus de las suscripciones, tabla de suscripciones ya con precio
--- anual, días de prueba, autoconsumo, módulos, los cinco límites de la clínica y el tipo de
--- suscripción; el registro de componentes monitoreados; el índice único del nombre de cada tabla
--- y la función/disparador que mantiene `updated_at`. No carga suscripciones ni componentes: ambos
+-- anual, días de prueba, autoconsumo, los cinco límites de la clínica y el tipo de suscripción;
+-- la tabla `subscription_modules` (los módulos de cada suscripción, una fila por módulo); el
+-- registro de componentes monitoreados; el índice único del nombre de cada tabla y la
+-- función/disparador que mantiene `updated_at`. No carga suscripciones ni componentes: ambos
 -- catálogos empiezan vacíos y se llenan con la API.
 --
 -- Las claves primarias, únicas y foráneas y las restricciones NOT NULL y CHECK de una sola columna
@@ -51,9 +53,10 @@ BEGIN
 	   OR to_regclass('public.subscriptions') IS NOT NULL
 	   OR to_regclass('public.subscription_statuses') IS NOT NULL
 	   OR to_regclass('public.subscription_types') IS NOT NULL
+	   OR to_regclass('public.subscription_modules') IS NOT NULL
 	   OR to_regclass('public.monitored_components') IS NOT NULL
 	   OR to_regprocedure('public.set_updated_at()') IS NOT NULL THEN
-		RAISE EXCEPTION 'Esta base de datos ya tiene tablas o funciones de este servicio (alembic_version, subscriptions, subscription_statuses, subscription_types, monitored_components o set_updated_at). Use una base de datos vacía y exclusiva de MailySoft System API.';
+		RAISE EXCEPTION 'Esta base de datos ya tiene tablas o funciones de este servicio (alembic_version, subscriptions, subscription_statuses, subscription_types, subscription_modules, monitored_components o set_updated_at). Use una base de datos vacía y exclusiva de MailySoft System API.';
 	END IF;
 END
 $$;
@@ -86,13 +89,15 @@ CREATE TABLE subscription_types (
 -- ---------------------------------------------------------------------------------------------
 -- Suscripciones  -- [spec 001-subscriptions-api FR-008, FR-011 a FR-015]
 -- [spec 004-correct-subscriptions-api FR-008, FR-011 a FR-024]: precio anual, días de prueba,
--- autoconsumo, módulos (claves de un catálogo EXTERNO, propiedad de la API de usuarios: no hay
--- tabla de módulos en este esquema) y los cuatro límites de la clínica. La antigua `features` se
--- renombra a `other_features` (mismo contenido, acotado a lo que no es un módulo).
+-- autoconsumo y los cuatro límites de la clínica. La antigua `features` se renombra a
+-- `other_features` (mismo contenido, acotado a lo que no es un módulo).
 -- [spec 006-add-subscription-type FR-001 a FR-010]: `subscription_type_id` (a quién va dirigida la
 -- suscripción), obligatorio, inmutable por la aplicación, referencia al catálogo subscription_types.
 -- [spec 007-add-clinics-limit FR-001 a FR-007]: `clinics_limit`, el quinto límite de la clínica,
 -- con su rango acotado por `subscription_type_id` (exactamente 1 si es Individual; 1 a 100 si no).
+-- [spec 008-subscription-modules-table FR-001]: ya NO lleva `module_keys` (claves de un catálogo
+-- EXTERNO, propiedad de la API de usuarios: no hay tabla de módulos en este esquema); sus módulos
+-- viven en `subscription_modules`, una fila por módulo (ver más abajo).
 -- ---------------------------------------------------------------------------------------------
 
 CREATE TABLE subscriptions (
@@ -104,7 +109,6 @@ CREATE TABLE subscriptions (
 	annual_price numeric(10,2) NOT NULL CHECK (annual_price >= 0), -- [spec 004 FR-012] independiente de monthly_price
 	trial_days int4 NOT NULL DEFAULT 0 CHECK (trial_days BETWEEN 0 AND 3650), -- [spec 004 FR-013] 0 = sin periodo de prueba
 	self_service bool NOT NULL DEFAULT false, -- [spec 004 FR-014] autoconsumo en el portal de MailySoft
-	module_keys text[] NOT NULL DEFAULT ARRAY['patients']::text[] CHECK ('patients' = ANY(module_keys)), -- [spec 004 FR-015 a FR-019] claves de módulos de tipo Clínica de la API de usuarios
 	other_features text[] NOT NULL DEFAULT '{}' CHECK (cardinality(other_features) <= 20), -- [spec 004 FR-024] lista ordenada de textos libres que no son módulos
 	consulting_rooms_limit int4 NOT NULL CHECK (consulting_rooms_limit BETWEEN 0 AND 1000000), -- [spec 004 FR-021] techo informativo
 	doctors_limit int4 NOT NULL CHECK (doctors_limit BETWEEN 0 AND 1000000), -- [spec 004 FR-021]
@@ -139,6 +143,22 @@ $$;
 CREATE TRIGGER subscriptions_set_updated_at
 	BEFORE UPDATE ON subscriptions
 	FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------------------------------------------------------------------------------------------
+-- Módulo incluido en una suscripción  -- [spec 008-subscription-modules-table FR-001, FR-002]
+-- Una fila por cada módulo de clínica que incluye una suscripción. `module_key` es la clave de un
+-- catálogo EXTERNO, propiedad de la API de usuarios: esta tabla no lo copia, solo registra qué
+-- claves eligió cada suscripción. Sin columna `id` propia: la clave primaria compuesta ya impide
+-- un módulo repetido para la misma suscripción, y la FOREIGN KEY impide una fila sin su
+-- suscripción. Sin CHECK de "patients siempre incluido": esa regla sigue siendo responsabilidad
+-- exclusiva del servicio, no de la base de datos (un CHECK no ve otras filas de la misma tabla).
+-- ---------------------------------------------------------------------------------------------
+
+CREATE TABLE subscription_modules (
+	subscription_id int4 NOT NULL REFERENCES subscriptions (id),
+	module_key text NOT NULL,
+	PRIMARY KEY (subscription_id, module_key)
+);
 
 -- ---------------------------------------------------------------------------------------------
 -- Registro de componentes monitoreados  -- [spec 005-health-monitoring FR-023 a FR-032]
@@ -207,7 +227,7 @@ SELECT setval(pg_get_serial_sequence('subscription_types', 'id'), 2);
 
 -- ---------------------------------------------------------------------------------------------
 -- Versión de Alembic  -- [Principio VI de la constitución]
--- Marca la base como creada hasta la migración 0006, para que `alembic upgrade head` no intente
+-- Marca la base como creada hasta la migración 0007, para que `alembic upgrade head` no intente
 -- volver a crear las tablas y las migraciones futuras se apliquen sobre esta base.
 -- ---------------------------------------------------------------------------------------------
 
@@ -215,6 +235,6 @@ CREATE TABLE alembic_version (
 	version_num varchar(32) NOT NULL,
 	CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
 );
-INSERT INTO alembic_version (version_num) VALUES ('0006');
+INSERT INTO alembic_version (version_num) VALUES ('0007');
 
 COMMIT;

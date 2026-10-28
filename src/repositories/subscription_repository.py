@@ -2,15 +2,19 @@ from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Select, insert, select, update
+from sqlalchemy import Select, delete, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from src.models.subscription import Subscription
+from src.models.subscription_module import SubscriptionModule
 from src.models.subscription_status import SubscriptionStatus
 from src.models.subscription_type import SubscriptionType
 from src.repositories import INT4_MAX
 from src.repositories.transactions import execute_and_commit
+
+# Sentinel distinguishing "module_keys was not in changes" from an explicit `[]` (update()).
+_UNSET = object()
 
 
 class SubscriptionRepository:
@@ -27,7 +31,9 @@ class SubscriptionRepository:
     @staticmethod
     def _select_with_relations() -> Select[tuple[Subscription]]:
         return select(Subscription).options(
-            joinedload(Subscription.status), joinedload(Subscription.subscription_type)
+            joinedload(Subscription.status),
+            joinedload(Subscription.subscription_type),
+            selectinload(Subscription.modules),
         )
 
     async def list_current(self) -> list[Subscription]:
@@ -75,7 +81,6 @@ class SubscriptionRepository:
                 annual_price=annual_price,
                 trial_days=trial_days,
                 self_service=self_service,
-                module_keys=module_keys,
                 other_features=other_features,
                 consulting_rooms_limit=consulting_rooms_limit,
                 doctors_limit=doctors_limit,
@@ -85,7 +90,15 @@ class SubscriptionRepository:
             )
             .returning(Subscription.id)
         )
-        subscription_id = await execute_and_commit(self._session, statement)
+        subscription_id = await execute_and_commit(
+            self._session,
+            statement,
+            then=lambda new_id: [
+                insert(SubscriptionModule).values(
+                    [{"subscription_id": new_id, "module_key": key} for key in module_keys]
+                )
+            ],
+        )
         if subscription_id is None:  # an INSERT always returns its row
             raise RuntimeError("The INSERT of the subscription returned no row")
         return await self._reload(subscription_id)
@@ -123,16 +136,31 @@ class SubscriptionRepository:
         """
         if subscription_id > INT4_MAX:
             return None
+        changes = dict(changes)
+        module_keys = changes.pop("module_keys", _UNSET)
         statement = (
             update(Subscription)
             .where(
                 Subscription.id == subscription_id,
                 Subscription.status_id != SubscriptionStatus.DELETED,
             )
-            .values(**changes)
+            # `.values()` cannot build a SET-less UPDATE: if module_keys was the only change, fall
+            # back to a no-op self-assignment so the existence/status check and the updated_at
+            # trigger still run (spec 008 research R8).
+            .values(**changes if changes else {"id": Subscription.id})
             .returning(Subscription.id)
         )
-        if await execute_and_commit(self._session, statement) is None:
+
+        def replace_modules(new_id: int) -> list[Any]:
+            return [
+                delete(SubscriptionModule).where(SubscriptionModule.subscription_id == new_id),
+                insert(SubscriptionModule).values(
+                    [{"subscription_id": new_id, "module_key": key} for key in module_keys]
+                ),
+            ]
+
+        then = replace_modules if module_keys is not _UNSET else None
+        if await execute_and_commit(self._session, statement, then=then) is None:
             return None
         return await self._reload(subscription_id)
 

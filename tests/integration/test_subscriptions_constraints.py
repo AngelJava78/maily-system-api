@@ -186,28 +186,6 @@ async def test_trial_days_zero_and_the_default_are_accepted(db_session: AsyncSes
     await insert_with(db_session, "Por defecto")  # trial_days toma su DEFAULT (0)
 
 
-async def test_module_keys_without_patients_is_rejected(db_session: AsyncSession):
-    with pytest.raises(DBAPIError) as error:
-        await insert_with(db_session, "Sin pacientes", module_keys=["scheduling"])
-
-    assert_pg_error(error, "23514", constraint="subscriptions_module_keys_check")
-
-
-async def test_module_keys_with_patients_is_accepted(db_session: AsyncSession):
-    await insert_with(db_session, "Con pacientes", module_keys=["patients", "scheduling"])
-
-
-async def test_module_keys_defaults_to_patients_only(db_session: AsyncSession):
-    await insert_with(db_session, "Por defecto de módulos")
-
-    value = (
-        await db_session.execute(
-            text("SELECT module_keys FROM subscriptions WHERE name = 'Por defecto de módulos'")
-        )
-    ).scalar_one()
-    assert value == ["patients"]
-
-
 @pytest.mark.parametrize(("first", "second"), [("Pro", "pro"), ("Básico", "BÁSICO"), ("Pro", "PRO")])
 async def test_the_name_is_unique_ignoring_case_and_accents_in_capitals(
     db_session: AsyncSession, first: str, second: str
@@ -262,6 +240,46 @@ async def test_a_price_without_decimals_is_read_with_two(db_session: AsyncSessio
 async def read_dates(session: AsyncSession) -> tuple[datetime, datetime]:
     row = (await session.execute(text("SELECT created_at, updated_at FROM subscriptions"))).one()
     return row[0], row[1]
+
+
+async def test_a_duplicate_module_for_the_same_subscription_is_rejected(db_session: AsyncSession):
+    await insert_with(db_session, "Con modulo")
+    subscription_id = (
+        await db_session.execute(text("SELECT id FROM subscriptions WHERE name = 'Con modulo'"))
+    ).scalar_one()
+    await db_session.execute(
+        text(
+            "INSERT INTO subscription_modules (subscription_id, module_key) "
+            "VALUES (:id, 'scheduling')"
+        ),
+        {"id": subscription_id},
+    )
+    await db_session.commit()  # libera el SAVEPOINT: lo que falle después no deshace esto
+
+    with pytest.raises(DBAPIError) as error:
+        await db_session.execute(
+            text(
+                "INSERT INTO subscription_modules (subscription_id, module_key) "
+                "VALUES (:id, 'scheduling')"
+            ),
+            {"id": subscription_id},
+        )
+
+    assert_pg_error(error, "23505", constraint="subscription_modules_pkey")
+
+
+async def test_a_module_for_a_subscription_that_does_not_exist_is_rejected(
+    db_session: AsyncSession,
+):
+    with pytest.raises(DBAPIError) as error:
+        await db_session.execute(
+            text(
+                "INSERT INTO subscription_modules (subscription_id, module_key) "
+                "VALUES (999999, 'scheduling')"
+            )
+        )
+
+    assert_pg_error(error, "23503", constraint="subscription_modules_subscription_id_fkey")
 
 
 async def test_updated_at_changes_with_any_update(committing_session: AsyncSession):

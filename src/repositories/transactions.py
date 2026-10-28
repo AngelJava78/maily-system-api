@@ -1,5 +1,7 @@
 """Commit and rollback rules shared by the Repositories: every write is its own transaction."""
 
+from collections.abc import Callable, Sequence
+
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Executable
@@ -7,8 +9,17 @@ from sqlalchemy.sql import Executable
 from src.repositories.errors import as_foreign_key_violation, as_unique_violation
 
 
-async def execute_and_commit(session: AsyncSession, statement: Executable) -> int | None:
+async def execute_and_commit(
+    session: AsyncSession,
+    statement: Executable,
+    *,
+    then: Callable[[int], Sequence[Executable]] | None = None,
+) -> int | None:
     """Run a write statement that returns one id (`RETURNING id`) and commit it.
+
+    When `then` is given, it is called with that id and every statement it returns is executed,
+    in order, before the single commit (spec 008): the whole operation stays one transaction even
+    when it writes to more than one table. Without `then`, the behaviour is exactly as before.
 
     Returns the id, or `None` when no row matched: nothing is committed and the transaction is
     rolled back. Any failure rolls the transaction back first, so the session stays usable: a
@@ -20,6 +31,9 @@ async def execute_and_commit(session: AsyncSession, statement: Executable) -> in
         if row_id is None:
             await session.rollback()
             return None
+        if then is not None:
+            for extra_statement in then(row_id):
+                await session.execute(extra_statement)
         await session.commit()
     except IntegrityError as error:
         await session.rollback()

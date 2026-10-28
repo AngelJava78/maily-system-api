@@ -1156,11 +1156,15 @@ async def test_deleting_does_not_touch_modules_prices_or_limits(api: Api):
 
     await api.client.delete(f"{URL}/{subscription_id}")
 
-    row = await api.fetch_all(
-        "SELECT module_keys, consulting_rooms_limit FROM subscriptions WHERE id = :id",
+    modules = await api.fetch_all(
+        "SELECT module_key FROM subscription_modules WHERE subscription_id = :id ORDER BY module_key",
         id=subscription_id,
     )
-    assert row == [(["billing", "finance", "patients"], 4)]
+    assert modules == [("billing",), ("finance",), ("patients",)]
+    limits = await api.fetch_all(
+        "SELECT consulting_rooms_limit FROM subscriptions WHERE id = :id", id=subscription_id
+    )
+    assert limits == [(4,)]
 
 
 async def test_a_subscription_with_clinics_cannot_be_deleted(api: Api):

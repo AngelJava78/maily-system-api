@@ -17,6 +17,7 @@ from src.integrations.errors import (
     UsersApiUnavailable,
 )
 from src.models.subscription import SUBSCRIPTION_NAME_INDEX, Subscription
+from src.models.subscription_module import SubscriptionModule
 from src.models.subscription_status import SubscriptionStatus
 from src.models.subscription_type import SubscriptionType
 from src.repositories.errors import UniqueViolationError
@@ -129,7 +130,6 @@ class FakeSubscriptionRepository:
             annual_price=Decimal(str(annual_price)).quantize(Decimal("0.01")),
             trial_days=trial_days,
             self_service=self_service,
-            module_keys=sorted(module_keys),
             other_features=list(other_features),
             consulting_rooms_limit=consulting_rooms_limit,
             doctors_limit=doctors_limit,
@@ -144,6 +144,7 @@ class FakeSubscriptionRepository:
         subscription.subscription_type = SubscriptionType(
             id=subscription_type_id, name=TYPE_NAMES[subscription_type_id]
         )
+        subscription.modules = [SubscriptionModule(module_key=key) for key in sorted(module_keys)]
         self.items[subscription_id] = subscription
         return subscription
 
@@ -222,8 +223,12 @@ class FakeSubscriptionRepository:
             return None
         if "name" in changes and self._is_name_taken(changes["name"], excluding=subscription_id):
             raise UniqueViolationError(SUBSCRIPTION_NAME_INDEX)
+        changes = dict(changes)
+        module_keys = changes.pop("module_keys", None)
         for key, value in changes.items():
             setattr(subscription, key, value)
+        if module_keys is not None:
+            subscription.modules = [SubscriptionModule(module_key=key) for key in sorted(module_keys)]
         subscription.updated_at = datetime.now(UTC)
         return subscription
 
