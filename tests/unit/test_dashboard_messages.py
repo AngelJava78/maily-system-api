@@ -32,9 +32,9 @@ def test_each_resource_keeps_its_own_messages():
 
 
 def test_no_error_code_was_added():
-    # spec 005 added 2 registry codes, spec 006 added subscription_type_not_found; reviewed, no
-    # dashboard impact.
-    assert len(ErrorCode) == 18
+    # spec 005 added 2 registry codes, spec 006 added subscription_type_not_found, spec 009
+    # retired subscription_module_prerequisite_missing; reviewed, no dashboard impact.
+    assert len(ErrorCode) == 17
     assert ErrorCode.VALIDATION_ERROR.value == "validation_error"
 
 

@@ -2,7 +2,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from src.clinic_modules import PATIENTS_KEY, missing_prerequisite
+from src.clinic_modules import PATIENTS_KEY
 from src.dtos.subscription import (
     SubscriptionCreate,
     SubscriptionStatusChange,
@@ -15,7 +15,6 @@ from src.exceptions import (
     SubscriptionDataError,
     SubscriptionHasClinicsError,
     SubscriptionModuleNotFoundError,
-    SubscriptionModulePrerequisiteMissingError,
     SubscriptionNameAlreadyExistsError,
     SubscriptionNotFoundError,
     SubscriptionStatusUnchangedError,
@@ -86,20 +85,16 @@ class SubscriptionService:
     async def _resolve_modules(self, requested: list[str] | None, token: str) -> list[str]:
         """The final, ordered set of module keys to store, always including `patients`.
 
-        Validates dependencies locally first (no network call, research R6); only asks the users
-        API when the request wants something besides `patients` (research R5): raises
-        `SubscriptionModulePrerequisiteMissingError` (409), `ModuleCheckUnavailableError` (503) if
-        that API does not answer as expected, or `SubscriptionModuleNotFoundError` (422) for a key
-        it does not recognise as an active, clinic-type module.
+        Only asks the users API when the request wants something besides `patients` (research
+        R5 of spec 004): raises `ModuleCheckUnavailableError` (503) if that API does not answer
+        as expected, or `SubscriptionModuleNotFoundError` (422) for a key it does not recognise
+        as an active, clinic-type module. No dependency between modules is validated any more
+        (spec 009): any combination of modules the users API recognises is valid.
         """
         wanted = frozenset(requested or ()) | {PATIENTS_KEY}
         extra = wanted - {PATIENTS_KEY}
         if not extra:
             return [PATIENTS_KEY]
-
-        pair = missing_prerequisite(wanted)
-        if pair is not None:
-            raise SubscriptionModulePrerequisiteMissingError(*pair)
 
         try:
             valid = await self._users_api.list_clinic_module_keys(token)

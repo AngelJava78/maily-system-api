@@ -6,7 +6,8 @@ organised per resource (the first path segment after /api/v1/) so a feature neve
 texts of another one. The texts come from `specs/004-correct-subscriptions-api/contracts/error-catalog.md`
 (the complete catalog, superseding `specs/001-subscriptions-api/contracts/error-catalog.md`) and, for
 the registry of monitored components, from `specs/005-health-monitoring/contracts/error-catalog.md`;
-they must not be paraphrased.
+the module-related codes that survive `009-remove-module-dependencies` are documented in
+`specs/009-remove-module-dependencies/contracts/error-catalog.md`. They must not be paraphrased.
 """
 
 from enum import StrEnum
@@ -24,7 +25,6 @@ class ErrorCode(StrEnum):
     SUBSCRIPTION_HAS_CLINICS = "subscription_has_clinics"
     CLINICS_CHECK_UNAVAILABLE = "clinics_check_unavailable"
     SUBSCRIPTION_MODULE_NOT_FOUND = "subscription_module_not_found"
-    SUBSCRIPTION_MODULE_PREREQUISITE_MISSING = "subscription_module_prerequisite_missing"
     MODULE_CHECK_UNAVAILABLE = "module_check_unavailable"
     SUBSCRIPTION_TYPE_NOT_FOUND = "subscription_type_not_found"
     VALIDATION_ERROR = "validation_error"
@@ -64,9 +64,6 @@ CLINICS_CHECK_UNAVAILABLE_MESSAGE = (
 )
 SUBSCRIPTION_MODULE_NOT_FOUND_MESSAGE = (
     "La API de usuarios no reconoce el módulo «{module_key}» como un módulo de clínica vigente."
-)
-SUBSCRIPTION_MODULE_PREREQUISITE_MISSING_MESSAGE = (
-    "El módulo «{module_key}» exige el módulo «{prerequisite_key}», que no está incluido."
 )
 MODULE_CHECK_UNAVAILABLE_MESSAGE = (
     "No se pudo comprobar los módulos de la suscripción por ahora. No se guardó ningún cambio; "

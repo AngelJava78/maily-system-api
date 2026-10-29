@@ -239,7 +239,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\": \"Pro {{suffix}}\", \"subscription_type_id\": 2, \"description\": \"Para clínicas en crecimiento.\", \"monthly_price\": 1299, \"annual_price\": 12990, \"trial_days\": 14, \"self_service\": true, \"module_keys\": [\"scheduling\"], \"other_features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"], \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000, \"clinics_limit\": 25}"
+              "raw": "{\"name\": \"Pro {{suffix}}\", \"subscription_type_id\": 2, \"description\": \"Para clínicas en crecimiento.\", \"monthly_price\": 1299, \"annual_price\": 12990, \"trial_days\": 14, \"self_service\": true, \"module_keys\": [\"reminders\"], \"other_features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"], \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000, \"clinics_limit\": 25}"
             }
           },
           "response": [],
@@ -268,6 +268,56 @@
                   "pm.test(\"informa dónde quedó\", function () { pm.expect(pm.response.headers.get(\"Location\")).to.eql(\"/api/v1/subscriptions/\" + subscription.id); });",
                   "pm.collectionVariables.set(\"subscriptionId\", String(subscription.id));",
                   "pm.collectionVariables.set(\"proName\", subscription.name);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription: crear «Saturno» con los 18 módulos activos",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Saturno {{suffix}}\", \"subscription_type_id\": 2, \"monthly_price\": 2000, \"annual_price\": 20000, \"module_keys\": [\"appointments\", \"billing\", \"clinics\", \"consulting_rooms\", \"expenses\", \"finance\", \"incomes\", \"overview\", \"patient_diagnoses\", \"prescriptions\", \"reminders\", \"reports\", \"schedule\", \"services\", \"staff\", \"templates\", \"vital_signs\"], \"consulting_rooms_limit\": 5, \"doctors_limit\": 5, \"assistants_limit\": 5, \"new_patients_per_year_limit\": 10000, \"clinics_limit\": 5}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"suffix\", Date.now().toString(36) + Math.random().toString(36).slice(2, 6));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "const subscription = pm.response.json();",
+                  "pm.test(\"los 18 modulos mas patients\", function () { pm.expect(subscription.module_keys.length).to.eql(18); pm.expect(subscription.module_keys).to.include(\"patients\"); });"
                 ]
               }
             }
@@ -764,49 +814,6 @@
                 "exec": [
                   "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
                   "pm.test(\"nuevo limite de clinicas\", function () { pm.expect(pm.response.json().clinics_limit).to.eql(50); });"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "update_subscription: módulo sin prerrequisito se rechaza",
-          "request": {
-            "method": "PATCH",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "subscriptions",
-                "{{subscriptionId}}"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\"module_keys\": [\"billing\"]}"
-            }
-          },
-          "response": [],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"estado 409\", function () { pm.response.to.have.status(409); });",
-                  "const error = pm.response.json();",
-                  "pm.test(\"código subscription_module_prerequisite_missing\", function () { pm.expect(error.code).to.eql(\"subscription_module_prerequisite_missing\"); });",
-                  "pm.test(\"nombra los dos módulos\", function () { pm.expect(error.message).to.include(\"billing\").and.to.include(\"finance\"); });"
                 ]
               }
             }

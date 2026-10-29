@@ -17,7 +17,6 @@ from src.messages import (
     PERMISSION_DENIED_MESSAGE,
     SUBSCRIPTION_HAS_CLINICS_MESSAGE,
     SUBSCRIPTION_MODULE_NOT_FOUND_MESSAGE,
-    SUBSCRIPTION_MODULE_PREREQUISITE_MISSING_MESSAGE,
     SUBSCRIPTION_NAME_ALREADY_EXISTS_MESSAGE,
     SUBSCRIPTION_NOT_FOUND_MESSAGE,
     SUBSCRIPTION_STATUS_UNCHANGED_MESSAGE,
@@ -173,20 +172,6 @@ class SubscriptionModuleNotFoundError(AppError):
 
     def __init__(self, module_key: str) -> None:
         super().__init__(SUBSCRIPTION_MODULE_NOT_FOUND_MESSAGE.format(module_key=module_key))
-
-
-class SubscriptionModulePrerequisiteMissingError(AppError):
-    """A requested module is included without the other module it depends on."""
-
-    code = ErrorCode.SUBSCRIPTION_MODULE_PREREQUISITE_MISSING
-    status_code = 409
-
-    def __init__(self, module_key: str, prerequisite_key: str) -> None:
-        super().__init__(
-            SUBSCRIPTION_MODULE_PREREQUISITE_MISSING_MESSAGE.format(
-                module_key=module_key, prerequisite_key=prerequisite_key
-            )
-        )
 
 
 class ModuleCheckUnavailableError(AppError):

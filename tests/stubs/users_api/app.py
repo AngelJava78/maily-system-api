@@ -6,8 +6,9 @@ process. Every fault body carries the marker `SECRETO-INTERNO` so the tests can 
 of another service never reach the clients of the subscriptions API.
 
 It imitates the two operations the subscriptions API consumes (`GET /api/v1/authorization/check` and
-`GET /api/v1/modules`) and offers a test-only surface under `/__test__/`. The nine clinic-module keys
-mirror `src/clinic_modules.py`, duplicated here on purpose: this module must not import from `src/`.
+`GET /api/v1/modules`) and offers a test-only surface under `/__test__/`. The clinic-module keys are
+this stub's own test data (spec 009: no clinic-module catalog lives in `src/` any more), chosen to
+match the real catalog's current shape.
 """
 
 import asyncio
@@ -38,18 +39,28 @@ FAULT_MODES = (
 )
 FAULT_OPERATIONS = ("check", "modules")
 
-# Mirrors src/clinic_modules.py's nine proposed keys (research R2); duplicated because this stub
-# must not import from src/.
+# This stub's own test data (spec 009, research R7): the 18 real clinic-module keys, not a mirror
+# of any list in src/ (there is none any more). "scheduling" is deliberately not one of them: it
+# is the example spec.md itself uses for a key that no catalog recognises any more.
 CLINIC_MODULE_NAMES = {
     "patients": "Pacientes",
-    "scheduling": "Agenda y citas",
-    "reminders": "Recordatorios",
-    "clinical_records": "Expediente clínico",
-    "clinical_record_templates": "Plantillas de expediente",
-    "prescriptions": "Recetas",
-    "finance": "Finanzas",
-    "reports": "Reportes",
+    "appointments": "Citas",
     "billing": "Facturación",
+    "clinics": "Clínicas",
+    "consulting_rooms": "Consultorios",
+    "expenses": "Gastos",
+    "finance": "Finanzas",
+    "incomes": "Ingresos",
+    "overview": "Resumen",
+    "patient_diagnoses": "Diagnósticos de pacientes",
+    "prescriptions": "Recetas",
+    "reminders": "Recordatorios",
+    "reports": "Reportes",
+    "schedule": "Agenda",
+    "services": "Servicios",
+    "staff": "Personal",
+    "templates": "Plantillas",
+    "vital_signs": "Signos vitales",
 }
 # The four protected system-type modules of mailySoft-usuarios spec 013, used to prove the
 # type_id=2 filter excludes them.
@@ -65,7 +76,7 @@ ACTIVE_STATUS = {"id": 1, "name": "Activo"}
 
 
 def default_modules() -> list[dict[str, Any]]:
-    """A fresh seed: the nine clinic modules first, then the four protected system modules."""
+    """A fresh seed: the eighteen clinic modules first, then the four protected system modules."""
     modules = []
     next_id = 1
     for key, name in {**CLINIC_MODULE_NAMES, **SYSTEM_MODULE_NAMES}.items():

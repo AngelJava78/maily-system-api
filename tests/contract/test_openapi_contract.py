@@ -108,11 +108,11 @@ def test_the_schemas_of_the_contract_exist(schema):
         assert name in schemas, name
 
 
-def test_the_error_codes_are_the_eighteen_of_the_catalog(schema):
+def test_the_error_codes_are_the_seventeen_of_the_catalog(schema):
     assert set(schema["components"]["schemas"]["ErrorCode"]["enum"]) == {c.value for c in ErrorCode}
     # spec 005 added the 2 codes of the registry of components; spec 006 added
-    # subscription_type_not_found.
-    assert len(ErrorCode) == 18
+    # subscription_type_not_found; spec 009 retired subscription_module_prerequisite_missing.
+    assert len(ErrorCode) == 17
 
 
 def test_the_price_is_published_as_a_string(schema):

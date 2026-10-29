@@ -17,7 +17,6 @@ from src.exceptions import (
     SubscriptionDataError,
     SubscriptionHasClinicsError,
     SubscriptionModuleNotFoundError,
-    SubscriptionModulePrerequisiteMissingError,
     SubscriptionNameAlreadyExistsError,
     SubscriptionNotFoundError,
     SubscriptionStatusUnchangedError,
@@ -305,18 +304,6 @@ async def test_create_with_a_recognised_module_asks_the_users_api_once():
     assert users.module_calls == [TOKEN]
 
 
-async def test_create_with_a_dependent_module_without_its_prerequisite_fails_without_asking_the_users_api():
-    users = FakeUsersApi(clinic_module_keys=frozenset({"reminders"}))
-
-    with pytest.raises(SubscriptionModulePrerequisiteMissingError) as error:
-        await service(users=users).create(create_data(module_keys=["reminders"]), TOKEN)
-
-    assert (error.value.message, users.module_calls) == (
-        "El módulo «reminders» exige el módulo «scheduling», que no está incluido.",
-        [],
-    )
-
-
 async def test_create_with_an_unrecognised_module_fails():
     users = FakeUsersApi(clinic_module_keys=frozenset({"scheduling"}))
 
@@ -324,6 +311,16 @@ async def test_create_with_an_unrecognised_module_fails():
         await service(users=users).create(create_data(module_keys=["billing", "finance"]), TOKEN)
 
     assert "«billing»" in error.value.message
+
+
+async def test_create_with_a_retired_module_key_like_scheduling_fails():
+    # "scheduling" is spec.md's own example of a key no catalog recognises any more (US2).
+    users = FakeUsersApi(clinic_module_keys=frozenset({"patients", "reminders"}))
+
+    with pytest.raises(SubscriptionModuleNotFoundError) as error:
+        await service(users=users).create(create_data(module_keys=["scheduling"]), TOKEN)
+
+    assert "«scheduling»" in error.value.message
 
 
 async def test_create_when_the_users_api_cannot_answer_about_modules():
@@ -337,6 +334,18 @@ async def test_patients_is_always_included_even_if_excluded_from_the_request():
     view = await service().create(create_data(module_keys=[]), TOKEN)
 
     assert view.subscription.module_keys == [PATIENTS_KEY]
+
+
+async def test_a_brand_new_module_the_service_never_coded_is_accepted():
+    # No list of known module keys lives in this service's code any more (FR-004 of spec 009): a
+    # key invented for this test, that appears nowhere else in the repository, is accepted just
+    # the same as any other, because the only thing that decides is what the users API answers.
+    novel_key = "un_modulo_que_nadie_codifico"
+    users = FakeUsersApi(clinic_module_keys=frozenset({PATIENTS_KEY, novel_key}))
+
+    view = await service(users=users).create(create_data(module_keys=[novel_key]), TOKEN)
+
+    assert view.subscription.module_keys == [PATIENTS_KEY, novel_key]
 
 
 # --- US4: get ---
@@ -550,20 +559,6 @@ async def test_updating_modules_without_touching_them_does_not_pre_check_existen
 
     assert repository.extra_lookups == 0
     assert users.module_calls == []
-
-
-async def test_updating_to_a_module_without_its_prerequisite_fails_and_nothing_changes():
-    repository = FakeSubscriptionRepository()
-    repository.add(module_keys=[PATIENTS_KEY, "clinical_records", "clinical_record_templates"])
-    users = FakeUsersApi(clinic_module_keys=frozenset({"clinical_records"}))
-
-    with pytest.raises(SubscriptionModulePrerequisiteMissingError):
-        await service(repository, users=users).update(
-            1, SubscriptionUpdate(module_keys=["clinical_record_templates"]), TOKEN
-        )
-
-    # Alphabetical order (research R7): "clinical_record_templates" < "clinical_records" < "patients"
-    assert repository.items[1].module_keys == ["clinical_record_templates", "clinical_records", PATIENTS_KEY]
 
 
 async def test_updating_modules_replaces_the_whole_set_and_keeps_patients():

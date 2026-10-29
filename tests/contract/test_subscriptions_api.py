@@ -30,7 +30,8 @@ FIELDS = {
 }
 MOMENT = datetime(2026, 1, 1, tzinfo=UTC)
 
-# The nine clinic-module keys the stub seeds by default (src/clinic_modules.py).
+# The real clinic-module keys the stub seeds by default (tests/stubs/users_api/app.py); no
+# dependencies between them any more (spec 009).
 BASE_LIMITS = {
     "annual_price": 12990,
     "consulting_rooms_limit": 2,
@@ -44,7 +45,7 @@ PRO = {
     "monthly_price": 1299,
     "trial_days": 14,
     "self_service": True,
-    "module_keys": ["scheduling", "reminders", "clinical_records"],
+    "module_keys": ["appointments", "reminders", "prescriptions"],
     "other_features": ["Soporte por correo y WhatsApp", "Capacitación inicial en línea"],
     "clinics_limit": 1,
     **BASE_LIMITS,
@@ -112,7 +113,8 @@ async def test_the_catalog_is_a_json_array_with_exactly_the_fields_of_the_contra
 
 
 async def test_excluding_a_module_does_not_exclude_what_depends_on_it(api: Api):
-    # "Avanzado" del mockup: 8 de 9 módulos (todos salvo billing), billing depende de finance.
+    # "Avanzado" del mockup: todos los módulos salvo billing (ya no hay dependencias entre ellos,
+    # spec 009; esto solo prueba que excluir uno no arrastra ningún otro).
     await api.insert(
         name="Avanzado",
         module_keys=[
@@ -288,7 +290,7 @@ async def test_creating_a_subscription_answers_201_with_everything_the_contract_
     assert body["annual_price"] == "12990.00"
     assert body["trial_days"] == 14
     assert body["self_service"] is True
-    assert body["module_keys"] == ["clinical_records", "patients", "reminders", "scheduling"]
+    assert body["module_keys"] == ["appointments", "patients", "prescriptions", "reminders"]
     assert body["other_features"] == ["Soporte por correo y WhatsApp", "Capacitación inicial en línea"]
     assert body["consulting_rooms_limit"] == 2
     assert body["clinics_limit"] == 1
@@ -441,10 +443,10 @@ async def test_only_the_required_data_is_enough(api: Api):
 
 async def test_patients_is_always_included_even_if_the_request_excludes_it(api: Api):
     response = await api.client.post(
-        URL, json=minimal_body("Esencial", 1, module_keys=["scheduling"])
+        URL, json=minimal_body("Esencial", 1, module_keys=["reminders"])
     )
 
-    assert response.json()["module_keys"] == ["patients", "scheduling"]
+    assert response.json()["module_keys"] == ["patients", "reminders"]
 
 
 async def test_the_texts_are_saved_without_surrounding_spaces(api: Api):
@@ -527,26 +529,81 @@ async def test_without_the_annual_price_or_a_limit_the_request_is_rejected(api: 
     assert response.json()["errors"][0]["field"] == "annual_price"
 
 
-async def test_a_module_without_its_prerequisite_is_a_conflict(api: Api):
+async def test_a_module_without_what_used_to_be_its_prerequisite_is_accepted(api: Api):
     response = await api.client.post(URL, json=minimal_body("Con factura", 1, module_keys=["billing"]))
 
-    assert response.status_code == 409
-    assert response.json() == {
-        "code": "subscription_module_prerequisite_missing",
-        "message": "El módulo «billing» exige el módulo «finance», que no está incluido.",
-    }
-    assert await api.fetch_all("SELECT id FROM subscriptions") == []
+    assert response.status_code == 201
+    assert response.json()["module_keys"] == ["billing", "patients"]
 
 
-async def test_an_unrecognised_module_is_a_validation_error(api: Api):
+async def test_creating_saturno_with_all_eighteen_active_modules_is_accepted(api: Api):
+    saturno = minimal_body(
+        "Saturno",
+        1500,
+        subscription_type_id=2,
+        module_keys=[
+            "appointments",
+            "billing",
+            "clinics",
+            "consulting_rooms",
+            "expenses",
+            "finance",
+            "incomes",
+            "overview",
+            "patient_diagnoses",
+            "prescriptions",
+            "reminders",
+            "reports",
+            "schedule",
+            "services",
+            "staff",
+            "templates",
+            "vital_signs",
+        ],
+        clinics_limit=10,
+    )
+
+    response = await api.client.post(URL, json=saturno)
+
+    assert response.status_code == 201
+    assert response.json()["module_keys"] == [
+        "appointments",
+        "billing",
+        "clinics",
+        "consulting_rooms",
+        "expenses",
+        "finance",
+        "incomes",
+        "overview",
+        "patient_diagnoses",
+        "patients",
+        "prescriptions",
+        "reminders",
+        "reports",
+        "schedule",
+        "services",
+        "staff",
+        "templates",
+        "vital_signs",
+    ]
+
+
+@pytest.mark.parametrize(
+    "module_key",
+    [
+        "no_existe",
+        "scheduling",  # retired from the real catalog (US2's example in spec.md)
+    ],
+)
+async def test_an_unrecognised_module_is_a_validation_error(api: Api, module_key: str):
     response = await api.client.post(
-        URL, json=minimal_body("Inventado", 1, module_keys=["no_existe"])
+        URL, json=minimal_body("Inventado", 1, module_keys=[module_key])
     )
 
     assert response.status_code == 422
     assert response.json() == {
         "code": "subscription_module_not_found",
-        "message": "La API de usuarios no reconoce el módulo «no_existe» como un módulo de clínica vigente.",
+        "message": f"La API de usuarios no reconoce el módulo «{module_key}» como un módulo de clínica vigente.",
     }
 
 
@@ -907,19 +964,17 @@ async def test_updating_modules_replaces_the_whole_set_but_keeps_patients(api: A
     assert response.json()["module_keys"] == ["finance", "patients"]
 
 
-async def test_updating_to_a_module_without_its_prerequisite_is_a_conflict_and_nothing_changes(
+async def test_updating_to_a_module_without_what_used_to_be_its_prerequisite_is_accepted(
     api: Api,
 ):
-    subscription_id = await api.insert(name="Pro", module_keys=["patients", "scheduling"])
+    subscription_id = await api.insert(name="Pro", module_keys=["patients", "reminders"])
 
     response = await api.client.patch(
         f"{URL}/{subscription_id}", json={"module_keys": ["billing"]}
     )
 
-    assert response.status_code == 409
-    assert response.json()["code"] == "subscription_module_prerequisite_missing"
-    unchanged = (await api.client.get(f"{URL}/{subscription_id}")).json()
-    assert unchanged["module_keys"] == ["patients", "scheduling"]
+    assert response.status_code == 200
+    assert response.json()["module_keys"] == ["billing", "patients"]
 
 
 async def test_updating_modules_of_a_deleted_subscription_is_not_found_before_asking_the_users_api(

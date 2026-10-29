@@ -24,7 +24,6 @@ from src.exceptions import (
     PermissionDeniedError,
     SubscriptionHasClinicsError,
     SubscriptionModuleNotFoundError,
-    SubscriptionModulePrerequisiteMissingError,
     SubscriptionNameAlreadyExistsError,
     SubscriptionNotFoundError,
     SubscriptionStatusUnchangedError,
@@ -61,9 +60,6 @@ EXPECTED_MESSAGES = {
     ErrorCode.SUBSCRIPTION_MODULE_NOT_FOUND: (
         "La API de usuarios no reconoce el módulo «{module_key}» como un módulo de clínica vigente."
     ),
-    ErrorCode.SUBSCRIPTION_MODULE_PREREQUISITE_MISSING: (
-        "El módulo «{module_key}» exige el módulo «{prerequisite_key}», que no está incluido."
-    ),
     ErrorCode.MODULE_CHECK_UNAVAILABLE: (
         "No se pudo comprobar los módulos de la suscripción por ahora. No se guardó ningún cambio; "
         "inténtelo de nuevo más tarde."
@@ -76,7 +72,7 @@ BEARER = {"WWW-Authenticate": "Bearer"}
 BEARER_INVALID = {"WWW-Authenticate": 'Bearer error="invalid_token"'}
 
 
-def test_the_error_codes_are_exactly_the_eighteen_of_the_catalog():
+def test_the_error_codes_are_exactly_the_seventeen_of_the_catalog():
     assert {code.value for code in ErrorCode} == {
         "unauthenticated",
         "token_expired",
@@ -89,7 +85,6 @@ def test_the_error_codes_are_exactly_the_eighteen_of_the_catalog():
         "subscription_has_clinics",
         "clinics_check_unavailable",
         "subscription_module_not_found",
-        "subscription_module_prerequisite_missing",
         "module_check_unavailable",
         "validation_error",
         "internal_error",
@@ -163,13 +158,6 @@ def test_every_code_has_the_exact_message_of_the_catalog(code: ErrorCode):
             422,
             None,
             "La API de usuarios no reconoce el módulo «billing» como un módulo de clínica vigente.",
-        ),
-        (
-            SubscriptionModulePrerequisiteMissingError("billing", "finance"),
-            ErrorCode.SUBSCRIPTION_MODULE_PREREQUISITE_MISSING,
-            409,
-            None,
-            "El módulo «billing» exige el módulo «finance», que no está incluido.",
         ),
         (
             ModuleCheckUnavailableError(),

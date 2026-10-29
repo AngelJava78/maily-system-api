@@ -112,15 +112,10 @@ LIST_EXAMPLE = example_response(
 )
 
 WRITE_CONFLICT = error_response(
-    "Ya existe una suscripción no eliminada con ese nombre, o se pidió un módulo sin su "
-    "prerrequisito.",
+    "Ya existe una suscripción no eliminada con ese nombre.",
     nombre_repetido={
         "code": "subscription_name_already_exists",
         "message": "Ya existe una suscripción con el nombre «Pro».",
-    },
-    prerrequisito_faltante={
-        "code": "subscription_module_prerequisite_missing",
-        "message": "El módulo «billing» exige el módulo «finance», que no está incluido.",
     },
 )
 VALIDATION_ERROR = error_response(
@@ -407,9 +402,9 @@ async def list_subscriptions(
         "si es Individual (`1`), MUST ser exactamente `1`; si no, MUST ser un entero de `1` a "
         "`100`. Fuera de esa regla se rechaza toda la solicitud, sin crear nada.\n\n"
         "`module_keys` siempre incluye `patients`, se envíe o no. Si pide algún módulo además de "
-        "`patients`, se valida contra la API de usuarios (módulo reconocido y de tipo Clínica) y "
-        "contra las dependencias de esta API (Recordatorios exige Agenda y citas; Plantillas de "
-        "expediente y Recetas exigen Expediente clínico; Facturación exige Finanzas).\n\n"
+        "`patients`, se valida contra la API de usuarios que cada clave exista como módulo de "
+        "tipo Clínica con estatus Activo; cualquier combinación de módulos del catálogo es "
+        "válida (no hay ninguna dependencia entre ellos).\n\n"
         "**Permiso requerido: `subscriptions:write`.**"
     ),
     response_description="Suscripción creada.",
