@@ -207,10 +207,10 @@ registra una advertencia (el token viajaría sin cifrar). Las redirecciones nunc
 Copy-Item .env.example .env              # ajusta credenciales, puertos y las dos direcciones
 docker compose up -d db                  # PostgreSQL 17 (bases `maily_system` y `maily_system_test`, puerto 5434)
 docker compose run --rm migrate          # aprovisiona el esquema y los estatus
-docker compose up -d api                 # API en http://localhost:8010 (puerto `API_PORT`)
+docker compose up -d api                 # API en http://localhost:8001 (puerto `API_PORT`)
 ```
 
-Con la API arriba, `http://localhost:8010/docs` muestra la documentación interactiva. Cada operación
+Con la API arriba, `http://localhost:8001/docs` muestra la documentación interactiva. Cada operación
 necesita un token válido para el API de usuarios que hayas configurado.
 
 **Tipo de suscripción, una sola vez por entorno** (spec 006): después de `migrate`, toda suscripción
@@ -229,10 +229,10 @@ Sin Docker para la API (con la base ya migrada y las variables en el entorno o e
 
 ```powershell
 uv sync                                  # instala las dependencias
-uv run uvicorn src.main:app --port 8010
+uv run uvicorn src.main:app --port 8001
 ```
 
-Los puertos por defecto (PostgreSQL `5434`, API `8010`) evitan chocar con otros proyectos de MailySoft
+Los puertos por defecto (PostgreSQL `5434`, API `8001`) evitan chocar con otros proyectos de MailySoft
 (`5432`/`5433` y `8000`). Si alguno está ocupado, cambia `POSTGRES_PORT` (y el puerto de las dos URLs de
 base de datos) o `API_PORT` en `.env`.
 
@@ -391,7 +391,7 @@ y recrea). Se crea una vez y se migra; Alembic y uvicorn leen `DATABASE_URL` del
 docker compose exec db psql -U postgres -c "CREATE DATABASE maily_system_manual"
 $env:DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5434/maily_system_manual"
 uv run alembic upgrade head
-uv run uvicorn src.main:app --port 8010      # en esta misma terminal
+uv run uvicorn src.main:app --port 8001      # en esta misma terminal
 ```
 
 No uses `docker compose up api` para esto: esa API usa `maily_system`. (El script de `docker/postgres/init/` solo corre al
@@ -399,7 +399,7 @@ crear el volumen, por eso la base se crea a mano.)
 
 ### Levantar lo necesario en local
 
-- **La API** en `http://127.0.0.1:8010` (arriba), con `USERS_API_BASE_URL` (por defecto `http://localhost:8000`, el API de
+- **La API** en `http://127.0.0.1:8001` (arriba), con `USERS_API_BASE_URL` (por defecto `http://localhost:8000`, el API de
   usuarios real) y `CLINICS_API_BASE_URL` (`http://localhost:8001`) en su `.env`.
 - **La simulación de clínicas** (opcional, solo local), en el puerto 8001 que ya usa el `.env`:
 
