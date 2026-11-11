@@ -1,150 +1,52 @@
-# [spec 006-cobro-real-suscripciones] Contrato objetivo de las 7 operaciones nuevas. Se suma al
-# esquema que ya publica la aplicación (subscriptions, dashboard, health); no reemplaza nada. El
-# esquema real (/openapi.json) se compara a mano en tests/contract/test_clinic_subscriptions_openapi.py
-# (sin PyYAML, igual que el resto de este repositorio).
+# [spec 010-cobro-real-suscripciones] Contrato objetivo de las 3 operaciones nuevas. Se suma al
+# esquema que ya publica la aplicación; no reemplaza nada. El esquema real (/openapi.json) se
+# compara a mano en tests/contract/test_clinic_subscriptions_openapi.py (sin PyYAML).
 openapi: 3.1.0
 info:
-  title: MailySoft System API — Suscripciones de clínica
+  title: MailySoft System API — Cobro de suscripciones de clínica
   version: 2.0.0
   description: |
-    Liga una clínica (`tenant_id`) con un plan del catálogo de `subscriptions` (spec 001) y cobra ese
-    plan contra Mercado Pago a través de `mailySoft-pagos`.
+    Cobra, contra Mercado Pago a través de `mailySoft-pagos`, una suscripción de clínica cuya
+    asignación (clínica, plan, ciclo) **no vive aquí**: la decide el futuro microservicio Clínicas,
+    consultado en el momento de cobrar. Este servicio solo ejecuta el cobro y guarda su historial.
 
-    - **Dos audiencias distintas**: `clinic_subscriptions:read/write/delete` los tiene quien
-      administra la plataforma (sin organización propia; `tenant_id` se envía explícito en el cuerpo
-      al crear). `clinic_subscriptions:charge` lo tiene una persona de la propia clínica: System API
-      comprueba su acceso con `GET /api/v1/authorization/me` (no con `/check`) para conocer su
-      `tenant_id` y reenvía su token, sin modificar, a Pagos.
-    - **Dinero**: los precios del plan (`monthly_price`/`annual_price`) son pesos mexicanos con dos
-      decimales; el cobro que se envía a Pagos es en centavos (entero).
-    - **Historial de cobros**: cada intento de cobro (rechazados incluidos) queda como una fila
-      propia; la suscripción de clínica muestra siempre el vigente (el más reciente).
-    - Mismo formato de error, mismas reglas de paginación y el mismo esquema de seguridad Bearer que
-      el resto de esta API.
+    - **Dos audiencias**: `clinic_subscriptions:read` (listar/consultar el historial) lo tiene quien
+      administra la plataforma. `clinic_subscriptions:charge` (disparar el cobro) lo tiene una
+      persona de la propia clínica: se comprueba con `GET /authorization/me` (no con `/check`) para
+      conocer su `tenant_id` y compararlo con el que reporta Clínicas.
+    - **Dinero**: el cobro que se envía a Pagos es en centavos (entero); el catálogo de planes sigue
+      en pesos con dos decimales.
+    - **Historial**: cada intento de cobro (rechazados incluidos) queda como una fila propia.
 servers:
   - url: http://localhost:8010
     description: Entorno local (Docker Compose o uvicorn)
 tags:
   - name: clinic-subscriptions
-    description: Suscripción de una clínica a un plan del catálogo, su ciclo de cobro y su cobro.
+    description: Cobro, contra mailySoft-pagos, de una suscripción de clínica que decide Clínicas.
 paths:
-  /api/v1/clinic-subscriptions:
-    get:
-      tags: [clinic-subscriptions]
-      operationId: list_clinic_subscriptions
-      summary: Listar las suscripciones de clínica (paginado)
-      description: |
-        **Permiso requerido**: `clinic_subscriptions:read`.
-      security: [{BearerAuth: []}]
-      x-required-permission: clinic_subscriptions:read
-      parameters:
-        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
-        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
-        - {name: tenant_id, in: query, schema: {type: string, format: uuid}}
-        - {name: status_id, in: query, schema: {type: integer, enum: [1, 2, 3]}}
-      responses:
-        '200':
-          description: Página de suscripciones de clínica.
-          headers: {X-Total-Count: {schema: {type: integer, minimum: 0}}}
-          content:
-            application/json:
-              schema: {type: array, items: {$ref: '#/components/schemas/ClinicSubscriptionRead'}}
-        '401': {$ref: '#/components/responses/Unauthorized'}
-        '403': {$ref: '#/components/responses/Forbidden'}
-        '422': {$ref: '#/components/responses/ValidationError'}
-        '503': {$ref: '#/components/responses/AuthorizationUnavailable'}
-    post:
-      tags: [clinic-subscriptions]
-      operationId: create_clinic_subscription
-      summary: Asignar un plan del catálogo a una clínica
-      description: |
-        `tenant_id` se envía explícito (quien crea no tiene organización propia, FR-006). Una
-        clínica tiene a lo sumo una suscripción Activa o con cobro pendiente de resolver a la vez
-        (FR-004).
-
-        **Permiso requerido**: `clinic_subscriptions:write`.
-      security: [{BearerAuth: []}]
-      x-required-permission: clinic_subscriptions:write
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/ClinicSubscriptionCreate'}
-      responses:
-        '201':
-          description: Suscripción de clínica creada, Activa.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ClinicSubscriptionRead'}
-        '401': {$ref: '#/components/responses/Unauthorized'}
-        '403': {$ref: '#/components/responses/Forbidden'}
-        '409': {$ref: '#/components/responses/ClinicSubscriptionConflict'}
-        '422': {$ref: '#/components/responses/ValidationError'}
-        '503': {$ref: '#/components/responses/AuthorizationUnavailable'}
-  /api/v1/clinic-subscriptions/{clinic_subscription_id}:
-    get:
-      tags: [clinic-subscriptions]
-      operationId: get_clinic_subscription
-      summary: Consultar una suscripción de clínica
-      description: |
-        Si su cobro vigente está `pending`, System API lo sincroniza con Pagos antes de responder
-        (historia 3); si Pagos no responde, se devuelve el último estatus local conocido.
-
-        **Permiso requerido**: `clinic_subscriptions:read`.
-      security: [{BearerAuth: []}]
-      x-required-permission: clinic_subscriptions:read
-      parameters:
-        - {name: clinic_subscription_id, in: path, required: true, schema: {type: integer, minimum: 1}}
-      responses:
-        '200':
-          description: La suscripción de clínica.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ClinicSubscriptionRead'}
-        '401': {$ref: '#/components/responses/Unauthorized'}
-        '403': {$ref: '#/components/responses/Forbidden'}
-        '404': {$ref: '#/components/responses/ClinicSubscriptionNotFound'}
-        '422': {$ref: '#/components/responses/ValidationError'}
-        '503': {$ref: '#/components/responses/AuthorizationUnavailable'}
-    delete:
-      tags: [clinic-subscriptions]
-      operationId: cancel_clinic_subscription
-      summary: Cancelar la suscripción de una clínica (baja lógica)
-      description: |
-        Se rechaza (409) si tiene un cobro vigente `pending` (historia 5, escenario 2) o si ya está
-        Cancelada.
-
-        **Permiso requerido**: `clinic_subscriptions:delete`.
-      security: [{BearerAuth: []}]
-      x-required-permission: clinic_subscriptions:delete
-      parameters:
-        - {name: clinic_subscription_id, in: path, required: true, schema: {type: integer, minimum: 1}}
-      responses:
-        '204': {description: Cancelada.}
-        '401': {$ref: '#/components/responses/Unauthorized'}
-        '403': {$ref: '#/components/responses/Forbidden'}
-        '404': {$ref: '#/components/responses/ClinicSubscriptionNotFound'}
-        '409': {$ref: '#/components/responses/ClinicSubscriptionConflict'}
-        '422': {$ref: '#/components/responses/ValidationError'}
-        '503': {$ref: '#/components/responses/AuthorizationUnavailable'}
   /api/v1/clinic-subscriptions/{clinic_subscription_id}/charges:
     post:
       tags: [clinic-subscriptions]
       operationId: charge_clinic_subscription
       summary: Disparar el cobro de la suscripción de una clínica
       description: |
-        Solo una persona de la **misma organización** que la suscripción de clínica (FR-012,
-        FR-030): System API resuelve el `tenant_id` de quien llama con `GET
-        /api/v1/authorization/me` y lo compara; si no coincide (o quien llama no tiene
-        organización), responde 404, no 403, para no revelar que la suscripción existe. Llama a
-        `POST /api/v1/payments` de `mailySoft-pagos` reenviando ese mismo token
-        (`contracts/payments-api-integration.md`).
+        Consulta a Clínicas los datos de `clinic_subscription_id` (`tenant_id`, `subscription_id`,
+        `billing_cycle`); solo una persona de la **misma organización** (FR-009, FR-026): si no
+        coincide (o Clínicas dice que no existe), responde 404, no 403. Llama a
+        `POST /api/v1/payments` de mailySoft-pagos reenviando ese mismo token.
 
         **Permiso requerido**: `clinic_subscriptions:charge` (propio de un rol de Clínica).
       security: [{BearerAuth: []}]
       x-required-permission: clinic_subscriptions:charge
       parameters:
-        - {name: clinic_subscription_id, in: path, required: true, schema: {type: integer, minimum: 1}}
+        - {name: clinic_subscription_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ClinicSubscriptionChargeCreate'}
+            examples:
+              periodo: {value: {period: '2026-12-01'}}
       responses:
         '201':
           description: Cobro disparado (o el ya existente del mismo periodo, por idempotencia).
@@ -152,11 +54,11 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ClinicSubscriptionChargeRead'}
         '401': {$ref: '#/components/responses/Unauthorized'}
-        '403': {$ref: '#/components/responses/Forbidden'}
+        '403': {$ref: '#/components/responses/ChargeForbidden'}
         '404': {$ref: '#/components/responses/ClinicSubscriptionNotFound'}
-        '409': {$ref: '#/components/responses/ClinicSubscriptionConflict'}
+        '409': {$ref: '#/components/responses/ChargeConflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
-        '503': {$ref: '#/components/responses/PaymentsUnavailable'}
+        '503': {$ref: '#/components/responses/DependencyUnavailable'}
     get:
       tags: [clinic-subscriptions]
       operationId: list_clinic_subscription_charges
@@ -166,7 +68,7 @@ paths:
       security: [{BearerAuth: []}]
       x-required-permission: clinic_subscriptions:read
       parameters:
-        - {name: clinic_subscription_id, in: path, required: true, schema: {type: integer, minimum: 1}}
+        - {name: clinic_subscription_id, in: path, required: true, schema: {type: string, format: uuid}}
         - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
         - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
       responses:
@@ -178,7 +80,6 @@ paths:
               schema: {type: array, items: {$ref: '#/components/schemas/ClinicSubscriptionChargeRead'}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
-        '404': {$ref: '#/components/responses/ClinicSubscriptionNotFound'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '503': {$ref: '#/components/responses/AuthorizationUnavailable'}
   /api/v1/clinic-subscriptions/{clinic_subscription_id}/charges/{charge_id}:
@@ -187,14 +88,13 @@ paths:
       operationId: get_clinic_subscription_charge
       summary: Consultar un cobro del historial
       description: |
-        Si está `pending`, se sincroniza con Pagos antes de responder (igual que
-        `get_clinic_subscription`).
+        Si está `pending`, se sincroniza con Pagos antes de responder (historia 2).
 
         **Permiso requerido**: `clinic_subscriptions:read`.
       security: [{BearerAuth: []}]
       x-required-permission: clinic_subscriptions:read
       parameters:
-        - {name: clinic_subscription_id, in: path, required: true, schema: {type: integer, minimum: 1}}
+        - {name: clinic_subscription_id, in: path, required: true, schema: {type: string, format: uuid}}
         - {name: charge_id, in: path, required: true, schema: {type: integer, minimum: 1}}
       responses:
         '200':
@@ -210,54 +110,32 @@ paths:
 components:
   responses:
     Unauthorized: {description: Sin token o token no válido., content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
-    Forbidden: {description: Sin el permiso, o (en charge_clinic_subscription) con el cambio de contraseña pendiente., content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    Forbidden: {description: Sin el permiso., content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    ChargeForbidden: {description: Sin el permiso, con el cambio de contraseña pendiente, o mailySoft-pagos no autorizó el cobro., content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
     AuthorizationUnavailable: {description: No se pudo comprobar el acceso., content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
-    PaymentsUnavailable: {description: mailySoft-pagos no respondió; no se disparó ningún cobro., content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    DependencyUnavailable: {description: Clínicas o mailySoft-pagos no respondieron; no se disparó ningún cobro., content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
     ValidationError: {description: Datos de la solicitud no válidos., content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
-    ClinicSubscriptionNotFound: {description: No existe, está Cancelada, o es de otra organización (charge_clinic_subscription)., content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
-    ClinicSubscriptionChargeNotFound: {description: El cobro no existe en esa suscripción de clínica., content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
-    ClinicSubscriptionConflict: {description: Regla de unicidad o de estatus no cumplida (ver error-catalog.md)., content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    ClinicSubscriptionNotFound: {description: Clínicas no reconoce ese identificador, está cancelada, o es de otra organización., content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    ClinicSubscriptionChargeNotFound: {description: El cobro no existe., content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    ChargeConflict: {description: Ya hay un cobro aprobado para ese periodo, el plan ya no está Activo, o hay un conflicto de idempotencia., content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
   securitySchemes:
     BearerAuth: {type: http, scheme: bearer, description: Token de Auth0; este servicio no lo verifica.}
   schemas:
-    BillingCycle: {type: string, enum: [monthly, annual]}
-    ClinicSubscriptionStatus:
-      type: object
-      required: [id, name]
-      properties:
-        id: {type: integer, enum: [1, 2, 3]}
-        name: {type: string, examples: ['Activa']}
-    ClinicSubscriptionCreate:
-      type: object
-      required: [tenant_id, subscription_id, billing_cycle]
-      properties:
-        tenant_id: {type: string, format: uuid}
-        subscription_id: {type: integer, minimum: 1}
-        billing_cycle: {$ref: '#/components/schemas/BillingCycle'}
-        started_at: {type: string, format: date-time, description: Por omisión, el momento de crear.}
-    ClinicSubscriptionRead:
-      type: object
-      required: [id, tenant_id, subscription_id, billing_cycle, started_at, next_billing_at, status, current_charge, created_at, updated_at]
-      properties:
-        id: {type: integer}
-        tenant_id: {type: string, format: uuid}
-        subscription_id: {type: integer}
-        billing_cycle: {$ref: '#/components/schemas/BillingCycle'}
-        started_at: {type: string, format: date-time}
-        next_billing_at: {type: string, format: date-time}
-        status: {$ref: '#/components/schemas/ClinicSubscriptionStatus'}
-        current_charge: {oneOf: [{$ref: '#/components/schemas/ClinicSubscriptionChargeRead'}, {type: 'null'}]}
-        created_at: {type: string, format: date-time}
-        updated_at: {type: string, format: date-time}
     PaymentStatus:
       type: string
       enum: [pending, approved, rejected, cancelled, partially_refunded, refunded]
+    ClinicSubscriptionChargeCreate:
+      type: object
+      required: [period]
+      properties:
+        period: {type: string, format: date, description: Periodo que se cobra (lo decide quien dispara el cobro).}
     ClinicSubscriptionChargeRead:
       type: object
-      required: [id, clinic_subscription_id, period, amount, currency, payment_id, payment_status, checkout_url, created_at, updated_at]
+      required: [id, clinic_subscription_id, tenant_id, period, amount, currency, payment_id, payment_status, checkout_url, created_at, updated_at]
       properties:
         id: {type: integer}
-        clinic_subscription_id: {type: integer}
+        clinic_subscription_id: {type: string, format: uuid, description: Identificador opaco de Clínicas.}
+        tenant_id: {type: string, format: uuid}
         period: {type: string, format: date}
         amount: {type: integer, description: Centavos.}
         currency: {const: MXN, type: string}
@@ -268,7 +146,7 @@ components:
         updated_at: {type: string, format: date-time}
     ErrorCode:
       type: string
-      enum: [unauthenticated, token_expired, invalid_token, permission_denied, password_change_required, authorization_unavailable, clinic_subscription_not_found, clinic_subscription_charge_not_found, clinic_subscription_already_active, clinic_subscription_plan_not_active, clinic_subscription_charge_pending, clinic_subscription_already_cancelled, clinic_subscription_charge_requires_active_plan, payment_not_authorized, clinic_subscription_charge_conflict, payments_unavailable, validation_error, internal_error]
+      enum: [unauthenticated, token_expired, invalid_token, permission_denied, password_change_required, authorization_unavailable, clinics_check_unavailable, clinic_subscription_not_found, clinic_subscription_charge_not_found, clinic_subscription_plan_not_active, clinic_subscription_charge_already_approved, payment_not_authorized, clinic_subscription_charge_conflict, payments_unavailable, validation_error, internal_error]
     FieldError: {type: object, required: [field, message], properties: {field: {type: string}, message: {type: string}}}
     ErrorResponse:
       type: object

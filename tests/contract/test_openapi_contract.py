@@ -112,8 +112,8 @@ def test_the_error_codes_are_the_seventeen_of_the_catalog(schema):
     assert set(schema["components"]["schemas"]["ErrorCode"]["enum"]) == {c.value for c in ErrorCode}
     # spec 005 added the 2 codes of the registry of components; spec 006-add-subscription-type
     # added subscription_type_not_found; spec 009 retired subscription_module_prerequisite_missing
-    # (net 17); spec 006-cobro-real-suscripciones added 11 clinic-subscription/payments codes.
-    assert len(ErrorCode) == 28
+    # (net 17); spec 010-cobro-real-suscripciones added 8 clinic-subscription/payments codes.
+    assert len(ErrorCode) == 25
 
 
 def test_the_price_is_published_as_a_string(schema):

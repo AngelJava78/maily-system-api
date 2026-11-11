@@ -348,8 +348,8 @@ async def api(
     async with engine.begin() as connection:
         await connection.execute(
             text(
-                "TRUNCATE subscriptions, monitored_components, clinic_subscription_charges, "
-                "clinic_subscriptions RESTART IDENTITY CASCADE"
+                "TRUNCATE subscriptions, monitored_components, clinic_subscription_charges "
+                "RESTART IDENTITY CASCADE"
             )
         )
 

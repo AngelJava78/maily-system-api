@@ -164,46 +164,48 @@ tráfico) y *liveness* no (no se reinicia el contenedor).
 > pública). Para desarrollar sin esos servicios, usa las simulaciones de la pila de pruebas de punta a
 > punta (más abajo).
 
-### Suscripciones de clínica y su cobro contra Mercado Pago
+### Cobro de suscripciones de clínica contra Mercado Pago
 
-Spec [`006-cobro-real-suscripciones`](specs/006-cobro-real-suscripciones/spec.md): liga una clínica
-(`tenant_id`) a un plan del catálogo y cobra ese plan a través de `mailySoft-pagos` (contrato en
-[`openapi-clinic-subscriptions.yaml`](specs/006-cobro-real-suscripciones/contracts/openapi-clinic-subscriptions.yaml)).
+Spec [`010-cobro-real-suscripciones`](specs/010-cobro-real-suscripciones/spec.md): cobra una
+suscripción de clínica a través de `mailySoft-pagos` (contrato en
+[`openapi-clinic-subscriptions.yaml`](specs/010-cobro-real-suscripciones/contracts/openapi-clinic-subscriptions.yaml)).
+**Qué clínica tiene qué plan y con qué ciclo no es un dato de este servicio**: lo decide el futuro
+microservicio Clínicas, consultado por su identificador opaco (`clinic_subscription_id`) en cada
+cobro (Principio IX, mismo patrón que `clinics_count`); este servicio solo ejecuta el cobro y
+guarda su historial.
 
 | Operación | Método y ruta | Permiso |
 |---|---|---|
-| `list_clinic_subscriptions` | `GET /api/v1/clinic-subscriptions` | `clinic_subscriptions:read` |
-| `create_clinic_subscription` | `POST /api/v1/clinic-subscriptions` | `clinic_subscriptions:write` |
-| `get_clinic_subscription` | `GET /api/v1/clinic-subscriptions/{id}` | `clinic_subscriptions:read` |
-| `cancel_clinic_subscription` | `DELETE /api/v1/clinic-subscriptions/{id}` | `clinic_subscriptions:delete` |
 | `charge_clinic_subscription` | `POST /api/v1/clinic-subscriptions/{id}/charges` | `clinic_subscriptions:charge` |
 | `list_clinic_subscription_charges` | `GET /api/v1/clinic-subscriptions/{id}/charges` | `clinic_subscriptions:read` |
 | `get_clinic_subscription_charge` | `GET /api/v1/clinic-subscriptions/{id}/charges/{charge_id}` | `clinic_subscriptions:read` |
 
-- **Dos audiencias**: `clinic_subscriptions:read/write/delete` las tiene quien administra la
-  plataforma (sin organización propia; `tenant_id` se envía explícito al crear). Solo una persona de
-  la **propia clínica** puede disparar el cobro (`clinic_subscriptions:charge`): esa operación se
-  comprueba con `GET /api/v1/authorization/me` en vez de `/check` (la única de este servicio que lo
-  hace), porque además del permiso necesita el `tenant_id` de quien llama para compararlo con el de
-  la suscripción — si no coincide, o quien llama no tiene organización, responde 404, no 403.
+- **Dos audiencias**: `clinic_subscriptions:read` lo tiene quien administra la plataforma (solo
+  lectura del historial). Solo una persona de la **propia clínica** puede disparar el cobro
+  (`clinic_subscriptions:charge`): esa operación se comprueba con `GET /api/v1/authorization/me` en
+  vez de `/check` (la única de este servicio que lo hace), porque además del permiso necesita el
+  `tenant_id` de quien llama para compararlo con el que reporta Clínicas — si no coincide, Clínicas
+  dice que no existe, o quien llama no tiene organización, responde 404, no 403.
 - **Dinero**: el monto que recibe Pagos es en centavos (entero), calculado del precio **vigente**
-  (`monthly_price`/`annual_price`) del plan asignado; `currency` es siempre `MXN`.
+  (`monthly_price`/`annual_price`, según el ciclo que reporta Clínicas) del plan de este catálogo;
+  `currency` es siempre `MXN`.
 - **Idempotencia**: la `Idempotency-Key` que se envía a Pagos es determinista por periodo
-  (`clinic-subscription:<id>:<periodo>`), así que un reintento del mismo periodo nunca cobra dos
-  veces: Pagos responde con el pago ya creado.
+  (`clinic-subscription:<id>:<periodo>`, donde el periodo lo decide quien dispara el cobro), así que
+  un reintento del mismo periodo nunca cobra dos veces: Pagos responde con el pago ya creado.
 - **Pagos no notifica**: como `mailySoft-pagos` no emite webhooks hacia quien lo integra, un cobro
   `pending` se sincroniza contra `GET /api/v1/payments/{id}` **al consultarlo** (sin tarea en segundo
   plano); un cobro ya resuelto no vuelve a preguntar. Esa sincronización usa una credencial de
   aplicación propia (`PAGOS_API_SERVICE_TOKEN`), nunca el token de quien disparó el cobro.
-- **Historial completo**: cada intento de cobro (rechazados incluidos) queda como su propia fila; la
-  suscripción de clínica muestra siempre el vigente (el más reciente).
-- **Fuera de alcance de esta entrega**: el cobro periódico automático (cron) y las colecciones de
-  Postman de este recurso quedan para más adelante (`quickstart.md`, nivel 3); pytest ya cumple el
-  Principio V por sí solo.
-- **Prerrequisito pendiente en `mailySoft-usuarios`**: los permisos `clinic_subscriptions:*` (y
-  `payments:*`, que exige `mailySoft-pagos`) todavía no están en su catálogo real; se desarrolla y
-  prueba contra una simulación propia (`tests/stubs/payments_api/`), igual que ya hacen
-  `mailySoft-agenda` y `mailySoft-pagos` con los suyos.
+- **Historial completo**: cada intento de cobro (rechazados incluidos) queda como su propia fila,
+  con el `tenant_id` que reportó Clínicas copiado al momento de cobrar.
+- **Fuera de alcance de esta entrega**: el cobro periódico automático (cron), avisar a Clínicas del
+  resultado, y las colecciones de Postman de este recurso quedan para más adelante.
+- **Dos prerrequisitos pendientes, de naturaleza distinta**: en `mailySoft-usuarios` (que **sí
+  existe**), los permisos `clinic_subscriptions:*` y `payments:*` (que exige `mailySoft-pagos`)
+  todavía no están en su catálogo real. Clínicas (`GET /api/v1/clinics/clinic-subscriptions/{id}`)
+  **no existe todavía como servicio**: ambos se desarrollan y prueban contra simulaciones propias
+  (`tests/stubs/clinics_api/`, `tests/stubs/payments_api/`), igual que ya hacen `mailySoft-agenda` y
+  `mailySoft-pagos` con los suyos.
 
 ## Requisitos
 

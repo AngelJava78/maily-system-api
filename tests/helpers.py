@@ -34,10 +34,9 @@ ALL_PERMISSIONS = (
     # Needed in the users API to validate modules on create/update (contracts/permission-matrix.md);
     # not one of this service's own permissions.
     "modules:read",
-    # spec 006: clinic subscriptions (System role, checked with /check).
+    # spec 010: clinic subscription charges (System role, checked with /check). `charge` is not
+    # here: it is a Clinic-role permission, checked with /me (research R1), never with /check.
     "clinic_subscriptions:read",
-    "clinic_subscriptions:write",
-    "clinic_subscriptions:delete",
 )
 
 
@@ -153,14 +152,39 @@ class Api:
         async with AsyncSession(self.engine, expire_on_commit=False) as session:
             return await insert_subscription(session, **values)
 
-    async def insert_clinic_subscription(self, **values: Any) -> int:
-        """Insert a clinic subscription directly (see `insert_clinic_subscription` helper)."""
-        async with AsyncSession(self.engine, expire_on_commit=False) as session:
-            return await insert_clinic_subscription(session, **values)
-
     async def insert_clinic_subscription_charge(self, **values: Any) -> int:
         async with AsyncSession(self.engine, expire_on_commit=False) as session:
             return await insert_clinic_subscription_charge(session, **values)
+
+    async def register_clinic_subscription(
+        self,
+        clinic_subscription_id: str | UUID,
+        *,
+        tenant_id: str | UUID,
+        subscription_id: int,
+        billing_cycle: str = "monthly",
+    ) -> None:
+        """Register, in the Clinics stub, what it reports for this clinic subscription id
+        (research R6): the simulation of a service that does not exist yet."""
+        response = await self.clinics_stub.post(
+            "/__test__/clinic-subscriptions",
+            json={
+                "id": str(clinic_subscription_id),
+                "tenant_id": str(tenant_id),
+                "subscription_id": subscription_id,
+                "billing_cycle": billing_cycle,
+            },
+        )
+        assert response.status_code == 200
+
+    async def grant_clinics_caller(self, token: str, tenant_id: str | UUID | None) -> None:
+        """Register, in the Clinics stub, which organization `token` belongs to (its own token
+        registry, separate from Usuarios': Clinics is a different service)."""
+        response = await self.clinics_stub.post(
+            "/__test__/tokens",
+            json={"token": token, "tenant_id": str(tenant_id) if tenant_id is not None else None},
+        )
+        assert response.status_code == 200
 
     async def payments_fault(self, mode: str, count: int = 1, delay: float = 30, operation: str = "create") -> None:
         response = await self.payments_stub.post(
@@ -217,9 +241,12 @@ class Api:
         )
         assert response.status_code == 200
 
-    async def clinics_fault(self, mode: str, count: int = 1, delay: float = 30) -> None:
+    async def clinics_fault(
+        self, mode: str, count: int = 1, delay: float = 30, operation: str = "subscription_counts"
+    ) -> None:
         response = await self.clinics_stub.post(
-            "/__test__/faults", json={"mode": mode, "count": count, "delay_seconds": delay}
+            "/__test__/faults",
+            json={"mode": mode, "count": count, "delay_seconds": delay, "operation": operation},
         )
         assert response.status_code == 200
 
@@ -300,42 +327,11 @@ async def insert_subscription(
     return subscription_id
 
 
-async def insert_clinic_subscription(
-    session: AsyncSession,
-    *,
-    tenant_id: str | UUID | None = None,
-    subscription_id: int,
-    billing_cycle: str = "monthly",
-    started_at: datetime | None = None,
-    next_billing_at: datetime | None = None,
-    status_id: int = 1,
-) -> int:
-    """Insert a clinic subscription directly, confirm and return its id (spec 006)."""
-    from sqlalchemy import insert
-
-    from src.models.clinic_subscription import ClinicSubscription
-
-    now = datetime.now(UTC)
-    values: dict[str, Any] = {
-        "tenant_id": UUID(str(tenant_id)) if tenant_id is not None else uuid4(),
-        "subscription_id": subscription_id,
-        "billing_cycle": billing_cycle,
-        "started_at": started_at or now,
-        "next_billing_at": next_billing_at or started_at or now,
-        "status_id": status_id,
-    }
-    result = await session.execute(
-        insert(ClinicSubscription).values(**values).returning(ClinicSubscription.id)
-    )
-    clinic_subscription_id = result.scalar_one()
-    await session.commit()
-    return clinic_subscription_id
-
-
 async def insert_clinic_subscription_charge(
     session: AsyncSession,
     *,
-    clinic_subscription_id: int,
+    clinic_subscription_id: str | UUID | None = None,
+    tenant_id: str | UUID | None = None,
     period: date,
     amount: int = 129900,
     currency: str = "MXN",
@@ -344,13 +340,21 @@ async def insert_clinic_subscription_charge(
     checkout_url: str | None = "https://pagos.test/checkout/test",
     idempotency_key: str | None = None,
 ) -> int:
-    """Insert a charge of a clinic subscription directly, confirm and return its id (spec 006)."""
+    """Insert a charge directly, confirm and return its id (spec 010).
+
+    `clinic_subscription_id` is an opaque id owned by Clinics (no local table to reference): a
+    random one is generated when not given, exactly like `tenant_id` and `payment_id`.
+    """
     from sqlalchemy import insert
 
     from src.models.clinic_subscription_charge import ClinicSubscriptionCharge
 
+    resolved_clinic_subscription_id = (
+        UUID(str(clinic_subscription_id)) if clinic_subscription_id is not None else uuid4()
+    )
     values: dict[str, Any] = {
-        "clinic_subscription_id": clinic_subscription_id,
+        "clinic_subscription_id": resolved_clinic_subscription_id,
+        "tenant_id": UUID(str(tenant_id)) if tenant_id is not None else uuid4(),
         "period": period,
         "amount": amount,
         "currency": currency,
@@ -358,7 +362,7 @@ async def insert_clinic_subscription_charge(
         "payment_status": payment_status,
         "checkout_url": checkout_url if payment_status == "pending" else None,
         "idempotency_key": idempotency_key
-        or f"clinic-subscription:{clinic_subscription_id}:{period}",
+        or f"clinic-subscription:{resolved_clinic_subscription_id}:{period}",
     }
     result = await session.execute(
         insert(ClinicSubscriptionCharge)

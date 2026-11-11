@@ -34,9 +34,9 @@ def test_each_resource_keeps_its_own_messages():
 def test_no_error_code_was_added():
     # spec 005 added 2 registry codes, spec 006-add-subscription-type added
     # subscription_type_not_found, spec 009 retired subscription_module_prerequisite_missing (net
-    # 17); spec 006-cobro-real-suscripciones added 11 clinic-subscription/payments codes. No
+    # 17); spec 010-cobro-real-suscripciones added 8 clinic-subscription/payments codes. No
     # dashboard impact either way.
-    assert len(ErrorCode) == 28
+    assert len(ErrorCode) == 25
     assert ErrorCode.VALIDATION_ERROR.value == "validation_error"
 
 

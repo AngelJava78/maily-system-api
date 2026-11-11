@@ -11,7 +11,9 @@ from decimal import Decimal
 from typing import Any
 
 from src.clinic_modules import PATIENTS_KEY
+from src.integrations.clinics_api import ClinicSubscriptionInfo
 from src.integrations.errors import (
+    ClinicsApiNotFound,
     ClinicsApiUnavailable,
     PaymentsApiIdempotencyConflict,
     PaymentsApiPermissionDenied,
@@ -22,9 +24,7 @@ from src.integrations.errors import (
 )
 from src.integrations.payments_api import PaymentView
 from src.integrations.users_api import CallerAccess
-from src.models.clinic_subscription import ClinicSubscription
 from src.models.clinic_subscription_charge import ClinicSubscriptionCharge
-from src.models.clinic_subscription_status import ClinicSubscriptionStatus
 from src.models.subscription import SUBSCRIPTION_NAME_INDEX, Subscription
 from src.models.subscription_module import SubscriptionModule
 from src.models.subscription_status import SubscriptionStatus
@@ -35,7 +35,6 @@ STATUS_NAMES = {1: "Activa", 2: "Inactiva", 3: "Bloqueada", 4: "Eliminada", 5: "
 TYPE_NAMES = {1: "Individual", 2: "Empresarial"}
 DELETED = 4
 _EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
-CLINIC_SUBSCRIPTION_STATUS_NAMES = {1: "Activa", 2: "Con cobro pendiente de resolver", 3: "Cancelada"}
 
 
 class FakeUsersApi:
@@ -91,12 +90,28 @@ class FakeUsersApi:
 
 
 class FakeClinicsApi:
-    """Double of `ClinicsApiClient`: `counts` only holds subscriptions with at least one clinic."""
+    """Double of `ClinicsApiClient`: `counts` only holds subscriptions with at least one clinic.
 
-    def __init__(self, counts: Mapping[int, int] | None = None, *, fail: bool = False) -> None:
+    `clinic_subscription` configures what `get_clinic_subscription` (spec 010, research R6)
+    answers: a `ClinicSubscriptionInfo` for success, or one of the two failure flags.
+    """
+
+    def __init__(
+        self,
+        counts: Mapping[int, int] | None = None,
+        *,
+        fail: bool = False,
+        clinic_subscription: ClinicSubscriptionInfo | None = None,
+        clinic_subscription_not_found: bool = False,
+        clinic_subscription_unavailable: bool = False,
+    ) -> None:
         self.counts = dict(counts or {})
         self.fail = fail
+        self.clinic_subscription = clinic_subscription
+        self.clinic_subscription_not_found = clinic_subscription_not_found
+        self.clinic_subscription_unavailable = clinic_subscription_unavailable
         self.calls: list[tuple[str, Sequence[int] | None]] = []
+        self.clinic_subscription_calls: list[tuple[str, str]] = []
 
     async def get_counts(
         self, token: str, subscription_ids: Sequence[int] | None = None
@@ -109,6 +124,17 @@ class FakeClinicsApi:
             for subscription_id, count in self.counts.items()
             if count >= 1 and (subscription_ids is None or subscription_id in subscription_ids)
         }
+
+    async def get_clinic_subscription(
+        self, token: str, clinic_subscription_id: str
+    ) -> ClinicSubscriptionInfo:
+        self.clinic_subscription_calls.append((token, clinic_subscription_id))
+        if self.clinic_subscription_unavailable:
+            raise ClinicsApiUnavailable()
+        if self.clinic_subscription_not_found:
+            raise ClinicsApiNotFound()
+        assert self.clinic_subscription is not None, "configure `clinic_subscription` for success"
+        return self.clinic_subscription
 
 
 class FakeSubscriptionRepository:
@@ -366,51 +392,24 @@ def fake_caller_access(
     )
 
 
-class FakeClinicSubscriptionRepository:
-    """Double of `ClinicSubscriptionRepository` that keeps real ORM objects in memory."""
+class FakeClinicSubscriptionChargeRepository:
+    """Double of `ClinicSubscriptionChargeRepository` that keeps real ORM objects in memory.
+
+    `clinic_subscription_id` is an opaque id (no local table of its own, rediseño 2026-11-11):
+    this double only ever tracks charges, keyed by their own `id`.
+    """
 
     def __init__(self) -> None:
-        self.subscriptions: dict[int, ClinicSubscription] = {}
         self.charges: dict[int, ClinicSubscriptionCharge] = {}
-        self._next_subscription_id = 1
         self._next_charge_id = 1
 
     # --- helpers for the tests ---
 
-    def add(
-        self,
-        *,
-        tenant_id,
-        subscription_id: int = 1,
-        billing_cycle: str = "monthly",
-        started_at: datetime | None = None,
-        next_billing_at: datetime | None = None,
-        status_id: int = 1,
-    ) -> ClinicSubscription:
-        clinic_subscription_id = self._next_subscription_id
-        self._next_subscription_id += 1
-        moment = started_at or _EPOCH
-        row = ClinicSubscription(
-            id=clinic_subscription_id,
-            tenant_id=tenant_id,
-            subscription_id=subscription_id,
-            billing_cycle=billing_cycle,
-            started_at=moment,
-            next_billing_at=next_billing_at or moment,
-            status_id=status_id,
-            created_at=moment,
-            updated_at=moment,
-        )
-        row.status = ClinicSubscriptionStatus(
-            id=status_id, name=CLINIC_SUBSCRIPTION_STATUS_NAMES[status_id]
-        )
-        self.subscriptions[clinic_subscription_id] = row
-        return row
-
     def add_charge(
         self,
         *,
-        clinic_subscription_id: int,
+        clinic_subscription_id,
+        tenant_id=None,
         period,
         amount: int = 129900,
         currency: str = "MXN",
@@ -424,6 +423,7 @@ class FakeClinicSubscriptionRepository:
         charge = ClinicSubscriptionCharge(
             id=charge_id,
             clinic_subscription_id=clinic_subscription_id,
+            tenant_id=tenant_id if tenant_id is not None else clinic_subscription_id,
             period=period,
             amount=amount,
             currency=currency,
@@ -437,90 +437,19 @@ class FakeClinicSubscriptionRepository:
         self.charges[charge_id] = charge
         return charge
 
-    def _set_status(self, row: ClinicSubscription, status_id: int) -> None:
-        row.status_id = status_id
-        row.status = ClinicSubscriptionStatus(
-            id=status_id, name=CLINIC_SUBSCRIPTION_STATUS_NAMES[status_id]
-        )
-
-    def _is_tenant_active(self, tenant_id, *, excluding: int | None = None) -> bool:
-        return any(
-            row.tenant_id == tenant_id and row.status_id in (1, 2) and row.id != excluding
-            for row in self.subscriptions.values()
-        )
-
-    def _charges_of(self, clinic_subscription_id: int) -> list[ClinicSubscriptionCharge]:
+    def _charges_of(self, clinic_subscription_id) -> list[ClinicSubscriptionCharge]:
         return sorted(
             (c for c in self.charges.values() if c.clinic_subscription_id == clinic_subscription_id),
             key=lambda c: (c.period, c.id),
         )
 
-    # --- the interface of ClinicSubscriptionRepository ---
-
-    async def create(
-        self, *, tenant_id, subscription_id: int, billing_cycle: str, started_at, next_billing_at
-    ) -> ClinicSubscription:
-        if self._is_tenant_active(tenant_id):
-            raise UniqueViolationError("clinic_subscriptions_one_active_per_tenant_key")
-        return self.add(
-            tenant_id=tenant_id,
-            subscription_id=subscription_id,
-            billing_cycle=billing_cycle,
-            started_at=started_at,
-            next_billing_at=next_billing_at,
-        )
-
-    async def get_by_id(self, clinic_subscription_id: int) -> ClinicSubscription | None:
-        return self.subscriptions.get(clinic_subscription_id)
-
-    async def list(self, *, tenant_id, status_id, page: int, limit: int):
-        rows = [
-            row
-            for row in self.subscriptions.values()
-            if (tenant_id is None or row.tenant_id == tenant_id)
-            and (status_id is None or row.status_id == status_id)
-        ]
-        rows.sort(key=lambda row: (row.created_at, row.id))
-        total = len(rows)
-        start = (page - 1) * limit
-        return rows[start : start + limit], total
-
-    async def latest_charge(self, clinic_subscription_id: int) -> ClinicSubscriptionCharge | None:
-        charges = self._charges_of(clinic_subscription_id)
-        return charges[-1] if charges else None
-
-    async def latest_charges_for(self, clinic_subscription_ids: Sequence[int]):
-        return {
-            clinic_subscription_id: charge
-            for clinic_subscription_id in clinic_subscription_ids
-            if (charge := await self.latest_charge(clinic_subscription_id)) is not None
-        }
-
-    async def list_charges(self, clinic_subscription_id: int, *, page: int, limit: int):
-        charges = list(reversed(self._charges_of(clinic_subscription_id)))
-        total = len(charges)
-        start = (page - 1) * limit
-        return charges[start : start + limit], total
-
-    async def get_charge(
-        self, clinic_subscription_id: int, charge_id: int
-    ) -> ClinicSubscriptionCharge | None:
-        charge = self.charges.get(charge_id)
-        if charge is None or charge.clinic_subscription_id != clinic_subscription_id:
-            return None
-        return charge
-
-    async def cancel(self, clinic_subscription_id: int) -> ClinicSubscription | None:
-        row = self.subscriptions.get(clinic_subscription_id)
-        if row is None or row.status_id == ClinicSubscriptionStatus.CANCELLED:
-            return None
-        self._set_status(row, ClinicSubscriptionStatus.CANCELLED)
-        return row
+    # --- the interface of ClinicSubscriptionChargeRepository ---
 
     async def save_charge(
         self,
-        clinic_subscription_id: int,
         *,
+        clinic_subscription_id,
+        tenant_id,
         period,
         amount: int,
         currency: str,
@@ -528,8 +457,6 @@ class FakeClinicSubscriptionRepository:
         payment_status: str,
         checkout_url: str | None,
         idempotency_key: str,
-        subscription_status_id: int,
-        next_billing_at: datetime | None = None,
     ) -> ClinicSubscriptionCharge:
         existing = next(
             (
@@ -540,26 +467,52 @@ class FakeClinicSubscriptionRepository:
             None,
         )
         if existing is not None:
+            existing.tenant_id = tenant_id
             existing.amount = amount
             existing.currency = currency
             existing.payment_id = payment_id
             existing.payment_status = payment_status
             existing.checkout_url = checkout_url
             existing.idempotency_key = idempotency_key
-            charge = existing
-        else:
-            charge = self.add_charge(
-                clinic_subscription_id=clinic_subscription_id,
-                period=period,
-                amount=amount,
-                currency=currency,
-                payment_id=payment_id,
-                payment_status=payment_status,
-                checkout_url=checkout_url,
-                idempotency_key=idempotency_key,
-            )
-        row = self.subscriptions[clinic_subscription_id]
-        self._set_status(row, subscription_status_id)
-        if next_billing_at is not None:
-            row.next_billing_at = next_billing_at
+            return existing
+        return self.add_charge(
+            clinic_subscription_id=clinic_subscription_id,
+            tenant_id=tenant_id,
+            period=period,
+            amount=amount,
+            currency=currency,
+            payment_id=payment_id,
+            payment_status=payment_status,
+            checkout_url=checkout_url,
+            idempotency_key=idempotency_key,
+        )
+
+    async def update_status(
+        self, charge_id: int, *, payment_status: str, checkout_url: str | None
+    ) -> ClinicSubscriptionCharge:
+        charge = self.charges[charge_id]
+        charge.payment_status = payment_status
+        charge.checkout_url = checkout_url
         return charge
+
+    async def get_by_period(self, clinic_subscription_id, period) -> ClinicSubscriptionCharge | None:
+        return next(
+            (
+                c
+                for c in self.charges.values()
+                if c.clinic_subscription_id == clinic_subscription_id and c.period == period
+            ),
+            None,
+        )
+
+    async def get(self, clinic_subscription_id, charge_id: int) -> ClinicSubscriptionCharge | None:
+        charge = self.charges.get(charge_id)
+        if charge is None or charge.clinic_subscription_id != clinic_subscription_id:
+            return None
+        return charge
+
+    async def list(self, clinic_subscription_id, *, page: int, limit: int):
+        charges = list(reversed(self._charges_of(clinic_subscription_id)))
+        total = len(charges)
+        start = (page - 1) * limit
+        return charges[start : start + limit], total

@@ -33,10 +33,6 @@ EXPECTED_PERMISSIONS = {
     "create_monitored_component": "health:write",
     "update_monitored_component": "health:update",
     "delete_monitored_component": "health:delete",
-    "list_clinic_subscriptions": "clinic_subscriptions:read",
-    "get_clinic_subscription": "clinic_subscriptions:read",
-    "create_clinic_subscription": "clinic_subscriptions:write",
-    "cancel_clinic_subscription": "clinic_subscriptions:delete",
     "list_clinic_subscription_charges": "clinic_subscriptions:read",
     "get_clinic_subscription_charge": "clinic_subscriptions:read",
     "charge_clinic_subscription": "clinic_subscriptions:charge",
@@ -64,9 +60,10 @@ URL = "/api/v1/subscriptions"
 COMPONENTS_URL = "/api/v1/monitored-components"
 COMPONENT_ID = "00000000-0000-4000-8000-000000000001"
 CLINIC_SUBSCRIPTIONS_URL = "/api/v1/clinic-subscriptions"
+CLINIC_SUBSCRIPTION_ID = "6b1b1e2a-7c9d-4e2a-9c3e-1a2b3c4d5e70"
 CLINIC_SUBSCRIPTION_TENANT_ID = "3f1b1e2a-7c9d-4e2a-9c3e-1a2b3c4d5e6f"
-# operation_id -> (method, path, JSON body) against the subscription with id 1 and the component
-# COMPONENT_ID
+# operation_id -> (method, path, JSON body) against the subscription with id 1, the clinic
+# subscription charge of CLINIC_SUBSCRIPTION_ID with id 1, and the component COMPONENT_ID
 REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
     "list_subscriptions": ("GET", URL, None),
     "get_subscription": ("GET", f"{URL}/1", None),
@@ -88,20 +85,12 @@ REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
     "update_subscription": ("PATCH", f"{URL}/1", {"name": "Cambio"}),
     "change_subscription_status": ("PATCH", f"{URL}/1/status", {"status_id": 2}),
     "delete_subscription": ("DELETE", f"{URL}/1", None),
-    "list_clinic_subscriptions": ("GET", CLINIC_SUBSCRIPTIONS_URL, None),
-    "get_clinic_subscription": ("GET", f"{CLINIC_SUBSCRIPTIONS_URL}/1", None),
-    "create_clinic_subscription": (
-        "POST",
-        CLINIC_SUBSCRIPTIONS_URL,
-        {
-            "tenant_id": "6b1b1e2a-7c9d-4e2a-9c3e-1a2b3c4d5e70",
-            "subscription_id": 1,
-            "billing_cycle": "monthly",
-        },
+    "list_clinic_subscription_charges": (
+        "GET", f"{CLINIC_SUBSCRIPTIONS_URL}/{CLINIC_SUBSCRIPTION_ID}/charges", None,
     ),
-    "cancel_clinic_subscription": ("DELETE", f"{CLINIC_SUBSCRIPTIONS_URL}/1", None),
-    "list_clinic_subscription_charges": ("GET", f"{CLINIC_SUBSCRIPTIONS_URL}/1/charges", None),
-    "get_clinic_subscription_charge": ("GET", f"{CLINIC_SUBSCRIPTIONS_URL}/1/charges/1", None),
+    "get_clinic_subscription_charge": (
+        "GET", f"{CLINIC_SUBSCRIPTIONS_URL}/{CLINIC_SUBSCRIPTION_ID}/charges/1", None,
+    ),
     "get_dashboard": ("GET", "/api/v1/dashboard", None),
     "get_health": ("GET", "/api/v1/health", None),
     "list_monitored_components": ("GET", COMPONENTS_URL, None),
@@ -181,24 +170,20 @@ async def snapshot(api: Api) -> list[tuple]:
     components = await api.fetch_all(
         "SELECT id, code, name, enabled, deleted_at, updated_at FROM monitored_components ORDER BY id"
     )
-    clinic_subscriptions = await api.fetch_all(
-        "SELECT id, tenant_id, status_id, next_billing_at, updated_at FROM clinic_subscriptions ORDER BY id"
-    )
     clinic_subscription_charges = await api.fetch_all(
         "SELECT id, payment_status, updated_at FROM clinic_subscription_charges ORDER BY id"
     )
-    return subscriptions + components + clinic_subscriptions + clinic_subscription_charges
+    return subscriptions + components + clinic_subscription_charges
 
 
 @pytest.fixture
 async def seeded(api: Api) -> Api:
     await api.insert(name="Base")  # the subscription with id 1
     await insert_component(api.engine, code="base", id=UUID(COMPONENT_ID))
-    clinic_subscription_id = await api.insert_clinic_subscription(subscription_id=1)  # id 1
-    # Resolved (not pending), so cancel_clinic_subscription is still eligible in the "exactly its
-    # own permission" battery (a pending one would reject the cancel with 409).
+    # Resolved (not pending): the sync-on-read never needs to reach the payments stub for it.
     await api.insert_clinic_subscription_charge(
-        clinic_subscription_id=clinic_subscription_id,
+        clinic_subscription_id=CLINIC_SUBSCRIPTION_ID,
+        tenant_id=CLINIC_SUBSCRIPTION_TENANT_ID,
         period=date(2026, 11, 10),
         payment_status="approved",
     )

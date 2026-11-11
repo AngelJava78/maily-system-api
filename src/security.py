@@ -21,12 +21,11 @@ SUBSCRIPTIONS_WRITE = "subscriptions:write"
 SUBSCRIPTIONS_UPDATE = "subscriptions:update"
 SUBSCRIPTIONS_DELETE = "subscriptions:delete"
 
-# Permissions of the operations on the clinic subscriptions (spec 006, contracts/permission-matrix.md).
+# Permissions of the operations on clinic subscription charges (spec 010, contracts/permission-matrix.md).
+# `READ` (listing/consulting the charge history) is a System-type role, checked with /check.
+# `CHARGE` is checked with /me (require_caller) instead, because it must also carry the caller's
+# own tenant_id, to compare against the one Clinics reports (research R1, FR-026).
 CLINIC_SUBSCRIPTIONS_READ = "clinic_subscriptions:read"
-CLINIC_SUBSCRIPTIONS_WRITE = "clinic_subscriptions:write"
-CLINIC_SUBSCRIPTIONS_DELETE = "clinic_subscriptions:delete"
-# Unlike the other three (a System-type role, checked with /check), this one is checked with /me
-# (require_caller) because it must also carry the caller's own tenant_id (research R1, FR-030).
 CLINIC_SUBSCRIPTIONS_CHARGE = "clinic_subscriptions:charge"
 
 # Permission of the dashboard operation (specs/003-platform-dashboard/contracts/permission-matrix.md).

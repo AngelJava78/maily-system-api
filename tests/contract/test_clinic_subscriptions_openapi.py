@@ -1,4 +1,5 @@
-"""The OpenAPI document that the application publishes, for the clinic subscriptions (spec 006).
+"""The OpenAPI document that the application publishes, for charging a clinic subscription
+(spec 010).
 
 Hand-transcribed against `contracts/openapi-clinic-subscriptions.yaml` (no YAML library is part of
 the stack), same pattern as `tests/contract/test_openapi_contract.py` for the subscriptions catalog.
@@ -10,13 +11,24 @@ from src.main import create_app
 
 # operation_id -> (method, path, permission, status codes the contract promises)
 OPERATIONS = {
-    "list_clinic_subscriptions": ("get", "/api/v1/clinic-subscriptions", "clinic_subscriptions:read", {"200", "401", "403", "503"}),
-    "create_clinic_subscription": ("post", "/api/v1/clinic-subscriptions", "clinic_subscriptions:write", {"201", "401", "403", "409", "422", "503"}),
-    "get_clinic_subscription": ("get", "/api/v1/clinic-subscriptions/{clinic_subscription_id}", "clinic_subscriptions:read", {"200", "401", "403", "404", "422", "503"}),
-    "cancel_clinic_subscription": ("delete", "/api/v1/clinic-subscriptions/{clinic_subscription_id}", "clinic_subscriptions:delete", {"204", "401", "403", "404", "409", "422", "503"}),
-    "list_clinic_subscription_charges": ("get", "/api/v1/clinic-subscriptions/{clinic_subscription_id}/charges", "clinic_subscriptions:read", {"200", "401", "403", "404", "422", "503"}),
-    "charge_clinic_subscription": ("post", "/api/v1/clinic-subscriptions/{clinic_subscription_id}/charges", "clinic_subscriptions:charge", {"201", "401", "403", "404", "409", "503"}),
-    "get_clinic_subscription_charge": ("get", "/api/v1/clinic-subscriptions/{clinic_subscription_id}/charges/{charge_id}", "clinic_subscriptions:read", {"200", "401", "403", "404", "422", "503"}),
+    "charge_clinic_subscription": (
+        "post",
+        "/api/v1/clinic-subscriptions/{clinic_subscription_id}/charges",
+        "clinic_subscriptions:charge",
+        {"201", "401", "403", "404", "409", "422", "503"},
+    ),
+    "list_clinic_subscription_charges": (
+        "get",
+        "/api/v1/clinic-subscriptions/{clinic_subscription_id}/charges",
+        "clinic_subscriptions:read",
+        {"200", "401", "403", "422", "503"},
+    ),
+    "get_clinic_subscription_charge": (
+        "get",
+        "/api/v1/clinic-subscriptions/{clinic_subscription_id}/charges/{charge_id}",
+        "clinic_subscriptions:read",
+        {"200", "401", "403", "404", "422", "503"},
+    ),
 }
 
 
@@ -33,7 +45,7 @@ def operations_of(schema: dict) -> dict[str, tuple[str, str, dict]]:
     }
 
 
-def test_it_has_exactly_the_seven_operations_of_the_contract(schema):
+def test_it_has_exactly_the_three_operations_of_the_contract(schema):
     found = {
         operation_id: (method, path)
         for operation_id, (method, path, _) in operations_of(schema).items()
@@ -65,7 +77,7 @@ def test_each_operation_documents_the_responses_the_contract_promises(schema, op
 def test_the_schemas_of_the_contract_exist(schema):
     schemas = schema["components"]["schemas"]
 
-    for name in ("ClinicSubscriptionRead", "ClinicSubscriptionCreate", "ClinicSubscriptionChargeRead"):
+    for name in ("ClinicSubscriptionChargeCreate", "ClinicSubscriptionChargeRead"):
         assert name in schemas, name
 
 
@@ -75,7 +87,7 @@ def test_the_amount_is_published_as_an_integer_never_a_string(schema):
     assert read["properties"]["amount"]["type"] == "integer"
 
 
-def test_create_requires_tenant_id_subscription_id_and_billing_cycle(schema):
-    create = schema["components"]["schemas"]["ClinicSubscriptionCreate"]
+def test_create_requires_only_the_period(schema):
+    create = schema["components"]["schemas"]["ClinicSubscriptionChargeCreate"]
 
-    assert set(create["required"]) == {"tenant_id", "subscription_id", "billing_cycle"}
+    assert set(create["required"]) == {"period"}

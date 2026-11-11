@@ -9,13 +9,10 @@ from uuid import UUID
 
 from src.messages import (
     AUTHORIZATION_UNAVAILABLE_MESSAGE,
-    CLINIC_SUBSCRIPTION_ALREADY_ACTIVE_MESSAGE,
-    CLINIC_SUBSCRIPTION_ALREADY_CANCELLED_MESSAGE,
+    CLINIC_SUBSCRIPTION_CHARGE_ALREADY_APPROVED_MESSAGE,
     CLINIC_SUBSCRIPTION_CHARGE_CONFLICT_MESSAGE,
     CLINIC_SUBSCRIPTION_CHARGE_NOT_FOUND_MESSAGE,
-    CLINIC_SUBSCRIPTION_CHARGE_PENDING_MESSAGE,
-    CLINIC_SUBSCRIPTION_CHARGE_REQUIRES_ACTIVE_PLAN_MESSAGE,
-    CLINIC_SUBSCRIPTION_NOT_CHARGEABLE_MESSAGE,
+    CLINIC_SUBSCRIPTION_CHECK_UNAVAILABLE_MESSAGE,
     CLINIC_SUBSCRIPTION_NOT_FOUND_MESSAGE,
     CLINIC_SUBSCRIPTION_PLAN_NOT_ACTIVE_MESSAGE,
     CLINICS_CHECK_UNAVAILABLE_MESSAGE,
@@ -283,22 +280,34 @@ class MonitoredComponentDataError(AppError):
         }
 
 
-# --- Clinic subscriptions (spec 006) ---
+# --- Clinic subscription charges (spec 010-cobro-real-suscripciones) ---
 
 
 class ClinicSubscriptionNotFoundError(AppError):
-    """The clinic subscription does not exist, is cancelled, or (only for `charge`) belongs to
-    another organization than the caller's (FR-030: never revealed which of the three it was)."""
+    """Clinics reported that the clinic subscription does not exist, is cancelled, or belongs to
+    another organization than the caller's (FR-026: never revealed which of the three it was)."""
 
     code = ErrorCode.CLINIC_SUBSCRIPTION_NOT_FOUND
     status_code = 404
 
-    def __init__(self, clinic_subscription_id: int) -> None:
+    def __init__(self, clinic_subscription_id: UUID) -> None:
         super().__init__(
             CLINIC_SUBSCRIPTION_NOT_FOUND_MESSAGE.format(
                 clinic_subscription_id=clinic_subscription_id
             )
         )
+
+
+class ClinicSubscriptionCheckUnavailableError(AppError):
+    """Clinics did not answer as expected while resolving a clinic subscription: fail closed, the
+    charge never reaches Pagos (FR-004). Reuses `clinics_check_unavailable` (spec 001): same
+    situation ("could not check something with Clinics"), not a new code."""
+
+    code = ErrorCode.CLINICS_CHECK_UNAVAILABLE
+    status_code = 503
+
+    def __init__(self) -> None:
+        super().__init__(CLINIC_SUBSCRIPTION_CHECK_UNAVAILABLE_MESSAGE)
 
 
 class ClinicSubscriptionChargeNotFoundError(AppError):
@@ -312,82 +321,29 @@ class ClinicSubscriptionChargeNotFoundError(AppError):
 
 
 class ClinicSubscriptionPlanNotActiveError(AppError):
-    """The plan to assign does not exist or is not Active (FR-003)."""
+    """The plan Clinics reported for this clinic subscription does not exist in the catalog or is
+    not Active (FR-005)."""
 
     code = ErrorCode.CLINIC_SUBSCRIPTION_PLAN_NOT_ACTIVE
     status_code = 409
 
-    def __init__(self, subscription_id: int) -> None:
-        super().__init__(
-            CLINIC_SUBSCRIPTION_PLAN_NOT_ACTIVE_MESSAGE.format(subscription_id=subscription_id)
-        )
-
-
-class ClinicSubscriptionAlreadyActiveError(AppError):
-    """The clinic already has an Active or pending-resolution subscription (FR-004)."""
-
-    code = ErrorCode.CLINIC_SUBSCRIPTION_ALREADY_ACTIVE
-    status_code = 409
-
     def __init__(self) -> None:
-        super().__init__(CLINIC_SUBSCRIPTION_ALREADY_ACTIVE_MESSAGE)
+        super().__init__(CLINIC_SUBSCRIPTION_PLAN_NOT_ACTIVE_MESSAGE)
 
 
-class ClinicSubscriptionChargePendingError(AppError):
-    """The current charge is still pending (blocks a new charge or cancelling, research R7)."""
+class ClinicSubscriptionChargeAlreadyApprovedError(AppError):
+    """An `approved` charge already exists for this `(clinic_subscription_id, period)` (FR-011).
 
-    code = ErrorCode.CLINIC_SUBSCRIPTION_CHARGE_PENDING
-    status_code = 409
-
-    def __init__(self, clinic_subscription_id: int) -> None:
-        super().__init__(
-            CLINIC_SUBSCRIPTION_CHARGE_PENDING_MESSAGE.format(
-                clinic_subscription_id=clinic_subscription_id
-            )
-        )
-
-
-class ClinicSubscriptionNotChargeableError(AppError):
-    """The subscription is Cancelled (research R7): a new charge is refused without calling Pagos.
-
-    A `pending` or `rejected` existing charge of the same period does NOT raise this: retrying
-    reaches Pagos again with the same deterministic Idempotency-Key (historia 2, escenario 2),
-    which is itself idempotent — there is nothing to block locally.
+    A `pending`, `rejected` or `cancelled` existing charge of the same period does NOT raise this:
+    retrying reaches Pagos again with the same deterministic Idempotency-Key (historia 1,
+    escenario 2), which is itself idempotent — there is nothing to block locally.
     """
 
-    code = ErrorCode.CLINIC_SUBSCRIPTION_CHARGE_PENDING
-    status_code = 409
-
-    def __init__(self, clinic_subscription_id: int) -> None:
-        super().__init__(
-            CLINIC_SUBSCRIPTION_NOT_CHARGEABLE_MESSAGE.format(
-                clinic_subscription_id=clinic_subscription_id
-            )
-        )
-
-
-class ClinicSubscriptionAlreadyCancelledError(AppError):
-    """The clinic subscription is already Cancelled (historia 5, escenario 3)."""
-
-    code = ErrorCode.CLINIC_SUBSCRIPTION_ALREADY_CANCELLED
-    status_code = 409
-
-    def __init__(self, clinic_subscription_id: int) -> None:
-        super().__init__(
-            CLINIC_SUBSCRIPTION_ALREADY_CANCELLED_MESSAGE.format(
-                clinic_subscription_id=clinic_subscription_id
-            )
-        )
-
-
-class ClinicSubscriptionChargeRequiresActivePlanError(AppError):
-    """The assigned plan is no longer Active: a charge cannot be computed (Edge Cases)."""
-
-    code = ErrorCode.CLINIC_SUBSCRIPTION_CHARGE_REQUIRES_ACTIVE_PLAN
+    code = ErrorCode.CLINIC_SUBSCRIPTION_CHARGE_ALREADY_APPROVED
     status_code = 409
 
     def __init__(self) -> None:
-        super().__init__(CLINIC_SUBSCRIPTION_CHARGE_REQUIRES_ACTIVE_PLAN_MESSAGE)
+        super().__init__(CLINIC_SUBSCRIPTION_CHARGE_ALREADY_APPROVED_MESSAGE)
 
 
 class PaymentNotAuthorizedError(AppError):

@@ -36,7 +36,9 @@ from src.integrations.health_probe import HealthProbeClient
 from src.integrations.payments_api import PaymentsApiClient
 from src.integrations.users_api import UsersApiClient
 from src.models.monitored_component import MonitoredComponent
-from src.repositories.clinic_subscription_repository import ClinicSubscriptionRepository
+from src.repositories.clinic_subscription_charge_repository import (
+    ClinicSubscriptionChargeRepository,
+)
 from src.repositories.database_health_repository import DatabaseHealthRepository
 from src.repositories.monitored_component_repository import MonitoredComponentRepository
 from src.repositories.subscription_repository import SubscriptionRepository
@@ -94,10 +96,10 @@ async def get_payments_api_client(
     )
 
 
-async def get_clinic_subscription_repository(
+async def get_clinic_subscription_charge_repository(
     session: Annotated[AsyncSession, Depends(get_session)],
-) -> ClinicSubscriptionRepository:
-    return ClinicSubscriptionRepository(session)
+) -> ClinicSubscriptionChargeRepository:
+    return ClinicSubscriptionChargeRepository(session)
 
 
 async def get_subscription_repository(
@@ -115,11 +117,14 @@ async def get_subscription_service(
 
 
 async def get_clinic_subscription_service(
-    repository: Annotated[ClinicSubscriptionRepository, Depends(get_clinic_subscription_repository)],
+    repository: Annotated[
+        ClinicSubscriptionChargeRepository, Depends(get_clinic_subscription_charge_repository)
+    ],
     subscription_repository: Annotated[SubscriptionRepository, Depends(get_subscription_repository)],
+    clinics_api: Annotated[ClinicsApiClient, Depends(get_clinics_api_client)],
     payments_api: Annotated[PaymentsApiClient, Depends(get_payments_api_client)],
 ) -> ClinicSubscriptionService:
-    return ClinicSubscriptionService(repository, subscription_repository, payments_api)
+    return ClinicSubscriptionService(repository, subscription_repository, clinics_api, payments_api)
 
 
 # Immutable and stateless, so one instance serves the whole application.

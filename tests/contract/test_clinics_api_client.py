@@ -1,4 +1,6 @@
-"""ClinicsApiClient against the simulation of the clinics API (contracts/clinics-api-integration.md).
+"""ClinicsApiClient against the simulation of the clinics API: the counts
+(specs/001-subscriptions-api/contracts/clinics-api-integration.md) and, since spec 010, the clinic
+subscription lookup (specs/010-cobro-real-suscripciones/contracts/clinics-api-integration.md).
 
 The real client code runs; only the network is replaced by an in-memory transport.
 """
@@ -9,11 +11,13 @@ import time
 import httpx
 import pytest
 
-from src.integrations.clinics_api import ClinicsApiClient
-from src.integrations.errors import ClinicsApiUnavailable
+from src.integrations.clinics_api import ClinicSubscriptionInfo, ClinicsApiClient
+from src.integrations.errors import ClinicsApiNotFound, ClinicsApiUnavailable
 from tests.helpers import CLINICS_BASE_URL
 
 TOKEN = "SECRET-TOKEN-456"
+TENANT_ID = "3f1b1e2a-7c9d-4e2a-9c3e-1a2b3c4d5e6f"
+CLINIC_SUBSCRIPTION_ID = "6b1b1e2a-7c9d-4e2a-9c3e-1a2b3c4d5e70"
 
 
 async def set_counts(stub: httpx.AsyncClient, counts: dict[int, int]) -> None:
@@ -150,3 +154,99 @@ async def test_the_token_never_appears_in_an_exception_or_in_the_logs(
 
     assert all(TOKEN not in message for message in messages)
     assert TOKEN not in caplog.text
+
+
+# --- get_clinic_subscription (spec 010, research R6) ---
+
+
+async def register_clinic_token(stub: httpx.AsyncClient, token: str, tenant_id: str | None) -> None:
+    response = await stub.post("/__test__/tokens", json={"token": token, "tenant_id": tenant_id})
+    assert response.status_code == 200
+
+
+async def register_clinic_subscription(
+    stub: httpx.AsyncClient, clinic_subscription_id: str, *, tenant_id: str, subscription_id: int,
+    billing_cycle: str = "monthly",
+) -> None:
+    response = await stub.post(
+        "/__test__/clinic-subscriptions",
+        json={
+            "id": clinic_subscription_id,
+            "tenant_id": tenant_id,
+            "subscription_id": subscription_id,
+            "billing_cycle": billing_cycle,
+        },
+    )
+    assert response.status_code == 200
+
+
+async def add_clinic_subscription_fault(
+    stub: httpx.AsyncClient, mode: str, delay: float = 30
+) -> None:
+    response = await stub.post(
+        "/__test__/faults",
+        json={"mode": mode, "count": 1, "delay_seconds": delay, "operation": "clinic_subscription"},
+    )
+    assert response.status_code == 200
+
+
+async def test_get_clinic_subscription_returns_what_clinics_reports(clinics_stub, clinics_api_client):
+    await register_clinic_token(clinics_stub, TOKEN, TENANT_ID)
+    await register_clinic_subscription(
+        clinics_stub, CLINIC_SUBSCRIPTION_ID, tenant_id=TENANT_ID, subscription_id=2, billing_cycle="annual"
+    )
+
+    info = await clinics_api_client.get_clinic_subscription(TOKEN, CLINIC_SUBSCRIPTION_ID)
+
+    assert info == ClinicSubscriptionInfo(
+        tenant_id=TENANT_ID, subscription_id=2, billing_cycle="annual"
+    )
+
+
+async def test_get_clinic_subscription_unknown_id_is_not_found(clinics_stub, clinics_api_client):
+    await register_clinic_token(clinics_stub, TOKEN, TENANT_ID)
+
+    with pytest.raises(ClinicsApiNotFound):
+        await clinics_api_client.get_clinic_subscription(TOKEN, CLINIC_SUBSCRIPTION_ID)
+
+
+async def test_get_clinic_subscription_of_another_organization_is_not_found(
+    clinics_stub, clinics_api_client
+):
+    await register_clinic_token(clinics_stub, TOKEN, "00000000-0000-4000-8000-000000000099")
+    await register_clinic_subscription(
+        clinics_stub, CLINIC_SUBSCRIPTION_ID, tenant_id=TENANT_ID, subscription_id=2
+    )
+
+    with pytest.raises(ClinicsApiNotFound):
+        await clinics_api_client.get_clinic_subscription(TOKEN, CLINIC_SUBSCRIPTION_ID)
+
+
+async def test_get_clinic_subscription_without_an_organization_is_not_found(
+    clinics_stub, clinics_api_client
+):
+    await register_clinic_token(clinics_stub, TOKEN, None)
+    await register_clinic_subscription(
+        clinics_stub, CLINIC_SUBSCRIPTION_ID, tenant_id=TENANT_ID, subscription_id=2
+    )
+
+    with pytest.raises(ClinicsApiNotFound):
+        await clinics_api_client.get_clinic_subscription(TOKEN, CLINIC_SUBSCRIPTION_ID)
+
+
+async def test_get_clinic_subscription_of_an_unregistered_token_is_not_found(
+    clinics_stub, clinics_api_client
+):
+    # The client always sends a token (it is the caller's own, forwarded untouched); one Clinics
+    # has never seen resolves to no known organization, same as "no organization at all" (FR-003).
+    with pytest.raises(ClinicsApiNotFound):
+        await clinics_api_client.get_clinic_subscription(TOKEN, CLINIC_SUBSCRIPTION_ID)
+
+
+@pytest.mark.parametrize("mode", ["unavailable", "forbidden", "malformed", "not_json", "redirect"])
+async def test_get_clinic_subscription_a_failure_is_unavailable(clinics_stub, clinics_api_client, mode):
+    await register_clinic_token(clinics_stub, TOKEN, TENANT_ID)
+    await add_clinic_subscription_fault(clinics_stub, mode)
+
+    with pytest.raises(ClinicsApiUnavailable):
+        await clinics_api_client.get_clinic_subscription(TOKEN, CLINIC_SUBSCRIPTION_ID)

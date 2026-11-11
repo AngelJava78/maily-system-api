@@ -31,6 +31,14 @@ class ClinicsApiUnavailable(IntegrationError):
         super().__init__("The clinics API did not answer as expected")
 
 
+class ClinicsApiNotFound(IntegrationError):
+    """Clinics answered that a clinic subscription does not exist, is cancelled, or belongs to
+    another organization than the caller's (indistinguishable from here, FR-003)."""
+
+    def __init__(self) -> None:
+        super().__init__("The clinics API reported the clinic subscription as not found")
+
+
 class DashboardSourceUnavailable(IntegrationError):
     """A dashboard data source did not answer as expected: that indicator is not available."""
 

@@ -71,13 +71,14 @@ límites de la clínica y otras funcionalidades.
   sus mensajes están en español.
 - `clinics_count` lo aporta el API de clínicas en cada lectura; si no está disponible vale `null`.
 
-La **suscripción de una clínica** (`/api/v1/clinic-subscriptions`, spec 006) liga una clínica
-(`tenant_id`) con un plan del catálogo y cobra ese plan contra Mercado Pago a través de
-`mailySoft-pagos`. Quien administra la plataforma la asigna, modifica y cancela
-(`clinic_subscriptions:read/write/delete`, igual patrón que el catálogo); solo una persona de la
-propia clínica puede disparar su cobro (`clinic_subscriptions:charge`), porque Pagos resuelve a quién
-cobra únicamente con el token de quien llama. El historial de cobros (rechazados incluidos) se
-conserva; un cobro `pending` se sincroniza con Pagos al consultarlo.
+El **cobro de una suscripción de clínica** (`/api/v1/clinic-subscriptions/{id}/charges`, spec 010)
+cobra, contra Mercado Pago a través de `mailySoft-pagos`, una suscripción cuya asignación (clínica,
+plan, ciclo) decide el futuro microservicio Clínicas — este servicio solo la consulta (por su
+identificador opaco), nunca la guarda. Solo una persona de la propia clínica puede disparar el cobro
+(`clinic_subscriptions:charge`), porque Pagos resuelve a quién cobra únicamente con el token de quien
+llama; quien administra la plataforma solo consulta el historial (`clinic_subscriptions:read`). El
+historial (rechazados incluidos) se conserva; un cobro `pending` se sincroniza con Pagos al
+consultarlo.
 
 El **dashboard de plataforma** (`GET /api/v1/dashboard`, «Panel de Maily») es de solo lectura y no
 se guarda en caché: devuelve en una sola consulta seis indicadores y las clínicas más recientes (sin
@@ -102,8 +103,8 @@ OPENAPI_TAGS = [
     {
         "name": "clinic-subscriptions",
         "description": (
-            "Suscripción de una clínica a un plan del catálogo, su ciclo de cobro y su cobro "
-            "contra Mercado Pago a través de mailySoft-pagos."
+            "Cobro, contra Mercado Pago a través de mailySoft-pagos, de una suscripción de "
+            "clínica que decide el futuro microservicio Clínicas; y su historial de cobros."
         ),
     },
     {

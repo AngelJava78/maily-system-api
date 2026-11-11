@@ -93,15 +93,12 @@ def test_the_error_codes_are_exactly_the_seventeen_of_the_catalog():
         "monitored_component_code_already_exists",
         # spec 006-add-subscription-type: the subscription type catalog
         "subscription_type_not_found",
-        # spec 006-cobro-real-suscripciones: clinic subscriptions and their charges against mailySoft-pagos
+        # spec 010-cobro-real-suscripciones: charging a clinic subscription against mailySoft-pagos
         "password_change_required",
         "clinic_subscription_not_found",
         "clinic_subscription_charge_not_found",
-        "clinic_subscription_already_active",
         "clinic_subscription_plan_not_active",
-        "clinic_subscription_charge_pending",
-        "clinic_subscription_already_cancelled",
-        "clinic_subscription_charge_requires_active_plan",
+        "clinic_subscription_charge_already_approved",
         "payment_not_authorized",
         "clinic_subscription_charge_conflict",
         "payments_unavailable",

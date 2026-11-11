@@ -49,12 +49,8 @@ PostgreSQL les pone el automático (`<tabla>_pkey`, `<tabla>_<columna>_key`, `<t
 | `monitored_components_sort_order_check` | El orden va de 0 a 9999 -- [spec 005-health-monitoring] |
 | `monitored_components_service_paths_check` | Un servicio tiene `ready_path` e `info_path` -- [spec 005-health-monitoring] |
 | `monitored_components_frontend_ready_path_check` | Un frontend no tiene `ready_path` -- [spec 005-health-monitoring] |
-| `clinic_subscription_statuses_name_key` | Los nombres del catálogo de estatus de la suscripción de clínica son únicos -- [spec 006-cobro-real-suscripciones] |
-| `clinic_subscriptions_billing_cycle_check` | El ciclo de cobro es `monthly` o `annual` -- [spec 006-cobro-real-suscripciones] |
-| `clinic_subscriptions_subscription_id_fkey`, `clinic_subscriptions_status_id_fkey` | El plan y el estatus deben existir -- [spec 006-cobro-real-suscripciones] |
-| `clinic_subscription_charges_amount_check` | El monto (centavos) es mayor que cero -- [spec 006-cobro-real-suscripciones] |
-| `clinic_subscription_charges_payment_status_check` | El estatus del pago es uno de los seis de Pagos -- [spec 006-cobro-real-suscripciones] |
-| `clinic_subscription_charges_clinic_subscription_id_fkey` | La suscripción de clínica debe existir -- [spec 006-cobro-real-suscripciones] |
+| `clinic_subscription_charges_amount_check` | El monto (centavos) es mayor que cero -- [spec 010-cobro-real-suscripciones] |
+| `clinic_subscription_charges_payment_status_check` | El estatus del pago es uno de los seis de Pagos -- [spec 010-cobro-real-suscripciones] |
 
 Los índices con nombre explícito son `subscriptions_name_not_deleted_key` (el servicio lo usa para
 traducir un nombre repetido a un 409) y `monitored_components_code_not_deleted_key` (traduce un código de
@@ -65,25 +61,25 @@ componente repetido a un 409) -- [spec 005-health-monitoring]; también llevan n
 (`subscriptions_clinics_limit_check`, spec 007) se nombran a propósito, porque PostgreSQL no da un
 nombre estable a una restricción de varias columnas.
 
-`clinic_subscriptions_one_active_per_tenant_key` (a lo sumo una suscripción Activa o con cobro
-pendiente de resolver por clínica) y `clinic_subscription_charges_one_per_period_key` (a lo sumo un
-cobro por suscripción de clínica y periodo, de la que depende la idempotencia de un reintento) son
-también índices con nombre explícito -- [spec 006-cobro-real-suscripciones]; los disparadores
-`clinic_subscriptions_set_updated_at` y `clinic_subscription_charges_set_updated_at` reutilizan
-`set_updated_at`. **`clinic_subscriptions` no tiene columna de cobro vigente**: sería una referencia
-circular con `clinic_subscription_charges`, que ya referencia `clinic_subscriptions`; el cobro
-vigente se lee como la fila más reciente de esa tabla.
+`clinic_subscription_charges_one_per_period_key` (a lo sumo un cobro por `clinic_subscription_id` y
+periodo, de la que depende la idempotencia de un reintento) es también un índice con nombre
+explícito -- [spec 010-cobro-real-suscripciones]; el disparador
+`clinic_subscription_charges_set_updated_at` reutiliza `set_updated_at`. **`clinic_subscription_id`
+no tiene clave foránea**: es un identificador opaco propiedad del futuro microservicio Clínicas
+(rediseño 2026-11-11, Principio IX); qué clínica tiene qué plan y con qué ciclo no es un esquema de
+este servicio.
 
 ## Esquema
 
 ```sql
 -- Esquema vigente tras 001-subscriptions-api (migraciones 0001, 0002), su corrección
 -- 004-correct-subscriptions-api (migración 0003), 005-health-monitoring (migración 0004),
--- 006-add-subscription-type (migración 0005), 007-add-clinics-limit (migración 0006) y
--- 008-subscription-modules-table (migración 0007), PostgreSQL 17. Es el contenido que entregan
--- esas migraciones y el que se refleja en project-definition/DATA_SCHEMA.md (esquema objetivo del
--- proyecto). `subscriptions` se muestra ya sin `module_keys` (movida a `subscription_modules`,
--- abajo) y con el tipo y el límite de clínicas; el delta que aplica 0007 está documentado en
+-- 006-add-subscription-type (migración 0005), 007-add-clinics-limit (migración 0006),
+-- 008-subscription-modules-table (migración 0007) y 010-cobro-real-suscripciones (migración 0008),
+-- PostgreSQL 17. Es el contenido que entregan esas migraciones y el que se refleja en
+-- project-definition/DATA_SCHEMA.md (esquema objetivo del proyecto). `subscriptions` se muestra ya
+-- sin `module_keys` (movida a `subscription_modules`, abajo) y con el tipo y el límite de
+-- clínicas; el delta que aplica 0007 está documentado en
 -- specs/008-subscription-modules-table/contracts/database-schema.sql.
 --
 -- Las claves primarias, únicas y foráneas y las restricciones CHECK de una sola columna NO se
@@ -256,59 +252,22 @@ CREATE TRIGGER monitored_components_set_updated_at
 	FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- ---------------------------------------------------------------------------------------------
--- Catálogo de estatus de la suscripción de clínica  -- [spec 006-cobro-real-suscripciones research R6]
--- Se administra a mano. 1 a 3 son del sistema (no se eliminan ni se renumeran); añadidos a mano
--- empiezan en 4.
--- ---------------------------------------------------------------------------------------------
-CREATE TABLE clinic_subscription_statuses (
-	id serial4 PRIMARY KEY,
-	name varchar(50) NOT NULL UNIQUE,
-	description text
-);
-
--- ---------------------------------------------------------------------------------------------
--- Suscripción de una clínica  -- [spec 006-cobro-real-suscripciones FR-001 a FR-007]
--- Liga una clínica (tenant_id, sin tabla de clínicas: Edge Cases) con un plan de `subscriptions`
--- (por id, sin copiar su precio ni sus límites), su ciclo de cobro y su próximo cobro.
--- ---------------------------------------------------------------------------------------------
-CREATE TABLE clinic_subscriptions (
-	id serial4 PRIMARY KEY,
-	tenant_id uuid NOT NULL,
-	subscription_id int4 NOT NULL REFERENCES subscriptions (id),
-	billing_cycle varchar(10) NOT NULL CHECK (billing_cycle IN ('monthly', 'annual')),
-	started_at timestamptz NOT NULL,
-	next_billing_at timestamptz NOT NULL, -- [FR-005] avanza un ciclo tras un cobro approved
-	status_id int4 NOT NULL DEFAULT 1 REFERENCES clinic_subscription_statuses (id), -- 1 = Activa
-	-- Sin columna de cobro vigente: sería una referencia circular con clinic_subscription_charges,
-	-- que ya referencia esta tabla. El cobro vigente es su fila más reciente.
-	created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- [FR-004] a lo sumo una suscripción Activa (1) o con cobro pendiente de resolver (2) por clínica.
-CREATE UNIQUE INDEX clinic_subscriptions_one_active_per_tenant_key ON clinic_subscriptions (tenant_id)
-	WHERE status_id IN (1, 2);
-CREATE INDEX clinic_subscriptions_tenant_id_idx ON clinic_subscriptions (tenant_id);
-CREATE INDEX clinic_subscriptions_status_id_idx ON clinic_subscriptions (status_id);
-
-CREATE TRIGGER clinic_subscriptions_set_updated_at
-	BEFORE UPDATE ON clinic_subscriptions
-	FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
--- ---------------------------------------------------------------------------------------------
--- Historial de cobros de una suscripción de clínica  -- [spec 006-cobro-real-suscripciones FR-008
--- a FR-018, research R3/R6]: una fila por intento (rechazados incluidos); un reintento del mismo
--- periodo actualiza la misma fila (misma Idempotency-Key).
+-- Historial de cobros de una suscripción de clínica  -- [spec 010-cobro-real-suscripciones FR-001
+-- a FR-012, research R3]: una fila por intento (rechazados incluidos); un reintento del mismo
+-- periodo actualiza la misma fila (misma Idempotency-Key). `clinic_subscription_id` es un
+-- identificador opaco del futuro microservicio Clínicas (rediseño 2026-11-11, Principio IX): qué
+-- clínica tiene qué plan y con qué ciclo no es un esquema de este servicio, por eso no hay FK.
 -- ---------------------------------------------------------------------------------------------
 CREATE TABLE clinic_subscription_charges (
 	id serial4 PRIMARY KEY,
-	clinic_subscription_id int4 NOT NULL REFERENCES clinic_subscriptions (id),
-	period date NOT NULL, -- la fecha de next_billing_at vigente cuando se disparó
-	amount int4 NOT NULL CHECK (amount > 0), -- [FR-009] centavos, nunca numeric
+	clinic_subscription_id uuid NOT NULL,
+	tenant_id uuid NOT NULL, -- copiado de la respuesta de Clínicas al momento de cobrar (FR-010)
+	period date NOT NULL, -- la fecha que envía quien dispara el cobro (FR-001)
+	amount int4 NOT NULL CHECK (amount > 0), -- [FR-006] centavos, nunca numeric
 	currency varchar(3) NOT NULL DEFAULT 'MXN',
 	payment_id uuid NOT NULL, -- el id que devolvió mailySoft-pagos
 	payment_status varchar(20) NOT NULL
-		CHECK (payment_status IN ('pending', 'approved', 'rejected', 'cancelled', 'partially_refunded', 'refunded')), -- [FR-018]
+		CHECK (payment_status IN ('pending', 'approved', 'rejected', 'cancelled', 'partially_refunded', 'refunded')), -- [FR-015]
 	checkout_url text,
 	idempotency_key varchar(100) NOT NULL,
 	created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -322,19 +281,9 @@ CREATE UNIQUE INDEX clinic_subscription_charges_one_per_period_key
 CREATE INDEX clinic_subscription_charges_payment_id_idx ON clinic_subscription_charges (payment_id);
 CREATE INDEX clinic_subscription_charges_clinic_subscription_id_idx
 	ON clinic_subscription_charges (clinic_subscription_id);
+CREATE INDEX clinic_subscription_charges_tenant_id_idx ON clinic_subscription_charges (tenant_id);
 
 CREATE TRIGGER clinic_subscription_charges_set_updated_at
 	BEFORE UPDATE ON clinic_subscription_charges
 	FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
--- ---------------------------------------------------------------------------------------------
--- Datos iniciales (migración 0005)  -- [spec 006-cobro-real-suscripciones research R6]
--- ---------------------------------------------------------------------------------------------
-INSERT INTO clinic_subscription_statuses (id, name, description) VALUES
-	(1, 'Activa',                          'Al día; sin ningún cobro pendiente de resolver.'),
-	(2, 'Con cobro pendiente de resolver', 'Tiene un cobro en curso (pending) o rechazado que admite un nuevo intento.'),
-	(3, 'Cancelada',                       'Baja lógica: ya no admite nuevos cobros.');
-
--- Los estatus añadidos a mano empiezan en 4.
-SELECT setval(pg_get_serial_sequence('clinic_subscription_statuses', 'id'), 3);
 ```

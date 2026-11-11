@@ -1,52 +1,61 @@
 # Implementation Plan: Cobro Real de Suscripciones de Clínicas
 
-**Branch**: `006-cobro-real-suscripciones` | **Date**: 2026-11-10 | **Spec**: [spec.md](spec.md)
+**Branch**: `010-cobro-real-suscripciones` | **Date**: 2026-11-11 (rediseñado) | **Spec**: [spec.md](spec.md)
 
-**Input**: Feature specification from `specs/006-cobro-real-suscripciones/spec.md`
+**Input**: Feature specification from `specs/010-cobro-real-suscripciones/spec.md`
 
 ## Summary
 
-Añadir el dominio «suscripción de clínica» (`clinic_subscriptions`, con su historial de cobros
-`clinic_subscription_charges`), que liga una clínica (`tenant_id`) a un plan del catálogo existente
-(`subscriptions`) con un ciclo de cobro, y la operación que cobra ese plan contra Mercado Pago a
-través de `mailySoft-pagos` (`POST /api/v1/payments`), resolviendo su estatus por consulta a
-`GET /api/v1/payments/{id}` (sin webhook de Pagos hacia este servicio). Dos permisos nuevos con
-audiencias distintas: `clinic_subscriptions:write/update/delete/read` (quien administra la
-plataforma, sin `tenant_id` propio) y `clinic_subscriptions:charge` (una persona de la propia
-clínica, cuyo `tenant_id` Pagos necesita para resolver a quién cobra). El cobro periódico automático
-queda fuera de esta especificación (FR-029).
+Añadir la operación que cobra, contra Mercado Pago a través de `mailySoft-pagos`
+(`POST /api/v1/payments`), una suscripción de clínica cuya asignación (clínica, plan, ciclo) **no
+vive en este servicio**: se consulta a un nuevo cliente del futuro microservicio Clínicas (ampliación
+del `ClinicsApiClient` ya existente desde la spec 001), igual que ya se consulta su conteo de
+clínicas por plan. `maily-system-api` guarda solo el **historial de cobros**
+(`clinic_subscription_charges`), resolviendo el estatus por consulta a Pagos (sin webhook hacia este
+servicio). Dos permisos con audiencias distintas: `clinic_subscriptions:read` (quien administra la
+plataforma, vía `/authorization/check`) y `clinic_subscriptions:charge` (una persona de la propia
+clínica, vía `/authorization/me`, porque Pagos necesita su `tenant_id`). El cobro periódico
+automático queda fuera de esta especificación (FR-030).
+
+**Rediseño (2026-11-11)**: la primera versión de este plan introducía una tabla propia
+`clinic_subscriptions` (clínica + plan + ciclo + estatus). El arquitecto del proyecto determinó que
+esa asignación pertenece a Clínicas (Principio IX), no a `maily-system-api`: este plan reemplaza esa
+tabla por una consulta de solo lectura a un cliente nuevo, y reduce el alcance local a cobrar +
+guardar el historial.
 
 ## Technical Context
 
 **Language/Version**: Python 3.14 (constitución, Stack Tecnológico)
 
-**Primary Dependencies**: FastAPI, SQLAlchemy 2.0 async (asyncpg), Pydantic v2, httpx (cliente de
-Pagos y de Usuarios), Alembic
+**Primary Dependencies**: FastAPI, SQLAlchemy 2.0 async (asyncpg), Pydantic v2, httpx (clientes de
+Pagos, de Usuarios y de Clínicas), Alembic
 
-**Storage**: PostgreSQL 17 — dos tablas nuevas (`clinic_subscription_statuses`,
-`clinic_subscriptions`, `clinic_subscription_charges`) sin tocar `subscriptions` ni
-`subscription_statuses`
+**Storage**: PostgreSQL 17 — una tabla nueva, `clinic_subscription_charges` (el historial de
+cobros); no se toca `subscriptions`, `subscription_statuses` ni ninguna tabla de las specs
+006-009 recién integradas
 
-**Testing**: pytest + pytest-asyncio; Repositories contra PostgreSQL 17 real (Docker); clientes de
-Pagos y de Usuarios sustituidos por dobles de prueba (unit) y por simulaciones HTTP propias
-(contract/e2e, igual que `tests/stubs/users_api` y `tests/stubs/clinics_api`)
+**Testing**: pytest + pytest-asyncio, en los dos niveles de la constitución v1.1.0 (rápido por
+defecto; lo que toca PostgreSQL real, marcado `slow`); clientes de Pagos, Usuarios y Clínicas
+sustituidos por dobles de prueba (unit) y por simulaciones HTTP propias (contract: ampliación de
+`tests/stubs/clinics_api/app.py`, nuevo `tests/stubs/payments_api/app.py`, ampliación de
+`tests/stubs/users_api/app.py`)
 
 **Target Platform**: Linux server (contenedor Docker), igual que el resto del servicio
 
 **Project Type**: Servicio web (API REST, un solo proyecto `src/` en capas — Principio I)
 
-**Performance Goals**: Sin objetivo propio distinto del resto del servicio; cada operación hace a lo
-sumo una llamada a Pagos y una a Usuarios (Principio VIII/IX: nunca en paralelo con la escritura
-local de un cobro, para no guardar un estado que Pagos no confirmó)
+**Performance Goals**: Sin objetivo propio distinto del resto del servicio; cada disparo de cobro
+hace a lo sumo una llamada a Clínicas, una a Usuarios y una a Pagos, en ese orden (nunca en paralelo
+con la escritura local, para no guardar un cobro que Pagos no confirmó)
 
-**Constraints**: Dinero en enteros (centavos) en la llamada a Pagos, aunque se guarde como
-`NUMERIC`/`Decimal` en las tablas propias (Principio VI); ninguna llamada a Pagos o a Usuarios se
-reintenta automáticamente (Principio IX); el `tenant_id` de un pago nunca se envía en el cuerpo a
-Pagos (Principio X de Pagos, fuera del control de este repositorio)
+**Constraints**: Dinero en centavos solo en la llamada a Pagos (Principio VI); ninguna llamada a
+Clínicas, Usuarios o Pagos se reintenta automáticamente (Principio IX); el `tenant_id` de un pago
+nunca se envía en el cuerpo a Pagos (Principio X de Pagos); la asignación clínica↔plan↔ciclo nunca
+se guarda en la base de datos de este servicio (Principio IX, consulta siempre, nunca copia)
 
-**Scale/Scope**: 3 recursos nuevos bajo `/api/v1/clinic-subscriptions` (CRUD + cancelar + cobrar) y 2
-de solo lectura de su historial de cobros; magnitud comparable a la spec 001 (6 operaciones) más la
-integración nueva con Pagos
+**Scale/Scope**: 3 operaciones bajo `/api/v1/clinic-subscriptions/{clinic_subscription_id}/charges`
+(crear/disparar, listar, consultar); una ampliación de contrato consumido (Clínicas) y dos clientes
+nuevos/ampliados (Pagos nuevo, Clínicas ampliado)
 
 ## Constitution Check
 
@@ -54,41 +63,40 @@ integración nueva con Pagos
 
 | Principio | Cumplimiento |
 |---|---|
-| I. Arquitectura en capas | `src/routers/clinic_subscriptions.py` → `src/services/clinic_subscription_service.py` → `src/repositories/clinic_subscription_repository.py` → `src/database/`; el cliente nuevo de Pagos vive en `src/integrations/payments_api.py`, solo lo invoca el Service (igual que `clinics_api.py` y `users_api.py`). Sin desviación. |
-| II. Modelos ORM vs DTOs | `src/models/clinic_subscription.py` y `src/models/clinic_subscription_charge.py` (ORM); `src/dtos/clinic_subscription.py` (DTOs de entrada/salida). Sin desviación. |
-| III. Asincronía de extremo a extremo | Cliente de Pagos con `httpx.AsyncClient` y `asyncio.timeout`, mismo patrón que `UsersApiClient`/`ClinicsApiClient`. Sin desviación. |
-| IV. Contratos OpenAPI | Nuevas operaciones documentadas con `x-required-permission`, paginadas (listar suscripciones de clínica y listar cobros); se amplía `openapi.json` del servicio. Sin desviación. |
-| V. Pruebas con pytest | Unitarias de `ClinicSubscriptionService` con `PaymentsApiClient`/`UsersApiClient` sustituidos por dobles; contrato de cada operación; Repositories contra PostgreSQL 17 real; `test_permission_coverage` ampliado. Sin desviación. |
-| VI. Esquema versionado con Alembic | Migración nueva (`0005_clinic_subscriptions.py` o el siguiente número libre), reversible; `project-definition/DATA_SCHEMA.md` actualizado con `-- [spec 006-cobro-real-suscripciones]`; dinero en `NUMERIC`, cómputo en centavos solo al llamar a Pagos. Sin desviación. |
+| I. Arquitectura en capas | `src/routers/clinic_subscriptions.py` → `src/services/clinic_subscription_service.py` → `src/repositories/clinic_subscription_charge_repository.py` → `src/database/`; el cliente de Pagos vive en `src/integrations/payments_api.py`; la ampliación del cliente de Clínicas, en el `clinics_api.py` ya existente. Sin desviación. |
+| II. Modelos ORM vs DTOs | `src/models/clinic_subscription_charge.py` (único modelo ORM nuevo: ya no hay `ClinicSubscription`/`ClinicSubscriptionStatus`, esa entidad no vive aquí); `src/dtos/clinic_subscription.py` (DTOs). Sin desviación. |
+| III. Asincronía de extremo a extremo | Cliente de Pagos y ampliación del de Clínicas con `httpx.AsyncClient`/`asyncio.timeout`, mismo patrón que `UsersApiClient`. Sin desviación. |
+| IV. Contratos OpenAPI | 3 operaciones documentadas con `x-required-permission`, el listado paginado. Sin desviación. |
+| V. Pruebas con pytest, dos niveles (constitución v1.1.0) | Unitarias (rápidas, por defecto) de `ClinicSubscriptionChargeService` con los tres clientes sustituidos por dobles; de contrato (`slow`) de cada operación contra la app real y las tres simulaciones; de Repository (`slow`) contra PostgreSQL 17 real; `test_permission_coverage` ampliado. `/speckit-implement` se limita al nivel rápido; la suite completa (incluida `slow`) se corre antes de integrar a `main`, responsabilidad de quien integra (sin pipeline de CI todavía). |
+| VI. Esquema versionado con Alembic | Una tabla nueva, migración `0008_clinic_subscription_charges.py` (siguiente número libre tras la `0007` de `008-subscription-modules-table`, ya en `main`), reversible; `project-definition/DATA_SCHEMA.md` actualizado con `-- [spec 010-cobro-real-suscripciones]`; dinero en centavos (`INTEGER`, no `NUMERIC`: es lo que se envió a Pagos, no un precio propio). Sin desviación. |
 | VII. Idioma | Identificadores, campos y códigos de error en inglés; mensajes y documentación en español. Sin desviación. |
-| VIII. Control de acceso delegado | **Desviación documentada, no de constitución**: casi todas las operaciones siguen usando `GET /api/v1/authorization/check` (una consulta, el permiso exacto); la operación de **cobrar** usa en su lugar `GET /api/v1/authorization/me` (también una sola consulta por petición, sin caché) porque, a diferencia de `check`, informa el `tenant_id` de quien llama, que esta operación necesita para decidir si coincide con el de la suscripción de clínica (FR-030) y para reenviar el token a Pagos. Sigue siendo **una sola llamada a Usuarios por petición** (el requisito literal de la constitución); `/me` ya es un contrato publicado de `mailySoft-usuarios` (spec 009, ampliado por la 019) y ya lo consumen `mailySoft-agenda` y `mailySoft-pagos`, así que no hace falta enmendar la constitución de este repositorio (no introduce una tecnología ni un patrón nuevo, solo una operación distinta del mismo API). Se documenta en `contracts/users-api-integration.md` junto al contrato de `check` ya existente. |
-| IX. Integraciones con otros APIs de MailySoft | Contrato de Pagos documentado en `contracts/payments-api-integration.md` con su simulación (`tests/stubs/payments_api`); direcciones y tiempos de espera en variables de entorno (`PAGOS_API_BASE_URL`, `PAGOS_API_TIMEOUT_SECONDS`); fallas de Pagos no filtran su cuerpo ni sus cabeceras. El cobro, al ser una escritura, **falla cerrado** si Pagos no responde (no es una dependencia «solo complementaria» como el conteo de clínicas): es coherente con el principio, que reserva la degradación a datos que no son el núcleo de la operación. |
+| VIII. Control de acceso delegado | Igual que la versión anterior de este plan: `clinic_subscriptions:read` (listar/consultar el historial) usa `GET /authorization/check`; `clinic_subscriptions:charge` (disparar el cobro) usa `GET /authorization/me` (una sola llamada, informa `tenant_id` para compararlo con el que reporta Clínicas). No exige enmendar la constitución (research R1 del plan original, sin cambios). |
+| IX. Integraciones con otros APIs de MailySoft | **Es el principio que motivó el rediseño**: la asignación clínica↔plan↔ciclo pertenece a Clínicas y se consulta, nunca se guarda aquí (como ya hace este servicio con `clinics_count`, spec 001). El contrato nuevo se documenta en `contracts/clinics-api-integration.md` (ampliación) con su simulación; el de Pagos en `contracts/payments-api-integration.md`. El cobro, al ser una escritura, falla cerrado ante cualquiera de las tres dependencias (Clínicas, Usuarios, Pagos): no es una degradación como la de `clinics_count` en la spec 001 (ese es un dato complementario de una lectura; esto es el núcleo de una escritura). |
 
-Ninguna desviación exige una entrada en «Complexity Tracking»: usar `/authorization/me` para una sola
-operación es un contrato ya existente y publicado, consumido con las mismas reglas (una consulta,
-sin caché, falla cerrado) que `/authorization/check`.
+Ninguna desviación exige una entrada en «Complexity Tracking».
 
 ## Project Structure
 
 ### Documentation (this feature)
 
 ```text
-specs/006-cobro-real-suscripciones/
+specs/010-cobro-real-suscripciones/
 ├── plan.md                                  # This file
 ├── research.md                              # Phase 0 output
 ├── data-model.md                            # Phase 1 output
 ├── quickstart.md                            # Phase 1 output
 ├── contracts/
-│   ├── openapi-clinic-subscriptions.yaml    # Contrato publicado (nuevas operaciones)
-│   ├── permission-matrix.md                 # Matriz operación → permiso de esta spec
-│   ├── users-api-integration.md             # Contrato consumido: check (ya existente) + me (nuevo)
+│   ├── openapi-clinic-subscriptions.yaml    # Contrato publicado (3 operaciones)
+│   ├── permission-matrix.md
+│   ├── users-api-integration.md             # check (existente) + me (nuevo, para charge)
+│   ├── clinics-api-integration.md           # NUEVO: ampliación del contrato de Clínicas
 │   ├── payments-api-integration.md          # Contrato consumido: POST/GET de mailySoft-pagos
-│   ├── error-catalog.md                     # Códigos de error nuevos de esta spec
-│   ├── database-schema.sql                  # DDL de referencia (como en la spec 001)
-│   └── e2e-stubs.md                         # Simulaciones de Usuarios (ampliada) y de Pagos (nueva)
+│   ├── error-catalog.md
+│   ├── database-schema.sql
+│   └── e2e-stubs.md
 ├── checklists/
 │   └── requirements.md
-└── tasks.md                                 # Phase 2 output (/speckit-tasks)
+└── tasks.md
 ```
 
 ### Source Code (repository root)
@@ -96,53 +104,49 @@ specs/006-cobro-real-suscripciones/
 ```text
 src/
 ├── models/
-│   ├── clinic_subscription.py              # NUEVO: ClinicSubscription (ORM)
-│   ├── clinic_subscription_charge.py       # NUEVO: ClinicSubscriptionCharge (ORM)
-│   └── clinic_subscription_status.py       # NUEVO: catálogo (Activa/con cobro pendiente/Cancelada)
+│   └── clinic_subscription_charge.py        # NUEVO: único modelo ORM de esta spec
 ├── dtos/
-│   └── clinic_subscription.py              # NUEVO: Create/Read/ChargeRead/… (Pydantic v2)
+│   └── clinic_subscription.py               # NUEVO: ChargeCreate/ChargeRead
 ├── integrations/
-│   ├── payments_api.py                     # NUEVO: PaymentsApiClient (create_payment, get_payment)
-│   ├── users_api.py                        # AMPLIADO: get_current_access (para /me)
-│   └── errors.py                           # AMPLIADO: PaymentsApiUnavailable, PaymentsApiRejectedToken
+│   ├── clinics_api.py                       # AMPLIADO: get_clinic_subscription(...)
+│   ├── payments_api.py                      # NUEVO: PaymentsApiClient
+│   ├── users_api.py                         # AMPLIADO: get_current_access (para /me)
+│   └── errors.py                            # AMPLIADO: ClinicsApiNotFound, Payments*
 ├── repositories/
-│   └── clinic_subscription_repository.py   # NUEVO
+│   └── clinic_subscription_charge_repository.py   # NUEVO
 ├── services/
-│   ├── clinic_subscription_service.py      # NUEVO: asignar, listar, consultar, cancelar, cobrar, sincronizar
-│   └── authorization_service.py            # AMPLIADO: require_as_caller (usa /me, devuelve CallerAccess)
+│   ├── clinic_subscription_service.py       # NUEVO: cobrar, listar, consultar, sincronizar
+│   └── authorization_service.py             # AMPLIADO: require_as_caller (usa /me)
 ├── routers/
-│   └── clinic_subscriptions.py             # NUEVO: /api/v1/clinic-subscriptions
-├── security.py                              # AMPLIADO: permisos nuevos + dependencia basada en /me
-├── exceptions.py                            # AMPLIADO
-└── messages.py                              # AMPLIADO
+│   └── clinic_subscriptions.py              # NUEVO: /api/v1/clinic-subscriptions/{id}/charges
+├── security.py                              # AMPLIADO
+├── exceptions.py / messages.py              # AMPLIADOS
 
 alembic/versions/
-└── 0005_clinic_subscriptions.py            # NUEVO (número exacto: el siguiente libre tras 0004)
+└── 0008_clinic_subscription_charges.py      # NUEVO
 
 tests/
 ├── contract/
 │   ├── test_clinic_subscriptions_api.py
 │   ├── test_clinic_subscriptions_access_control.py
 │   ├── test_clinic_subscriptions_openapi.py
-│   └── test_payments_api_client.py          # (junto a test_users_api_client.py, test_clinics_api_client.py)
+│   ├── test_payments_api_client.py
+│   └── test_clinics_api_client.py            # AMPLIADO: get_clinic_subscription
 ├── integration/
-│   ├── test_clinic_subscription_repository.py
+│   ├── test_clinic_subscription_charge_repository.py
 │   └── test_clinic_subscriptions_migration.py
 ├── unit/
-│   ├── test_clinic_subscription_service.py
-│   └── test_clinic_subscription_dtos.py
+│   └── test_clinic_subscription_service.py
 └── stubs/
-    └── payments_api/
-        └── app.py                            # NUEVO, junto a tests/stubs/users_api (ampliado) y clinics_api
+    ├── payments_api/app.py                   # NUEVO
+    └── clinics_api/app.py                    # AMPLIADO: get_clinic_subscription
 ```
 
-**Structure Decision**: Un solo proyecto (`src/` en capas, Principio I); no hay frontend ni un
-segundo servicio que esta especificación introduzca. Cada capa nueva sigue exactamente los mismos
-directorios y el mismo patrón de nombres que `subscriptions` (spec 001) y las integraciones ya
-existentes (`clinics_api.py`, `users_api.py`), por lo que no se introduce ninguna carpeta ni patrón
-nuevo de organización.
+**Structure Decision**: Un solo proyecto (`src/` en capas, Principio I); sin frontend ni un segundo
+servicio propio. Más pequeño que la versión anterior de este plan: sin `ClinicSubscription`,
+`ClinicSubscriptionStatus`, su Repository de CRUD ni sus 4 operaciones de administración (ahora
+responsabilidad de Clínicas).
 
 ## Complexity Tracking
 
-*Sin violaciones que justificar: ver la fila del Principio VIII en la tabla anterior, que explica por
-qué usar `/authorization/me` para la operación de cobro no es una desviación de la constitución.*
+*Sin violaciones que justificar.*

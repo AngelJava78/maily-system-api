@@ -1,8 +1,7 @@
 from datetime import date, datetime
-from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import CheckConstraint, Date, DateTime, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,15 +15,15 @@ CLINIC_SUBSCRIPTION_CHARGES_ONE_PER_PERIOD_INDEX = "clinic_subscription_charges_
 # service only ever stores a translation of what Pagos answered, never an invented status.
 PAYMENT_STATUSES = ("pending", "approved", "rejected", "cancelled", "partially_refunded", "refunded")
 
-if TYPE_CHECKING:
-    from src.models.clinic_subscription import ClinicSubscription
-
 
 class ClinicSubscriptionCharge(Base):
-    """One charge attempt of a clinic subscription against Pagos (full history, research R3/R6).
+    """One charge attempt against Pagos for a clinic subscription (full history, research R3).
 
-    A retry of the same period updates this same row (same `clinic_subscription_id` + `period`);
-    a new period (after an approved charge advances `next_billing_at`) is a new row.
+    `clinic_subscription_id` is an opaque identifier owned by the future Clinics microservice
+    (Principle IX, rediseño 2026-11-11): this service never stores the clinic/plan/cycle
+    assignment itself, only references it by this id, with no local foreign key. `tenant_id` is a
+    copy of what Clinics reported at charge time, kept only so the history can be filtered by
+    organization without asking Clinics again (FR-010).
     """
 
     __tablename__ = "clinic_subscription_charges"
@@ -38,9 +37,8 @@ class ClinicSubscriptionCharge(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    clinic_subscription_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("clinic_subscriptions.id")
-    )
+    clinic_subscription_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+    tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
     period: Mapped[date] = mapped_column(Date)
     amount: Mapped[int] = mapped_column(Integer)  # cents (research R2); never NUMERIC
     currency: Mapped[str] = mapped_column(String(3), server_default=text("'MXN'"))
@@ -63,10 +61,9 @@ Index(
     ClinicSubscriptionCharge.period,
     unique=True,
 )
-Index(
-    "clinic_subscription_charges_payment_id_idx", ClinicSubscriptionCharge.payment_id
-)
+Index("clinic_subscription_charges_payment_id_idx", ClinicSubscriptionCharge.payment_id)
 Index(
     "clinic_subscription_charges_clinic_subscription_id_idx",
     ClinicSubscriptionCharge.clinic_subscription_id,
 )
+Index("clinic_subscription_charges_tenant_id_idx", ClinicSubscriptionCharge.tenant_id)
