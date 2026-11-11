@@ -71,6 +71,24 @@ AUTHORIZATION_UNAVAILABLE = error_response(
 )
 
 
+def protected_caller(
+    permission: str, *, responses: dict[int | str, dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Like `protected`, but for an operation whose access dependency is declared as a parameter
+    of the endpoint itself (`require_caller`, which returns the `CallerAccess`) instead of in
+    `dependencies=[...]`: only the OpenAPI declaration and the shared responses are added here.
+    """
+    return {
+        "openapi_extra": {"x-required-permission": permission},
+        "responses": {
+            401: UNAUTHORIZED,
+            403: FORBIDDEN,
+            503: AUTHORIZATION_UNAVAILABLE,
+            **(responses or {}),
+        },
+    }
+
+
 def protected(
     permission: str, *, responses: dict[int | str, dict[str, Any]] | None = None
 ) -> dict[str, Any]:

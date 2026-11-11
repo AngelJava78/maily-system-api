@@ -2,10 +2,11 @@
 
 import asyncio
 from collections.abc import Callable, Iterable
-from datetime import datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -23,6 +24,7 @@ TEST_TOKEN = "test-token"
 # Direcciones ficticias de las simulaciones (el transporte ASGI ignora el host).
 USERS_BASE_URL = "http://users-api.test"
 CLINICS_BASE_URL = "http://clinics-api.test"
+PAGOS_BASE_URL = "http://pagos-api.test"
 
 ALL_PERMISSIONS = (
     "subscriptions:read",
@@ -32,6 +34,10 @@ ALL_PERMISSIONS = (
     # Needed in the users API to validate modules on create/update (contracts/permission-matrix.md);
     # not one of this service's own permissions.
     "modules:read",
+    # spec 006: clinic subscriptions (System role, checked with /check).
+    "clinic_subscriptions:read",
+    "clinic_subscriptions:write",
+    "clinic_subscriptions:delete",
 )
 
 
@@ -95,20 +101,31 @@ async def grant(
     permissions: Iterable[str] = ALL_PERMISSIONS,
     *,
     expired: bool = False,
+    tenant_id: str | None = None,
+    password_change_required: bool = False,
 ) -> None:
-    """Registra (o sustituye) un token y sus permisos en la simulación del API de usuarios."""
+    """Registra (o sustituye) un token y sus permisos en la simulación del API de usuarios.
+
+    `tenant_id` y `password_change_required` solo los usa `GET /authorization/me` (spec 006).
+    """
     response = await users_stub.post(
         "/__test__/tokens",
-        json={"token": token, "permissions": list(permissions), "expired": expired},
+        json={
+            "token": token,
+            "permissions": list(permissions),
+            "expired": expired,
+            "tenant_id": tenant_id,
+            "password_change_required": password_change_required,
+        },
     )
     assert response.status_code == 200
 
 
 class Api:
-    """The application under test with the two simulated APIs, ready to be called over HTTP.
+    """The application under test with the simulated APIs, ready to be called over HTTP.
 
-    `client` sends the token of `TEST_TOKEN` (registered with the four permissions); `anonymous`
-    sends none. The simulations and the database are reachable to prepare scenarios.
+    `client` sends the token of `TEST_TOKEN` (registered with the System-role permissions);
+    `anonymous` sends none. The simulations and the database are reachable to prepare scenarios.
     """
 
     def __init__(
@@ -117,20 +134,82 @@ class Api:
         anonymous: httpx.AsyncClient,
         users_stub: httpx.AsyncClient,
         clinics_stub: httpx.AsyncClient,
+        payments_stub: httpx.AsyncClient,
         engine: AsyncEngine,
         timeouts: dict[str, float],
+        pagos_service_token: dict[str, str | None] | None = None,
     ) -> None:
         self.client = client
         self.anonymous = anonymous
         self.users_stub = users_stub
         self.clinics_stub = clinics_stub
+        self.payments_stub = payments_stub
         self.engine = engine
         self.timeouts = timeouts
+        self._pagos_service_token = pagos_service_token if pagos_service_token is not None else {}
 
     async def insert(self, **values: Any) -> int:
         """Insert a subscription directly in the database (see `insert_subscription`)."""
         async with AsyncSession(self.engine, expire_on_commit=False) as session:
             return await insert_subscription(session, **values)
+
+    async def insert_clinic_subscription(self, **values: Any) -> int:
+        """Insert a clinic subscription directly (see `insert_clinic_subscription` helper)."""
+        async with AsyncSession(self.engine, expire_on_commit=False) as session:
+            return await insert_clinic_subscription(session, **values)
+
+    async def insert_clinic_subscription_charge(self, **values: Any) -> int:
+        async with AsyncSession(self.engine, expire_on_commit=False) as session:
+            return await insert_clinic_subscription_charge(session, **values)
+
+    async def payments_fault(self, mode: str, count: int = 1, delay: float = 30, operation: str = "create") -> None:
+        response = await self.payments_stub.post(
+            "/__test__/faults",
+            json={"mode": mode, "count": count, "delay_seconds": delay, "operation": operation},
+        )
+        assert response.status_code == 200
+
+    async def payments_calls(self) -> list[dict[str, Any]]:
+        return (await self.payments_stub.get("/__test__/calls")).json()
+
+    async def grant_payments(
+        self, token: str = TEST_TOKEN, permissions: Iterable[str] = ("payments:write", "payments:read")
+    ) -> None:
+        """Register a token in the payments stub too (it is a separate service from Usuarios)."""
+        response = await self.payments_stub.post(
+            "/__test__/tokens", json={"token": token, "permissions": list(permissions)}
+        )
+        assert response.status_code == 200
+
+    async def set_payment_status(self, payment_id: str, status: str) -> None:
+        response = await self.payments_stub.post(
+            f"/__test__/payments/{payment_id}/status", json={"status": status}
+        )
+        assert response.status_code == 200
+
+    def clear_pagos_service_token(self) -> None:
+        """Simulate `PAGOS_API_SERVICE_TOKEN` unset (research R8): sync-on-read is skipped."""
+        self._pagos_service_token["value"] = None
+
+    async def grant_caller(
+        self,
+        token: str,
+        permissions: Iterable[str],
+        *,
+        tenant_id: str | None = None,
+        password_change_required: bool = False,
+        expired: bool = False,
+    ) -> None:
+        """Register a token for `GET /api/v1/authorization/me` (research R1): with `tenant_id`
+        and `password_change_required`, which the default `/check`-only battery never sets."""
+        await grant(
+            self.users_stub,
+            token,
+            permissions,
+            expired=expired,
+            tenant_id=tenant_id,
+            password_change_required=password_change_required,
+        )
 
     async def counts(self, counts: dict[int, int]) -> None:
         response = await self.clinics_stub.post(
@@ -210,3 +289,73 @@ async def insert_subscription(
     subscription_id = result.scalar_one()
     await session.commit()
     return subscription_id
+
+
+async def insert_clinic_subscription(
+    session: AsyncSession,
+    *,
+    tenant_id: str | UUID | None = None,
+    subscription_id: int,
+    billing_cycle: str = "monthly",
+    started_at: datetime | None = None,
+    next_billing_at: datetime | None = None,
+    status_id: int = 1,
+) -> int:
+    """Insert a clinic subscription directly, confirm and return its id (spec 006)."""
+    from sqlalchemy import insert
+
+    from src.models.clinic_subscription import ClinicSubscription
+
+    now = datetime.now(UTC)
+    values: dict[str, Any] = {
+        "tenant_id": UUID(str(tenant_id)) if tenant_id is not None else uuid4(),
+        "subscription_id": subscription_id,
+        "billing_cycle": billing_cycle,
+        "started_at": started_at or now,
+        "next_billing_at": next_billing_at or started_at or now,
+        "status_id": status_id,
+    }
+    result = await session.execute(
+        insert(ClinicSubscription).values(**values).returning(ClinicSubscription.id)
+    )
+    clinic_subscription_id = result.scalar_one()
+    await session.commit()
+    return clinic_subscription_id
+
+
+async def insert_clinic_subscription_charge(
+    session: AsyncSession,
+    *,
+    clinic_subscription_id: int,
+    period: date,
+    amount: int = 129900,
+    currency: str = "MXN",
+    payment_id: str | UUID | None = None,
+    payment_status: str = "pending",
+    checkout_url: str | None = "https://pagos.test/checkout/test",
+    idempotency_key: str | None = None,
+) -> int:
+    """Insert a charge of a clinic subscription directly, confirm and return its id (spec 006)."""
+    from sqlalchemy import insert
+
+    from src.models.clinic_subscription_charge import ClinicSubscriptionCharge
+
+    values: dict[str, Any] = {
+        "clinic_subscription_id": clinic_subscription_id,
+        "period": period,
+        "amount": amount,
+        "currency": currency,
+        "payment_id": UUID(str(payment_id)) if payment_id is not None else uuid4(),
+        "payment_status": payment_status,
+        "checkout_url": checkout_url if payment_status == "pending" else None,
+        "idempotency_key": idempotency_key
+        or f"clinic-subscription:{clinic_subscription_id}:{period}",
+    }
+    result = await session.execute(
+        insert(ClinicSubscriptionCharge)
+        .values(**values)
+        .returning(ClinicSubscriptionCharge.id)
+    )
+    charge_id = result.scalar_one()
+    await session.commit()
+    return charge_id

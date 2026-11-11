@@ -30,6 +30,19 @@ class ErrorCode(StrEnum):
     INTERNAL_ERROR = "internal_error"
     MONITORED_COMPONENT_NOT_FOUND = "monitored_component_not_found"
     MONITORED_COMPONENT_CODE_ALREADY_EXISTS = "monitored_component_code_already_exists"
+    PASSWORD_CHANGE_REQUIRED = "password_change_required"
+    CLINIC_SUBSCRIPTION_NOT_FOUND = "clinic_subscription_not_found"
+    CLINIC_SUBSCRIPTION_CHARGE_NOT_FOUND = "clinic_subscription_charge_not_found"
+    CLINIC_SUBSCRIPTION_ALREADY_ACTIVE = "clinic_subscription_already_active"
+    CLINIC_SUBSCRIPTION_PLAN_NOT_ACTIVE = "clinic_subscription_plan_not_active"
+    CLINIC_SUBSCRIPTION_CHARGE_PENDING = "clinic_subscription_charge_pending"
+    CLINIC_SUBSCRIPTION_ALREADY_CANCELLED = "clinic_subscription_already_cancelled"
+    CLINIC_SUBSCRIPTION_CHARGE_REQUIRES_ACTIVE_PLAN = (
+        "clinic_subscription_charge_requires_active_plan"
+    )
+    PAYMENT_NOT_AUTHORIZED = "payment_not_authorized"
+    CLINIC_SUBSCRIPTION_CHARGE_CONFLICT = "clinic_subscription_charge_conflict"
+    PAYMENTS_UNAVAILABLE = "payments_unavailable"
 
 
 # --- Access control ---
@@ -79,6 +92,44 @@ MONITORED_COMPONENT_NOT_FOUND_MESSAGE = (
 )
 MONITORED_COMPONENT_CODE_ALREADY_EXISTS_MESSAGE = (
     "Ya existe un componente monitoreado con el código «{code}»."
+)
+
+# --- Domain errors of the clinic subscriptions (spec 006, contracts/error-catalog.md) ---
+
+PASSWORD_CHANGE_REQUIRED_MESSAGE = "Debe cambiar su contraseña antes de usar esta operación."
+CLINIC_SUBSCRIPTION_NOT_FOUND_MESSAGE = (
+    "No se encontró la suscripción de clínica con el identificador {clinic_subscription_id}."
+)
+CLINIC_SUBSCRIPTION_CHARGE_NOT_FOUND_MESSAGE = (
+    "No se encontró el cobro con el identificador {charge_id} en esa suscripción de clínica."
+)
+CLINIC_SUBSCRIPTION_PLAN_NOT_ACTIVE_MESSAGE = (
+    "El plan con el identificador {subscription_id} no existe o no está Activo."
+)
+CLINIC_SUBSCRIPTION_ALREADY_ACTIVE_MESSAGE = (
+    "La clínica ya tiene una suscripción vigente. Cancélela antes de asignar una nueva."
+)
+CLINIC_SUBSCRIPTION_CHARGE_PENDING_MESSAGE = (
+    "La suscripción de clínica con el identificador {clinic_subscription_id} tiene un cobro "
+    "pendiente de resolver."
+)
+CLINIC_SUBSCRIPTION_NOT_CHARGEABLE_MESSAGE = (
+    "La suscripción de clínica con el identificador {clinic_subscription_id} está cancelada y no "
+    "admite un nuevo cobro."
+)
+CLINIC_SUBSCRIPTION_ALREADY_CANCELLED_MESSAGE = (
+    "La suscripción de clínica con el identificador {clinic_subscription_id} ya está cancelada."
+)
+CLINIC_SUBSCRIPTION_CHARGE_REQUIRES_ACTIVE_PLAN_MESSAGE = (
+    "El plan de esta suscripción de clínica ya no está Activo. Asígnele un plan vigente antes de "
+    "cobrar."
+)
+PAYMENT_NOT_AUTHORIZED_MESSAGE = "No se pudo autorizar el cobro con el proveedor de pagos."
+CLINIC_SUBSCRIPTION_CHARGE_CONFLICT_MESSAGE = (
+    "Ya existe un cobro distinto para este periodo. Revise el historial antes de reintentar."
+)
+PAYMENTS_UNAVAILABLE_MESSAGE = (
+    "No se pudo comunicar con el servicio de pagos por ahora. Inténtelo de nuevo más tarde."
 )
 
 # --- Generic errors ---
@@ -183,6 +234,20 @@ MONITORED_COMPONENT_SORT_ORDER_INVALID_MESSAGE = "El orden debe ser un número e
 MONITORED_COMPONENT_EMPTY_UPDATE_MESSAGE = SUBSCRIPTION_EMPTY_UPDATE_MESSAGE
 MONITORED_COMPONENT_ID_INVALID_MESSAGE = "El identificador del componente debe ser un UUID."
 
+# --- Validation messages of the clinic subscriptions (spec 006, contracts/error-catalog.md) ---
+
+CLINIC_SUBSCRIPTION_TENANT_ID_INVALID_MESSAGE = "El identificador de la clínica debe ser un UUID."
+CLINIC_SUBSCRIPTION_SUBSCRIPTION_ID_INVALID_MESSAGE = (
+    "El identificador del plan debe ser un número entero positivo."
+)
+CLINIC_SUBSCRIPTION_BILLING_CYCLE_INVALID_MESSAGE = (
+    'El ciclo de cobro debe ser "monthly" o "annual".'
+)
+CLINIC_SUBSCRIPTION_STARTED_AT_INVALID_MESSAGE = "La fecha de inicio no es válida."
+_CLINIC_SUBSCRIPTION_ID_PATH_INVALID_MESSAGE = (
+    "El identificador debe ser un número entero positivo."
+)
+
 # (field, kind) -> message. The kinds are `required`, `too_long`, `too_many`, `not_text`,
 # `not_list` and `invalid` (see `_KINDS` in `src/error_handlers.py`).
 # Messages shared by every resource; today the only resource has its own block below.
@@ -231,6 +296,17 @@ VALIDATION_MESSAGES: dict[str, dict[tuple[str, str], str]] = {
     },
     "dashboard": {
         ("limit", "invalid"): DASHBOARD_LIMIT_INVALID_MESSAGE,
+    },
+    "clinic-subscriptions": {
+        ("tenant_id", "required"): CLINIC_SUBSCRIPTION_TENANT_ID_INVALID_MESSAGE,
+        ("tenant_id", "invalid"): CLINIC_SUBSCRIPTION_TENANT_ID_INVALID_MESSAGE,
+        ("subscription_id", "required"): CLINIC_SUBSCRIPTION_SUBSCRIPTION_ID_INVALID_MESSAGE,
+        ("subscription_id", "invalid"): CLINIC_SUBSCRIPTION_SUBSCRIPTION_ID_INVALID_MESSAGE,
+        ("billing_cycle", "required"): CLINIC_SUBSCRIPTION_BILLING_CYCLE_INVALID_MESSAGE,
+        ("billing_cycle", "invalid"): CLINIC_SUBSCRIPTION_BILLING_CYCLE_INVALID_MESSAGE,
+        ("started_at", "invalid"): CLINIC_SUBSCRIPTION_STARTED_AT_INVALID_MESSAGE,
+        ("clinic_subscription_id", "invalid"): _CLINIC_SUBSCRIPTION_ID_PATH_INVALID_MESSAGE,
+        ("charge_id", "invalid"): _CLINIC_SUBSCRIPTION_ID_PATH_INVALID_MESSAGE,
     },
     # The native errors of Pydantic; the formats raise their own message (see above).
     "monitored-components": {

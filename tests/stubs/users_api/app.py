@@ -36,7 +36,7 @@ FAULT_MODES = (
     "unauthorized_unreadable",
     "unauthorized_unknown",
 )
-FAULT_OPERATIONS = ("check", "modules")
+FAULT_OPERATIONS = ("check", "modules", "me")
 
 # Mirrors src/clinic_modules.py's nine proposed keys (research R2); duplicated because this stub
 # must not import from src/.
@@ -87,6 +87,10 @@ class TokenIn(BaseModel):
     token: str
     permissions: list[str] = Field(default_factory=list)
     expired: bool = False
+    # Used only by GET /api/v1/authorization/me (spec 006): the organization of the person who
+    # owns the token, and whether they must change a temporary password first.
+    tenant_id: str | None = None
+    password_change_required: bool = False
 
 
 class FaultIn(BaseModel):
@@ -181,6 +185,41 @@ def create_stub_app() -> FastAPI:
             return error(422, "validation_error")
         return {"permission": permission, "allowed": permission in entry["permissions"]}
 
+    @app.get("/api/v1/authorization/me")
+    async def me(request: Request):
+        fault = take_fault("me")
+        if fault is not None:
+            mode = fault["mode"]
+            if mode == "unavailable":
+                return error(503, "authentication_unavailable")
+            if mode == "malformed":
+                return JSONResponse({"detail": MARKER})
+            if mode == "not_json":
+                return PlainTextResponse(MARKER, status_code=200)
+            if mode == "redirect":
+                return RedirectResponse("http://evil.test/steal", status_code=307)
+            if mode == "unauthorized_unreadable":
+                return PlainTextResponse(MARKER, status_code=401)
+            if mode == "unauthorized_unknown":
+                return error(401, "something_else")
+            if mode == "slow":
+                await asyncio.sleep(fault["delay_seconds"])
+
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() != "bearer" or not token.strip():
+            return error(401, "unauthenticated")
+        entry = state["tokens"].get(token.strip())
+        if entry is None:
+            return error(401, "invalid_token")
+        if entry["expired"]:
+            return error(401, "token_expired")
+        return {
+            "user": {"id": "stub-user", "status": {"id": 1, "name": "Activo"}},
+            "tenant_id": entry["tenant_id"],
+            "roles": [{"id": 1, "name": "Stub", "permissions": sorted(entry["permissions"])}],
+            "password_change_required": entry["password_change_required"],
+        }
+
     @app.get("/api/v1/modules")
     async def list_modules(request: Request, type_id: int | None = None, status_id: int | None = None):
         fault = take_fault("modules")
@@ -225,6 +264,8 @@ def create_stub_app() -> FastAPI:
         state["tokens"][body.token] = {
             "permissions": set(body.permissions),
             "expired": body.expired,
+            "tenant_id": body.tenant_id,
+            "password_change_required": body.password_change_required,
         }
         return {"token": "registered", "permissions": sorted(body.permissions)}
 

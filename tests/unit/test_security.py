@@ -5,24 +5,35 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from src.exceptions import PermissionDeniedError, UnauthenticatedError
 from src.security import (
+    CLINIC_SUBSCRIPTIONS_CHARGE,
     SUBSCRIPTIONS_DELETE,
     SUBSCRIPTIONS_READ,
     SUBSCRIPTIONS_UPDATE,
     SUBSCRIPTIONS_WRITE,
     get_bearer_token,
+    require_caller,
     require_permission,
 )
+from tests.unit.fakes import fake_caller_access
 
 
 class FakeAuthorizationService:
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(self, error: Exception | None = None, access=None) -> None:
         self.error = error
+        self.access = access
         self.calls: list[tuple[str, str]] = []
+        self.caller_calls: list[tuple[str, str]] = []
 
     async def require(self, token: str, permission: str) -> None:
         self.calls.append((token, permission))
         if self.error is not None:
             raise self.error
+
+    async def require_as_caller(self, token: str, permission: str):
+        self.caller_calls.append((token, permission))
+        if self.error is not None:
+            raise self.error
+        return self.access
 
 
 def test_the_four_permissions_have_the_names_of_the_matrix():
@@ -65,3 +76,22 @@ async def test_the_dependency_propagates_the_errors_of_the_service():
         await dependency(token="abc", service=service)
 
     assert service.calls == [("abc", "subscriptions:write")]
+
+
+async def test_require_caller_asks_for_the_exact_permission_once_and_returns_the_access():
+    access = fake_caller_access(tenant_id="t-1", permissions=[CLINIC_SUBSCRIPTIONS_CHARGE])
+    service = FakeAuthorizationService(access=access)
+    dependency = require_caller(CLINIC_SUBSCRIPTIONS_CHARGE)
+
+    result = await dependency(token="abc", service=service)
+
+    assert result is access
+    assert service.caller_calls == [("abc", "clinic_subscriptions:charge")]
+
+
+async def test_require_caller_propagates_the_errors_of_the_service():
+    service = FakeAuthorizationService(PermissionDeniedError("clinic_subscriptions:charge"))
+    dependency = require_caller(CLINIC_SUBSCRIPTIONS_CHARGE)
+
+    with pytest.raises(PermissionDeniedError):
+        await dependency(token="abc", service=service)

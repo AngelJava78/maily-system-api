@@ -15,7 +15,7 @@ FIELD = "dashboard_recent_clinics_limit"
 
 @pytest.fixture(autouse=True)
 def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in (VARIABLE, "USERS_API_BASE_URL", "CLINICS_API_BASE_URL"):
+    for name in (VARIABLE, "USERS_API_BASE_URL", "CLINICS_API_BASE_URL", "PAGOS_API_BASE_URL"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -78,6 +78,7 @@ def test_the_start_up_message_names_the_variable_and_never_its_value(
 
 def test_the_message_of_a_single_error_is_the_one_it_always_was(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("CLINICS_API_BASE_URL", "http://clinics-api:8000")
+    monkeypatch.setenv("PAGOS_API_BASE_URL", "http://pagos-api:8000")
     with pytest.raises(ValidationError) as info:
         IntegrationSettings(_env_file=None)
 
@@ -87,6 +88,7 @@ def test_the_message_of_a_single_error_is_the_one_it_always_was(monkeypatch: pyt
 
 
 def test_several_errors_are_reported_together_under_one_heading(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("PAGOS_API_BASE_URL", "http://pagos-api:8000")
     monkeypatch.setenv(VARIABLE, "4")
     with pytest.raises(ValidationError) as integration:
         IntegrationSettings(_env_file=None)

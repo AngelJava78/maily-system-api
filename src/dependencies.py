@@ -33,12 +33,15 @@ from src.integrations.clinics_api import ClinicsApiClient
 from src.integrations.dashboard_source import DashboardSource
 from src.integrations.dummy_dashboard_source import DummyDashboardSource
 from src.integrations.health_probe import HealthProbeClient
+from src.integrations.payments_api import PaymentsApiClient
 from src.integrations.users_api import UsersApiClient
 from src.models.monitored_component import MonitoredComponent
+from src.repositories.clinic_subscription_repository import ClinicSubscriptionRepository
 from src.repositories.database_health_repository import DatabaseHealthRepository
 from src.repositories.monitored_component_repository import MonitoredComponentRepository
 from src.repositories.subscription_repository import SubscriptionRepository
 from src.services.authorization_service import AuthorizationService
+from src.services.clinic_subscription_service import ClinicSubscriptionService
 from src.services.clock import Clock, SystemClock
 from src.services.dashboard_service import DashboardService
 from src.services.health_service import HealthService
@@ -79,6 +82,24 @@ async def get_clinics_api_client(
     )
 
 
+async def get_payments_api_client(
+    client: Annotated[httpx.AsyncClient, Depends(get_http_client)],
+) -> PaymentsApiClient:
+    settings = get_integration_settings()
+    return PaymentsApiClient(
+        client,
+        settings.pagos_api_base_url,
+        settings.pagos_api_timeout_seconds,
+        settings.pagos_api_service_token,
+    )
+
+
+async def get_clinic_subscription_repository(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ClinicSubscriptionRepository:
+    return ClinicSubscriptionRepository(session)
+
+
 async def get_subscription_repository(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> SubscriptionRepository:
@@ -91,6 +112,14 @@ async def get_subscription_service(
     users_api: Annotated[UsersApiClient, Depends(get_users_api_client)],
 ) -> SubscriptionService:
     return SubscriptionService(repository, clinics_api, users_api)
+
+
+async def get_clinic_subscription_service(
+    repository: Annotated[ClinicSubscriptionRepository, Depends(get_clinic_subscription_repository)],
+    subscription_repository: Annotated[SubscriptionRepository, Depends(get_subscription_repository)],
+    payments_api: Annotated[PaymentsApiClient, Depends(get_payments_api_client)],
+) -> ClinicSubscriptionService:
+    return ClinicSubscriptionService(repository, subscription_repository, payments_api)
 
 
 # Immutable and stateless, so one instance serves the whole application.

@@ -114,7 +114,7 @@ def test_a_clinic_and_its_status_have_exactly_their_published_fields(schema):
 
 def test_no_error_code_was_added(schema):
     assert set(schema["components"]["schemas"]["ErrorCode"]["enum"]) == {c.value for c in ErrorCode}
-    assert len(ErrorCode) == 17  # spec 005 added 2 registry codes; reviewed, no dashboard impact
+    assert len(ErrorCode) == 28  # spec 006 added 11 clinic-subscription/payments codes
 
 
 # The public health routes of spec 005 (Principle VIII exception): the only operations without security.

@@ -2,8 +2,10 @@
 
 **MailySoft System API**: servicio REST de MailySoft. Su primer dominio es el catálogo de
 **suscripciones** (planes) que se asignan a las clínicas: precio mensual, lo que incluye cada plan y
-su estatus. No administra identidades: **consulta al API de usuarios** para saber quién puede operar
-y **al API de clínicas** para saber cuántas clínicas tiene cada plan.
+su estatus; el segundo es la **suscripción de una clínica** a uno de esos planes y su cobro real
+contra Mercado Pago, a través de `mailySoft-pagos`. No administra identidades: **consulta al API de
+usuarios** para saber quién puede operar, **al API de clínicas** para saber cuántas clínicas tiene
+cada plan, y **a mailySoft-pagos** para cobrar.
 
 ## Qué incluye hoy
 
@@ -162,6 +164,47 @@ tráfico) y *liveness* no (no se reinicia el contenedor).
 > pública). Para desarrollar sin esos servicios, usa las simulaciones de la pila de pruebas de punta a
 > punta (más abajo).
 
+### Suscripciones de clínica y su cobro contra Mercado Pago
+
+Spec [`006-cobro-real-suscripciones`](specs/006-cobro-real-suscripciones/spec.md): liga una clínica
+(`tenant_id`) a un plan del catálogo y cobra ese plan a través de `mailySoft-pagos` (contrato en
+[`openapi-clinic-subscriptions.yaml`](specs/006-cobro-real-suscripciones/contracts/openapi-clinic-subscriptions.yaml)).
+
+| Operación | Método y ruta | Permiso |
+|---|---|---|
+| `list_clinic_subscriptions` | `GET /api/v1/clinic-subscriptions` | `clinic_subscriptions:read` |
+| `create_clinic_subscription` | `POST /api/v1/clinic-subscriptions` | `clinic_subscriptions:write` |
+| `get_clinic_subscription` | `GET /api/v1/clinic-subscriptions/{id}` | `clinic_subscriptions:read` |
+| `cancel_clinic_subscription` | `DELETE /api/v1/clinic-subscriptions/{id}` | `clinic_subscriptions:delete` |
+| `charge_clinic_subscription` | `POST /api/v1/clinic-subscriptions/{id}/charges` | `clinic_subscriptions:charge` |
+| `list_clinic_subscription_charges` | `GET /api/v1/clinic-subscriptions/{id}/charges` | `clinic_subscriptions:read` |
+| `get_clinic_subscription_charge` | `GET /api/v1/clinic-subscriptions/{id}/charges/{charge_id}` | `clinic_subscriptions:read` |
+
+- **Dos audiencias**: `clinic_subscriptions:read/write/delete` las tiene quien administra la
+  plataforma (sin organización propia; `tenant_id` se envía explícito al crear). Solo una persona de
+  la **propia clínica** puede disparar el cobro (`clinic_subscriptions:charge`): esa operación se
+  comprueba con `GET /api/v1/authorization/me` en vez de `/check` (la única de este servicio que lo
+  hace), porque además del permiso necesita el `tenant_id` de quien llama para compararlo con el de
+  la suscripción — si no coincide, o quien llama no tiene organización, responde 404, no 403.
+- **Dinero**: el monto que recibe Pagos es en centavos (entero), calculado del precio **vigente**
+  (`monthly_price`/`annual_price`) del plan asignado; `currency` es siempre `MXN`.
+- **Idempotencia**: la `Idempotency-Key` que se envía a Pagos es determinista por periodo
+  (`clinic-subscription:<id>:<periodo>`), así que un reintento del mismo periodo nunca cobra dos
+  veces: Pagos responde con el pago ya creado.
+- **Pagos no notifica**: como `mailySoft-pagos` no emite webhooks hacia quien lo integra, un cobro
+  `pending` se sincroniza contra `GET /api/v1/payments/{id}` **al consultarlo** (sin tarea en segundo
+  plano); un cobro ya resuelto no vuelve a preguntar. Esa sincronización usa una credencial de
+  aplicación propia (`PAGOS_API_SERVICE_TOKEN`), nunca el token de quien disparó el cobro.
+- **Historial completo**: cada intento de cobro (rechazados incluidos) queda como su propia fila; la
+  suscripción de clínica muestra siempre el vigente (el más reciente).
+- **Fuera de alcance de esta entrega**: el cobro periódico automático (cron) y las colecciones de
+  Postman de este recurso quedan para más adelante (`quickstart.md`, nivel 3); pytest ya cumple el
+  Principio V por sí solo.
+- **Prerrequisito pendiente en `mailySoft-usuarios`**: los permisos `clinic_subscriptions:*` (y
+  `payments:*`, que exige `mailySoft-pagos`) todavía no están en su catálogo real; se desarrolla y
+  prueba contra una simulación propia (`tests/stubs/payments_api/`), igual que ya hacen
+  `mailySoft-agenda` y `mailySoft-pagos` con los suyos.
+
 ## Requisitos
 
 - Docker Desktop con Docker Compose 2.24 o superior (PostgreSQL 17, migraciones y API).
@@ -177,8 +220,11 @@ Copia `.env.example` a `.env` (no se versiona). Variables del servicio:
 | `DATABASE_URL` | sí | — | Base de datos (PostgreSQL, `postgresql+asyncpg://…`) |
 | `USERS_API_BASE_URL` | sí | — | Dirección del API de usuarios, sin barra final |
 | `CLINICS_API_BASE_URL` | sí | — | Dirección del API de clínicas, sin barra final |
+| `PAGOS_API_BASE_URL` | sí | — | Dirección de `mailySoft-pagos`, sin barra final |
 | `USERS_API_TIMEOUT_SECONDS` | no | `5` | Tiempo máximo total de cada llamada (mayor que 0, hasta 30) |
 | `CLINICS_API_TIMEOUT_SECONDS` | no | `5` | Ídem, para el API de clínicas |
+| `PAGOS_API_TIMEOUT_SECONDS` | no | `5` | Ídem, para `mailySoft-pagos` |
+| `PAGOS_API_SERVICE_TOKEN` | no | — | Token de una cuenta de servicio con `payments:read`, usado solo para sincronizar un cobro `pending` al consultarlo; sin él, esa sincronización se omite (nunca impide arrancar) |
 | `CORS_ALLOWED_ORIGINS` | no | vacía | Sitios web del Front que pueden llamar desde el navegador (lista separada por comas); vacía = ninguno |
 | `DASHBOARD_RECENT_CLINICS_LIMIT` | no | `5` | Clínicas recientes del dashboard cuando no se envía `limit`: solo `3`, `5` o `10` (cualquier otro valor impide arrancar). Un cambio requiere reiniciar |
 | `HEALTH_CHECK_TIMEOUT_SECONDS` | no | `3` | Tiempo máximo de cada llamada a un componente monitoreado (entero de 1 a 10) |
@@ -197,7 +243,7 @@ El arranque valida la configuración (también `DATABASE_URL`) y, si falta una v
 opcional no es válida, se niega a iniciar y nombra la variable (nunca su valor); un horario de la base de
 datos incompleto o con un valor no válido también impide arrancar.
 
-**Seguridad de las direcciones**: a esas dos direcciones se reenvía el token de la persona. Usa `https://`
+**Seguridad de las direcciones**: a esas tres direcciones se reenvía el token de la persona. Usa `https://`
 salvo en local o en la red de Docker: con una dirección `http://` no local el servicio arranca pero
 registra una advertencia (el token viajaría sin cifrar). Las redirecciones nunca se siguen.
 
@@ -463,20 +509,23 @@ src/
 ├── services/          # reglas de negocio y autorización; la salud (`health_service.py`, `health_schedule.py`,
 │                      # `health_state.py`) y el registro de componentes (`monitored_component_service.py`)
 ├── repositories/      # acceso a datos (únicas consultas SQL)
-├── integrations/      # clientes del API de usuarios y del de clínicas, y el puerto de datos del dashboard
-│                      # (`dashboard_source.py`) con su fuente ficticia de la Fase 1; y el cliente de los
-│                      # chequeos de salud (`health_probe.py`) con el contrato v1 (`health_contract.py`)
+├── integrations/      # clientes del API de usuarios, del de clínicas y de mailySoft-pagos (`payments_api.py`),
+│                      # y el puerto de datos del dashboard (`dashboard_source.py`) con su fuente ficticia de
+│                      # la Fase 1; y el cliente de los chequeos de salud (`health_probe.py`) con el contrato
+│                      # v1 (`health_contract.py`)
 ├── dtos/              # esquemas de entrada y salida (Pydantic)
 ├── database/          # engine y sesiones async
 └── models/            # modelos SQLAlchemy (sin lógica de negocio)
-alembic/versions/      # 0001 esquema, 0002 catálogo de estatus, 0003 corrección de suscripciones, 0004 registro de componentes
+alembic/versions/      # 0001 esquema, 0002 catálogo de estatus, 0003 corrección de suscripciones, 0004 registro
+                       # de componentes, 0005 suscripción de clínica y su historial de cobros
 tests/unit/            # sin base de datos (DTOs, Services, seguridad, configuración, capas)
 tests/integration/     # PostgreSQL real (esquema, migraciones y Repositories)
 tests/contract/        # la API por HTTP, el documento OpenAPI, la cobertura de permisos y las colecciones de Postman
                        # (postman_support.py: apoyo compartido; conftest.py: fixtures del dashboard, sin base de datos)
 tests/dashboard_support.py   # fuente de datos doble y ayudas de las pruebas del dashboard
 tests/health_support.py     # reloj, transporte con fallas y ayudas de las pruebas de salud
-tests/stubs/           # simulaciones del API de usuarios, del API de clínicas y de los componentes monitoreados
+tests/stubs/           # simulaciones del API de usuarios, del API de clínicas, de mailySoft-pagos y de los
+                       # componentes monitoreados
 tests/postman/         # colecciones (suscripciones, dashboard y salud), entornos y pila aislada de las pruebas de
                        # punta a punta (Newman) y colección y entornos de la colección manual
 project-definition/    # esquema de datos objetivo (DATA_SCHEMA.md)

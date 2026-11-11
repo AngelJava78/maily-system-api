@@ -62,6 +62,9 @@ _KINDS = {
     "bool_type": "invalid",
     "uuid_parsing": "invalid",
     "uuid_type": "invalid",
+    "datetime_parsing": "invalid",
+    "datetime_type": "invalid",
+    "literal_error": "invalid",
 }
 
 

@@ -262,3 +262,100 @@ async def test_list_clinic_module_keys_asks_for_type_clinic_and_active_status(
     modules_calls = [call for call in recorded if call["path"] == "/api/v1/modules"]
     assert len(modules_calls) == 1
     assert modules_calls[0]["authorization"] == f"Bearer {TOKEN}"
+
+
+# --- get_current_access (contracts/users-api-integration.md, spec 006, research R1) ---
+
+
+async def test_get_current_access_returns_tenant_id_and_the_union_of_permissions(
+    users_stub, users_api_client
+):
+    await grant(
+        users_stub, TOKEN, ["clinic_subscriptions:charge"], tenant_id="3f1b1e2a-7c9d-4e2a-9c3e-1a2b3c4d5e6f"
+    )
+
+    access = await users_api_client.get_current_access(TOKEN)
+
+    assert access.tenant_id == "3f1b1e2a-7c9d-4e2a-9c3e-1a2b3c4d5e6f"
+    assert access.permissions == frozenset({"clinic_subscriptions:charge"})
+    assert access.password_change_required is False
+
+
+async def test_get_current_access_without_an_organization_is_none(users_stub, users_api_client):
+    await grant(users_stub, TOKEN, ["clinic_subscriptions:charge"])
+
+    access = await users_api_client.get_current_access(TOKEN)
+
+    assert access.tenant_id is None
+
+
+async def test_get_current_access_reports_a_pending_password_change(users_stub, users_api_client):
+    await grant(users_stub, TOKEN, [], password_change_required=True)
+
+    access = await users_api_client.get_current_access(TOKEN)
+
+    assert access.password_change_required is True
+
+
+@pytest.mark.parametrize(
+    ("token", "expired", "code"),
+    [
+        ("unknown-token", False, "invalid_token"),
+        (TOKEN, True, "token_expired"),
+        ("", False, "unauthenticated"),
+    ],
+)
+async def test_get_current_access_translates_a_401(
+    users_stub, users_api_client, token, expired, code
+):
+    await grant(users_stub, TOKEN, [], expired=expired)
+
+    with pytest.raises(UsersApiRejectedToken) as error:
+        await users_api_client.get_current_access(token)
+
+    assert error.value.code == code
+
+
+@pytest.mark.parametrize("mode", ["unauthorized_unreadable", "unauthorized_unknown"])
+async def test_get_current_access_an_unreadable_or_unknown_401_is_an_invalid_token(
+    users_stub, users_api_client, mode
+):
+    await add_fault(users_stub, mode, operation="me")
+
+    with pytest.raises(UsersApiRejectedToken) as error:
+        await users_api_client.get_current_access(TOKEN)
+
+    assert error.value.code == "invalid_token"
+
+
+@pytest.mark.parametrize("mode", ["unavailable", "malformed", "not_json", "redirect"])
+async def test_get_current_access_everything_else_is_unavailable(users_stub, users_api_client, mode):
+    await grant(users_stub, TOKEN, [])
+    await add_fault(users_stub, mode, operation="me")
+
+    with pytest.raises(UsersApiUnavailable):
+        await users_api_client.get_current_access(TOKEN)
+
+
+async def test_get_current_access_is_one_call_with_the_token_untouched(users_stub, users_api_client):
+    await grant(users_stub, TOKEN, ["clinic_subscriptions:charge"])
+
+    await users_api_client.get_current_access(TOKEN)
+
+    recorded = await calls(users_stub)
+    assert len(recorded) == 1
+    assert recorded[0]["path"] == "/api/v1/authorization/me"
+    assert recorded[0]["authorization"] == f"Bearer {TOKEN}"
+
+
+async def test_get_current_access_does_not_consume_a_fault_registered_for_check(
+    users_stub, users_api_client
+):
+    await grant(users_stub, TOKEN, ["clinic_subscriptions:charge"])
+    await add_fault(users_stub, "unavailable", operation="check")
+
+    access = await users_api_client.get_current_access(TOKEN)
+    assert access.permissions == frozenset({"clinic_subscriptions:charge"})
+
+    with pytest.raises(UsersApiUnavailable):
+        await users_api_client.check_permission(TOKEN, PERMISSION)

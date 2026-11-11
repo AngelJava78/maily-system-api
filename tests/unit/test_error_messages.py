@@ -96,6 +96,18 @@ def test_the_error_codes_are_exactly_the_seventeen_of_the_catalog():
         # spec 005: the registry of monitored components
         "monitored_component_not_found",
         "monitored_component_code_already_exists",
+        # spec 006: clinic subscriptions and their charges against mailySoft-pagos
+        "password_change_required",
+        "clinic_subscription_not_found",
+        "clinic_subscription_charge_not_found",
+        "clinic_subscription_already_active",
+        "clinic_subscription_plan_not_active",
+        "clinic_subscription_charge_pending",
+        "clinic_subscription_already_cancelled",
+        "clinic_subscription_charge_requires_active_plan",
+        "payment_not_authorized",
+        "clinic_subscription_charge_conflict",
+        "payments_unavailable",
     }
 
 

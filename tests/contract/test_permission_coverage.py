@@ -5,6 +5,7 @@ Principles V and VIII: a route that has no declared permission and is not one of
 operation is checked one by one against the simulation of the users API.
 """
 
+from datetime import date
 from typing import Any
 from uuid import UUID
 
@@ -16,7 +17,8 @@ from tests.health_support import insert_component
 from tests.helpers import TEST_TOKEN, Api
 
 # The permission matrix: contracts/permission-matrix.md of spec 001 (the six subscriptions), the
-# row of spec 003 (the dashboard) and the rows of spec 005 (the health of the services).
+# row of spec 003 (the dashboard), the rows of spec 005 (the health of the services) and the rows
+# of spec 006 (the clinic subscriptions and their charge).
 EXPECTED_PERMISSIONS = {
     "list_subscriptions": "subscriptions:read",
     "get_subscription": "subscriptions:read",
@@ -31,7 +33,20 @@ EXPECTED_PERMISSIONS = {
     "create_monitored_component": "health:write",
     "update_monitored_component": "health:update",
     "delete_monitored_component": "health:delete",
+    "list_clinic_subscriptions": "clinic_subscriptions:read",
+    "get_clinic_subscription": "clinic_subscriptions:read",
+    "create_clinic_subscription": "clinic_subscriptions:write",
+    "cancel_clinic_subscription": "clinic_subscriptions:delete",
+    "list_clinic_subscription_charges": "clinic_subscriptions:read",
+    "get_clinic_subscription_charge": "clinic_subscriptions:read",
+    "charge_clinic_subscription": "clinic_subscriptions:charge",
 }
+# charge_clinic_subscription is checked with GET /authorization/me, not /check (research R1): it
+# also needs the caller's own tenant_id to match the subscription's, which none of the stub tokens
+# this file's generic battery registers carries. Its own access-control matrix (401/403 missing
+# permission/403 password_change_required/503 Usuarios down/404 tenant mismatch/success) is
+# covered on its own in test_clinic_subscriptions_access_control.py instead.
+ME_BASED_OPERATIONS = frozenset({"charge_clinic_subscription"})
 # The documentation and the public health routes that spec 005 defines (Principle VIII exception).
 PUBLIC_ROUTES = {
     "/openapi.json",
@@ -48,6 +63,8 @@ ALL_PERMISSIONS = sorted(set(EXPECTED_PERMISSIONS.values()))
 URL = "/api/v1/subscriptions"
 COMPONENTS_URL = "/api/v1/monitored-components"
 COMPONENT_ID = "00000000-0000-4000-8000-000000000001"
+CLINIC_SUBSCRIPTIONS_URL = "/api/v1/clinic-subscriptions"
+CLINIC_SUBSCRIPTION_TENANT_ID = "3f1b1e2a-7c9d-4e2a-9c3e-1a2b3c4d5e6f"
 # operation_id -> (method, path, JSON body) against the subscription with id 1 and the component
 # COMPONENT_ID
 REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
@@ -69,6 +86,20 @@ REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
     "update_subscription": ("PATCH", f"{URL}/1", {"name": "Cambio"}),
     "change_subscription_status": ("PATCH", f"{URL}/1/status", {"status_id": 2}),
     "delete_subscription": ("DELETE", f"{URL}/1", None),
+    "list_clinic_subscriptions": ("GET", CLINIC_SUBSCRIPTIONS_URL, None),
+    "get_clinic_subscription": ("GET", f"{CLINIC_SUBSCRIPTIONS_URL}/1", None),
+    "create_clinic_subscription": (
+        "POST",
+        CLINIC_SUBSCRIPTIONS_URL,
+        {
+            "tenant_id": "6b1b1e2a-7c9d-4e2a-9c3e-1a2b3c4d5e70",
+            "subscription_id": 1,
+            "billing_cycle": "monthly",
+        },
+    ),
+    "cancel_clinic_subscription": ("DELETE", f"{CLINIC_SUBSCRIPTIONS_URL}/1", None),
+    "list_clinic_subscription_charges": ("GET", f"{CLINIC_SUBSCRIPTIONS_URL}/1/charges", None),
+    "get_clinic_subscription_charge": ("GET", f"{CLINIC_SUBSCRIPTIONS_URL}/1/charges/1", None),
     "get_dashboard": ("GET", "/api/v1/dashboard", None),
     "get_health": ("GET", "/api/v1/health", None),
     "list_monitored_components": ("GET", COMPONENTS_URL, None),
@@ -135,7 +166,7 @@ def test_the_declared_permissions_match_the_matrix_exactly():
 
 
 def test_the_matrix_and_the_requests_of_this_test_cover_the_same_operations():
-    assert set(REQUESTS) == set(EXPECTED_PERMISSIONS)
+    assert set(REQUESTS) | ME_BASED_OPERATIONS == set(EXPECTED_PERMISSIONS)
 
 
 # --- each real operation against the users API ---
@@ -148,13 +179,27 @@ async def snapshot(api: Api) -> list[tuple]:
     components = await api.fetch_all(
         "SELECT id, code, name, enabled, deleted_at, updated_at FROM monitored_components ORDER BY id"
     )
-    return subscriptions + components
+    clinic_subscriptions = await api.fetch_all(
+        "SELECT id, tenant_id, status_id, next_billing_at, updated_at FROM clinic_subscriptions ORDER BY id"
+    )
+    clinic_subscription_charges = await api.fetch_all(
+        "SELECT id, payment_status, updated_at FROM clinic_subscription_charges ORDER BY id"
+    )
+    return subscriptions + components + clinic_subscriptions + clinic_subscription_charges
 
 
 @pytest.fixture
 async def seeded(api: Api) -> Api:
     await api.insert(name="Base")  # the subscription with id 1
     await insert_component(api.engine, code="base", id=UUID(COMPONENT_ID))
+    clinic_subscription_id = await api.insert_clinic_subscription(subscription_id=1)  # id 1
+    # Resolved (not pending), so cancel_clinic_subscription is still eligible in the "exactly its
+    # own permission" battery (a pending one would reject the cancel with 409).
+    await api.insert_clinic_subscription_charge(
+        clinic_subscription_id=clinic_subscription_id,
+        period=date(2026, 11, 10),
+        payment_status="approved",
+    )
     return api
 
 

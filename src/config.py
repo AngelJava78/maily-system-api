@@ -65,17 +65,23 @@ class Settings(BaseSettings):
 
 
 class IntegrationSettings(BaseSettings):
-    """Addresses and total time limits of the users API and the clinics API."""
+    """Addresses and total time limits of the users API, the clinics API and the payments API."""
 
     users_api_base_url: str
     users_api_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     clinics_api_base_url: str
     clinics_api_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    pagos_api_base_url: str
+    pagos_api_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    # Application credential for the sync-on-read of a pending charge (research R8): the caller's
+    # own token is never stored, so GET /payments/{id} uses a service account's token instead.
+    # Without it, the sync is skipped (the local status is returned as-is).
+    pagos_api_service_token: str | None = None
 
     # An empty variable (docker-compose passes empty values when `.env` has none) counts as unset.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
 
-    @field_validator("users_api_base_url", "clinics_api_base_url")
+    @field_validator("users_api_base_url", "clinics_api_base_url", "pagos_api_base_url")
     @classmethod
     def _normalize_address(cls, value: str) -> str:
         value = value.strip()
@@ -489,6 +495,7 @@ def insecure_url_warnings(settings: IntegrationSettings) -> list[str]:
     addresses = (
         ("USERS_API_BASE_URL", settings.users_api_base_url),
         ("CLINICS_API_BASE_URL", settings.clinics_api_base_url),
+        ("PAGOS_API_BASE_URL", settings.pagos_api_base_url),
     )
     for variable, address in addresses:
         parts = urlsplit(address)

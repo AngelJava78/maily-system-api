@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 
 from tests.helpers import (
     CLINICS_BASE_URL,
+    PAGOS_BASE_URL,
     ROOT,
     TEST_TOKEN,
     USERS_BASE_URL,
@@ -198,6 +199,31 @@ def clinics_api_client(clinics_stub: httpx.AsyncClient):
     return ClinicsApiClient(clinics_stub, CLINICS_BASE_URL, 5.0)
 
 
+# --- Simulation of mailySoft-pagos (tests/stubs/payments_api, spec 006) ---
+
+
+@pytest.fixture
+def payments_stub_app():
+    from tests.stubs.payments_api.app import create_stub_app
+
+    return create_stub_app()
+
+
+@pytest_asyncio.fixture
+async def payments_stub(payments_stub_app) -> AsyncIterator[httpx.AsyncClient]:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=payments_stub_app), base_url=PAGOS_BASE_URL
+    ) as client:
+        yield client
+
+
+@pytest.fixture
+def payments_api_client(payments_stub: httpx.AsyncClient):
+    from src.integrations.payments_api import PaymentsApiClient
+
+    return PaymentsApiClient(payments_stub, PAGOS_BASE_URL, 5.0)
+
+
 # --- Simulation of the monitored components (tests/stubs/components, spec 005) ---
 
 
@@ -228,17 +254,19 @@ async def api(
     migrated_db: None,
     users_stub: httpx.AsyncClient,
     clinics_stub: httpx.AsyncClient,
+    payments_stub: httpx.AsyncClient,
     components_stub_app,
 ) -> AsyncIterator[Api]:
-    """The real application over HTTP, talking to the real PostgreSQL and to the two simulations.
+    """The real application over HTTP, talking to the real PostgreSQL and to the three simulations.
 
     The clients of the other APIs are the real ones (their translation of answers and failures is
     part of what is tested); only their transport is replaced by the in-memory simulations. The
     health checks (spec 005) go to the simulation of components.
     """
     from src.database import get_session
-    from src.dependencies import get_clinics_api_client, get_users_api_client
+    from src.dependencies import get_clinics_api_client, get_payments_api_client, get_users_api_client
     from src.integrations.clinics_api import ClinicsApiClient
+    from src.integrations.payments_api import PaymentsApiClient
     from src.integrations.users_api import UsersApiClient
     from src.main import create_app
     from tests.health_support import (
@@ -248,7 +276,10 @@ async def api(
     )
 
     app = create_app()
-    timeouts = {"users": 5.0, "clinics": 5.0}
+    timeouts = {"users": 5.0, "clinics": 5.0, "pagos": 5.0}
+    # A mutable holder so a test can simulate "no service token configured" (research R8) without
+    # rebuilding the whole fixture: Api.clear_pagos_service_token() empties it.
+    pagos_service_token = {"value": "pagos-service-token"}
 
     async def users_client() -> UsersApiClient:
         return UsersApiClient(users_stub, USERS_BASE_URL, timeouts["users"])
@@ -256,18 +287,24 @@ async def api(
     async def clinics_client() -> ClinicsApiClient:
         return ClinicsApiClient(clinics_stub, CLINICS_BASE_URL, timeouts["clinics"])
 
+    async def payments_client() -> PaymentsApiClient:
+        return PaymentsApiClient(
+            payments_stub, PAGOS_BASE_URL, timeouts["pagos"], pagos_service_token["value"]
+        )
+
     async def session() -> AsyncIterator[AsyncSession]:
         async with AsyncSession(engine, expire_on_commit=False) as new_session:
             yield new_session
 
     app.dependency_overrides[get_users_api_client] = users_client
     app.dependency_overrides[get_clinics_api_client] = clinics_client
+    app.dependency_overrides[get_payments_api_client] = payments_client
     app.dependency_overrides[get_session] = session
     probe_client = install_health_overrides(
         app, components_stub_app, HealthConfigHolder(TEST_HEALTH_CONFIG)
     )
 
-    await grant(users_stub)  # TEST_TOKEN with the four permissions
+    await grant(users_stub)  # TEST_TOKEN with the four subscriptions permissions (+ modules:read)
     transport = httpx.ASGITransport(app=app)
     async with (
         httpx.AsyncClient(
@@ -278,11 +315,16 @@ async def api(
         httpx.AsyncClient(transport=transport, base_url="http://api.test") as anonymous,
         probe_client,
     ):
-        yield Api(client, anonymous, users_stub, clinics_stub, engine, timeouts)
+        yield Api(
+            client, anonymous, users_stub, clinics_stub, payments_stub, engine, timeouts, pagos_service_token
+        )
 
     async with engine.begin() as connection:
         await connection.execute(
-            text("TRUNCATE subscriptions, monitored_components RESTART IDENTITY CASCADE")
+            text(
+                "TRUNCATE subscriptions, monitored_components, clinic_subscription_charges, "
+                "clinic_subscriptions RESTART IDENTITY CASCADE"
+            )
         )
 
 

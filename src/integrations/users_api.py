@@ -7,6 +7,7 @@ exactly the expected answer is "unavailable" (fail closed), never a decision.
 
 import asyncio
 import logging
+from dataclasses import dataclass
 
 import httpx
 
@@ -15,12 +16,26 @@ from src.integrations.errors import UsersApiRejectedToken, UsersApiUnavailable
 logger = logging.getLogger(__name__)
 
 CHECK_PATH = "/api/v1/authorization/check"
+ME_PATH = "/api/v1/authorization/me"
 MODULES_PATH = "/api/v1/modules"
 # type_id 2 = Clinic (1 is System); status_id 1 = Active. Both sent explicitly even though
 # status_id 1 is that API's own default, so this contract does not depend on that default staying
 # the same (contracts/users-api-integration.md).
 MODULES_PARAMS = {"type_id": 2, "status_id": 1}
 _REJECTION_CODES = {"unauthenticated", "token_expired", "invalid_token"}
+
+
+@dataclass(frozen=True, slots=True)
+class CallerAccess:
+    """Identity of whoever calls, computed per request from `GET /api/v1/authorization/me`.
+
+    `permissions` is the union of the `permissions` of every Active role in the response (research
+    R1): resolving a permission from `/me` is one call, same as `check_permission` is for `/check`.
+    """
+
+    tenant_id: str | None
+    permissions: frozenset[str]
+    password_change_required: bool
 
 
 class UsersApiClient:
@@ -71,6 +86,66 @@ class UsersApiClient:
         ):
             raise UsersApiUnavailable
         return data["allowed"]
+
+    async def get_current_access(self, token: str) -> CallerAccess:
+        """The identity and access of whoever owns `token` (research R1; FR-030, FR-031).
+
+        Only one call per request, used instead of `check_permission` for an operation that needs
+        the caller's own `tenant_id` (`/check` does not report it). Raises `UsersApiRejectedToken`
+        when the users API refuses the token and `UsersApiUnavailable` for anything else that is
+        not a valid answer (same exceptions as `check_permission`: this is the same external API).
+        """
+        try:
+            async with asyncio.timeout(self._timeout):
+                response = await self._http.get(
+                    f"{self._base_url}{ME_PATH}",
+                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                )
+        except (httpx.HTTPError, TimeoutError) as error:
+            logger.warning("Users API /me request failed (%s)", type(error).__name__)
+            raise UsersApiUnavailable from None
+
+        status = response.status_code
+        if status == 401:
+            raise UsersApiRejectedToken(self._rejection_code(response))
+        if status != 200:
+            if 400 <= status < 500:
+                logger.error("Users API answered an unexpected status %s for /me", status)
+            else:
+                logger.warning("Users API answered status %s for /me", status)
+            raise UsersApiUnavailable
+
+        try:
+            data = response.json()
+        except ValueError:
+            raise UsersApiUnavailable from None
+        return self._parse_access(data)
+
+    @staticmethod
+    def _parse_access(data: object) -> CallerAccess:
+        if not isinstance(data, dict) or "tenant_id" not in data:
+            raise UsersApiUnavailable
+        tenant_id = data["tenant_id"]
+        roles = data.get("roles")
+        password_change_required = data.get("password_change_required")
+        if (
+            (tenant_id is not None and not isinstance(tenant_id, str))
+            or not isinstance(roles, list)
+            or not isinstance(password_change_required, bool)
+        ):
+            raise UsersApiUnavailable
+        permissions: set[str] = set()
+        for role in roles:
+            if not isinstance(role, dict) or not isinstance(role.get("permissions"), list):
+                raise UsersApiUnavailable
+            if not all(isinstance(permission, str) for permission in role["permissions"]):
+                raise UsersApiUnavailable
+            permissions.update(role["permissions"])
+        return CallerAccess(
+            tenant_id=tenant_id,
+            permissions=frozenset(permissions),
+            password_change_required=password_change_required,
+        )
 
     async def list_clinic_module_keys(self, token: str) -> frozenset[str]:
         """The `key` of every active, clinic-type module the users API knows about.

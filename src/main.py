@@ -32,7 +32,7 @@ from src.config import (
 from src.dependencies import build_dashboard_source
 from src.error_handlers import register_error_handlers
 from src.integrations.health_probe import create_health_http_client
-from src.routers import dashboard, health, monitored_components, subscriptions
+from src.routers import clinic_subscriptions, dashboard, health, monitored_components, subscriptions
 from src.services.health_state import HealthState
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,14 @@ límites de la clínica y otras funcionalidades.
   sus mensajes están en español.
 - `clinics_count` lo aporta el API de clínicas en cada lectura; si no está disponible vale `null`.
 
+La **suscripción de una clínica** (`/api/v1/clinic-subscriptions`, spec 006) liga una clínica
+(`tenant_id`) con un plan del catálogo y cobra ese plan contra Mercado Pago a través de
+`mailySoft-pagos`. Quien administra la plataforma la asigna, modifica y cancela
+(`clinic_subscriptions:read/write/delete`, igual patrón que el catálogo); solo una persona de la
+propia clínica puede disparar su cobro (`clinic_subscriptions:charge`), porque Pagos resuelve a quién
+cobra únicamente con el token de quien llama. El historial de cobros (rechazados incluidos) se
+conserva; un cobro `pending` se sincroniza con Pagos al consultarlo.
+
 El **dashboard de plataforma** (`GET /api/v1/dashboard`, «Panel de Maily») es de solo lectura y no
 se guarda en caché: devuelve en una sola consulta seis indicadores y las clínicas más recientes (sin
 paginar, hasta 10). Si una fuente de datos falla, su valor llega como `null`, nunca como un cero
@@ -81,6 +89,13 @@ OPENAPI_TAGS = [
         "description": (
             "Catálogo de suscripciones (planes) y su estatus. El listado se devuelve completo, sin "
             "paginar."
+        ),
+    },
+    {
+        "name": "clinic-subscriptions",
+        "description": (
+            "Suscripción de una clínica a un plan del catálogo, su ciclo de cobro y su cobro "
+            "contra Mercado Pago a través de mailySoft-pagos."
         ),
     },
     {
@@ -170,6 +185,7 @@ def create_app() -> FastAPI:
     # Memory of the health feature in this process (cache, aggregation in progress, registry copy).
     app.state.health = HealthState()
     app.include_router(subscriptions.router)
+    app.include_router(clinic_subscriptions.router)
     app.include_router(dashboard.router)
     app.include_router(health.public_router)
     app.include_router(health.router)

@@ -31,7 +31,7 @@ def test_the_two_new_messages_are_the_exact_texts_of_the_catalog():
 
 
 def test_the_catalog_has_seventeen_codes_with_the_two_new_ones():
-    assert len(ErrorCode) == 17
+    assert len(ErrorCode) == 28  # spec 006 added 11 clinic-subscription/payments codes
     assert ErrorCode.MONITORED_COMPONENT_NOT_FOUND.value == "monitored_component_not_found"
     assert ErrorCode.MONITORED_COMPONENT_CODE_ALREADY_EXISTS.value == "monitored_component_code_already_exists"
 

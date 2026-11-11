@@ -24,6 +24,9 @@ ENV_NAMES = (
     "USERS_API_TIMEOUT_SECONDS",
     "CLINICS_API_BASE_URL",
     "CLINICS_API_TIMEOUT_SECONDS",
+    "PAGOS_API_BASE_URL",
+    "PAGOS_API_TIMEOUT_SECONDS",
+    "PAGOS_API_SERVICE_TOKEN",
     "CORS_ALLOWED_ORIGINS",
     VARIABLE,
 )
@@ -49,6 +52,7 @@ def isolated_configuration(monkeypatch: pytest.MonkeyPatch):
 def define_apis(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("USERS_API_BASE_URL", "http://users-api:8000")
     monkeypatch.setenv("CLINICS_API_BASE_URL", "http://clinics-api:8000")
+    monkeypatch.setenv("PAGOS_API_BASE_URL", "http://pagos-api:8000")
 
 
 async def start_and_stop() -> None:
@@ -114,6 +118,7 @@ async def test_the_message_never_shows_the_value_that_was_configured(monkeypatch
 
 async def test_every_wrong_variable_is_named_in_one_message(monkeypatch):
     monkeypatch.setenv("CLINICS_API_BASE_URL", "http://clinics-api:8000")  # the users address is missing
+    monkeypatch.setenv("PAGOS_API_BASE_URL", "http://pagos-api:8000")
     monkeypatch.setenv(VARIABLE, "4")
 
     with pytest.raises(RuntimeError) as error:
@@ -160,6 +165,7 @@ async def test_starting_with_dummy_data_logs_one_warning_that_says_so(monkeypatc
 async def test_the_notice_carries_no_address_token_or_secret(monkeypatch, caplog):
     monkeypatch.setenv("USERS_API_BASE_URL", "http://usuario:clave-secreta@users.empresa.com")
     monkeypatch.setenv("CLINICS_API_BASE_URL", "http://clinics-api:8000")
+    monkeypatch.setenv("PAGOS_API_BASE_URL", "http://pagos-api:8000")
 
     with caplog.at_level(logging.WARNING):
         await start_and_stop()

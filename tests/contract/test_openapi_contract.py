@@ -109,7 +109,7 @@ def test_the_schemas_of_the_contract_exist(schema):
 
 def test_the_error_codes_are_the_seventeen_of_the_catalog(schema):
     assert set(schema["components"]["schemas"]["ErrorCode"]["enum"]) == {c.value for c in ErrorCode}
-    assert len(ErrorCode) == 17  # spec 005 added the 2 codes of the registry of components
+    assert len(ErrorCode) == 28  # spec 006 added 11 clinic-subscription/payments codes
 
 
 def test_the_price_is_published_as_a_string(schema):

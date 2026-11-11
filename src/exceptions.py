@@ -9,11 +9,23 @@ from uuid import UUID
 
 from src.messages import (
     AUTHORIZATION_UNAVAILABLE_MESSAGE,
+    CLINIC_SUBSCRIPTION_ALREADY_ACTIVE_MESSAGE,
+    CLINIC_SUBSCRIPTION_ALREADY_CANCELLED_MESSAGE,
+    CLINIC_SUBSCRIPTION_CHARGE_CONFLICT_MESSAGE,
+    CLINIC_SUBSCRIPTION_CHARGE_NOT_FOUND_MESSAGE,
+    CLINIC_SUBSCRIPTION_CHARGE_PENDING_MESSAGE,
+    CLINIC_SUBSCRIPTION_CHARGE_REQUIRES_ACTIVE_PLAN_MESSAGE,
+    CLINIC_SUBSCRIPTION_NOT_CHARGEABLE_MESSAGE,
+    CLINIC_SUBSCRIPTION_NOT_FOUND_MESSAGE,
+    CLINIC_SUBSCRIPTION_PLAN_NOT_ACTIVE_MESSAGE,
     CLINICS_CHECK_UNAVAILABLE_MESSAGE,
     INVALID_TOKEN_MESSAGE,
     MODULE_CHECK_UNAVAILABLE_MESSAGE,
     MONITORED_COMPONENT_CODE_ALREADY_EXISTS_MESSAGE,
     MONITORED_COMPONENT_NOT_FOUND_MESSAGE,
+    PASSWORD_CHANGE_REQUIRED_MESSAGE,
+    PAYMENT_NOT_AUTHORIZED_MESSAGE,
+    PAYMENTS_UNAVAILABLE_MESSAGE,
     PERMISSION_DENIED_MESSAGE,
     SUBSCRIPTION_HAS_CLINICS_MESSAGE,
     SUBSCRIPTION_MODULE_NOT_FOUND_MESSAGE,
@@ -94,6 +106,16 @@ class AuthorizationUnavailableError(AppError):
 
     def __init__(self) -> None:
         super().__init__(AUTHORIZATION_UNAVAILABLE_MESSAGE)
+
+
+class PasswordChangeRequiredError(AppError):
+    """The users API answered that the caller must change a temporary password first (`/me`)."""
+
+    code = ErrorCode.PASSWORD_CHANGE_REQUIRED
+    status_code = 403
+
+    def __init__(self) -> None:
+        super().__init__(PASSWORD_CHANGE_REQUIRED_MESSAGE)
 
 
 # --- Subscriptions ---
@@ -234,3 +256,142 @@ class MonitoredComponentDataError(AppError):
             "input": None,
             "ctx": {"error": ValueError(message)},
         }
+
+
+# --- Clinic subscriptions (spec 006) ---
+
+
+class ClinicSubscriptionNotFoundError(AppError):
+    """The clinic subscription does not exist, is cancelled, or (only for `charge`) belongs to
+    another organization than the caller's (FR-030: never revealed which of the three it was)."""
+
+    code = ErrorCode.CLINIC_SUBSCRIPTION_NOT_FOUND
+    status_code = 404
+
+    def __init__(self, clinic_subscription_id: int) -> None:
+        super().__init__(
+            CLINIC_SUBSCRIPTION_NOT_FOUND_MESSAGE.format(
+                clinic_subscription_id=clinic_subscription_id
+            )
+        )
+
+
+class ClinicSubscriptionChargeNotFoundError(AppError):
+    """The charge does not exist in that clinic subscription's history."""
+
+    code = ErrorCode.CLINIC_SUBSCRIPTION_CHARGE_NOT_FOUND
+    status_code = 404
+
+    def __init__(self, charge_id: int) -> None:
+        super().__init__(CLINIC_SUBSCRIPTION_CHARGE_NOT_FOUND_MESSAGE.format(charge_id=charge_id))
+
+
+class ClinicSubscriptionPlanNotActiveError(AppError):
+    """The plan to assign does not exist or is not Active (FR-003)."""
+
+    code = ErrorCode.CLINIC_SUBSCRIPTION_PLAN_NOT_ACTIVE
+    status_code = 409
+
+    def __init__(self, subscription_id: int) -> None:
+        super().__init__(
+            CLINIC_SUBSCRIPTION_PLAN_NOT_ACTIVE_MESSAGE.format(subscription_id=subscription_id)
+        )
+
+
+class ClinicSubscriptionAlreadyActiveError(AppError):
+    """The clinic already has an Active or pending-resolution subscription (FR-004)."""
+
+    code = ErrorCode.CLINIC_SUBSCRIPTION_ALREADY_ACTIVE
+    status_code = 409
+
+    def __init__(self) -> None:
+        super().__init__(CLINIC_SUBSCRIPTION_ALREADY_ACTIVE_MESSAGE)
+
+
+class ClinicSubscriptionChargePendingError(AppError):
+    """The current charge is still pending (blocks a new charge or cancelling, research R7)."""
+
+    code = ErrorCode.CLINIC_SUBSCRIPTION_CHARGE_PENDING
+    status_code = 409
+
+    def __init__(self, clinic_subscription_id: int) -> None:
+        super().__init__(
+            CLINIC_SUBSCRIPTION_CHARGE_PENDING_MESSAGE.format(
+                clinic_subscription_id=clinic_subscription_id
+            )
+        )
+
+
+class ClinicSubscriptionNotChargeableError(AppError):
+    """The subscription is Cancelled (research R7): a new charge is refused without calling Pagos.
+
+    A `pending` or `rejected` existing charge of the same period does NOT raise this: retrying
+    reaches Pagos again with the same deterministic Idempotency-Key (historia 2, escenario 2),
+    which is itself idempotent — there is nothing to block locally.
+    """
+
+    code = ErrorCode.CLINIC_SUBSCRIPTION_CHARGE_PENDING
+    status_code = 409
+
+    def __init__(self, clinic_subscription_id: int) -> None:
+        super().__init__(
+            CLINIC_SUBSCRIPTION_NOT_CHARGEABLE_MESSAGE.format(
+                clinic_subscription_id=clinic_subscription_id
+            )
+        )
+
+
+class ClinicSubscriptionAlreadyCancelledError(AppError):
+    """The clinic subscription is already Cancelled (historia 5, escenario 3)."""
+
+    code = ErrorCode.CLINIC_SUBSCRIPTION_ALREADY_CANCELLED
+    status_code = 409
+
+    def __init__(self, clinic_subscription_id: int) -> None:
+        super().__init__(
+            CLINIC_SUBSCRIPTION_ALREADY_CANCELLED_MESSAGE.format(
+                clinic_subscription_id=clinic_subscription_id
+            )
+        )
+
+
+class ClinicSubscriptionChargeRequiresActivePlanError(AppError):
+    """The assigned plan is no longer Active: a charge cannot be computed (Edge Cases)."""
+
+    code = ErrorCode.CLINIC_SUBSCRIPTION_CHARGE_REQUIRES_ACTIVE_PLAN
+    status_code = 409
+
+    def __init__(self) -> None:
+        super().__init__(CLINIC_SUBSCRIPTION_CHARGE_REQUIRES_ACTIVE_PLAN_MESSAGE)
+
+
+class PaymentNotAuthorizedError(AppError):
+    """Pagos answered 403 to the charge (missing `payments:write`, no organization there, or a
+    temporary password change pending at Pagos)."""
+
+    code = ErrorCode.PAYMENT_NOT_AUTHORIZED
+    status_code = 403
+
+    def __init__(self) -> None:
+        super().__init__(PAYMENT_NOT_AUTHORIZED_MESSAGE)
+
+
+class ClinicSubscriptionChargeConflictError(AppError):
+    """Pagos answered an idempotency key conflict: data changed between two attempts of the
+    same period (Edge Cases)."""
+
+    code = ErrorCode.CLINIC_SUBSCRIPTION_CHARGE_CONFLICT
+    status_code = 409
+
+    def __init__(self) -> None:
+        super().__init__(CLINIC_SUBSCRIPTION_CHARGE_CONFLICT_MESSAGE)
+
+
+class PaymentsUnavailableError(AppError):
+    """mailySoft-pagos did not answer as expected: nothing was charged (FR-014, fail closed)."""
+
+    code = ErrorCode.PAYMENTS_UNAVAILABLE
+    status_code = 503
+
+    def __init__(self) -> None:
+        super().__init__(PAYMENTS_UNAVAILABLE_MESSAGE)

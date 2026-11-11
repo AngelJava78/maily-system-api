@@ -36,3 +36,34 @@ class DashboardSourceUnavailable(IntegrationError):
 
     def __init__(self) -> None:
         super().__init__("The dashboard data source did not answer as expected")
+
+
+class PaymentsApiRejectedToken(IntegrationError):
+    """mailySoft-pagos refused the token (401), forwarding Usuarios' own rejection; `code` is the
+    one it answered."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__("The payments API rejected the access token")
+        self.code = code
+
+
+class PaymentsApiPermissionDenied(IntegrationError):
+    """mailySoft-pagos answered 403: missing `payments:write`/`payments:read`, no organization, or
+    a temporary password change pending (Pagos' own Principle VIII)."""
+
+    def __init__(self) -> None:
+        super().__init__("The payments API denied the operation")
+
+
+class PaymentsApiIdempotencyConflict(IntegrationError):
+    """The same `Idempotency-Key` was already used with different data (Pagos' 409)."""
+
+    def __init__(self) -> None:
+        super().__init__("The payments API reported an idempotency key conflict")
+
+
+class PaymentsApiUnavailable(IntegrationError):
+    """mailySoft-pagos did not answer as expected: fail closed, nothing was charged or read."""
+
+    def __init__(self) -> None:
+        super().__init__("The payments API did not answer as expected")

@@ -38,6 +38,21 @@ STATUSES = (200, 401, 403, 422, 503)
 ALLOWED_TOKENS = {"{{plainToken}}", "{{subscriptionsToken}}", "{{badToken}}"}
 SCHEMA_SUFFIX = "/collection/v2.1.0/collection.json"
 
+# spec 006 deliberately does not extend any Postman collection with the clinic-subscriptions
+# resource (quickstart.md Level 3: pytest already satisfies Principle V on its own, and a Postman
+# walkthrough for the Pagos integration is left as documented future work in contracts/e2e-stubs.md).
+# G9 only has to prove the *existing* resources stay fully covered.
+CLINIC_SUBSCRIPTIONS_PREFIX = "/api/v1/clinic-subscriptions"
+
+
+def api_operations_covered_by_postman() -> set[str]:
+    return {
+        operation_id
+        for operation_id in operation_ids_of_the_api("/")
+        if operation_id
+        not in operation_ids_of_the_api(CLINIC_SUBSCRIPTIONS_PREFIX)
+    }
+
 
 @pytest.fixture
 def collection() -> dict:
@@ -253,7 +268,7 @@ def test_g8_no_variable_of_the_environment_hides_one_of_the_collection(collectio
 
 
 def test_g9_the_four_collections_together_cover_exactly_the_operations_of_the_api(collection):
-    assert check_union(prefixes_of_the_collections(collection), operation_ids_of_the_api("/")) == []
+    assert check_union(prefixes_of_the_collections(collection), api_operations_covered_by_postman()) == []
 
 
 def test_the_collection_has_the_four_folders_and_twenty_four_requests(collection):
@@ -386,6 +401,6 @@ def test_g9_detects_an_operation_that_no_collection_covers(collection):
     prefixes = prefixes_of_the_collections(collection)
     prefixes["dashboard"] = set()  # as if the dashboard collection did not exist
 
-    problems = check_union(prefixes, operation_ids_of_the_api("/"))
+    problems = check_union(prefixes, api_operations_covered_by_postman())
 
     assert problems == ["operation without a request in any collection: get_dashboard"]

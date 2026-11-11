@@ -34,6 +34,9 @@ ENV_NAMES = (
     "USERS_API_TIMEOUT_SECONDS",
     "CLINICS_API_BASE_URL",
     "CLINICS_API_TIMEOUT_SECONDS",
+    "PAGOS_API_BASE_URL",
+    "PAGOS_API_TIMEOUT_SECONDS",
+    "PAGOS_API_SERVICE_TOKEN",
     "CORS_ALLOWED_ORIGINS",
     "DASHBOARD_RECENT_CLINICS_LIMIT",
     "HEALTH_CHECK_TIMEOUT_SECONDS",
@@ -99,6 +102,7 @@ def isolated_configuration(monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setitem(settings.model_config, "env_file", None)
     monkeypatch.setenv("USERS_API_BASE_URL", "http://users-api:8000")
     monkeypatch.setenv("CLINICS_API_BASE_URL", "http://clinics-api:8000")
+    monkeypatch.setenv("PAGOS_API_BASE_URL", "http://pagos-api:8000")
     clear_caches()
     yield
     clear_caches()
