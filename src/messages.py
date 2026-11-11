@@ -6,7 +6,8 @@ organised per resource (the first path segment after /api/v1/) so a feature neve
 texts of another one. The texts come from `specs/004-correct-subscriptions-api/contracts/error-catalog.md`
 (the complete catalog, superseding `specs/001-subscriptions-api/contracts/error-catalog.md`) and, for
 the registry of monitored components, from `specs/005-health-monitoring/contracts/error-catalog.md`;
-they must not be paraphrased.
+the module-related codes that survive `009-remove-module-dependencies` are documented in
+`specs/009-remove-module-dependencies/contracts/error-catalog.md`. They must not be paraphrased.
 """
 
 from enum import StrEnum
@@ -24,8 +25,8 @@ class ErrorCode(StrEnum):
     SUBSCRIPTION_HAS_CLINICS = "subscription_has_clinics"
     CLINICS_CHECK_UNAVAILABLE = "clinics_check_unavailable"
     SUBSCRIPTION_MODULE_NOT_FOUND = "subscription_module_not_found"
-    SUBSCRIPTION_MODULE_PREREQUISITE_MISSING = "subscription_module_prerequisite_missing"
     MODULE_CHECK_UNAVAILABLE = "module_check_unavailable"
+    SUBSCRIPTION_TYPE_NOT_FOUND = "subscription_type_not_found"
     VALIDATION_ERROR = "validation_error"
     INTERNAL_ERROR = "internal_error"
     MONITORED_COMPONENT_NOT_FOUND = "monitored_component_not_found"
@@ -77,12 +78,12 @@ CLINICS_CHECK_UNAVAILABLE_MESSAGE = (
 SUBSCRIPTION_MODULE_NOT_FOUND_MESSAGE = (
     "La API de usuarios no reconoce el módulo «{module_key}» como un módulo de clínica vigente."
 )
-SUBSCRIPTION_MODULE_PREREQUISITE_MISSING_MESSAGE = (
-    "El módulo «{module_key}» exige el módulo «{prerequisite_key}», que no está incluido."
-)
 MODULE_CHECK_UNAVAILABLE_MESSAGE = (
     "No se pudo comprobar los módulos de la suscripción por ahora. No se guardó ningún cambio; "
     "inténtelo de nuevo más tarde."
+)
+SUBSCRIPTION_TYPE_NOT_FOUND_MESSAGE = (
+    "No se encontró el tipo de suscripción con el identificador {subscription_type_id}."
 )
 
 # --- Domain errors of the registry of monitored components (spec 005) ---
@@ -147,6 +148,12 @@ INVALID_VALUE_MESSAGE = "El valor del campo «{field}» no es válido."
 # because `SubscriptionUpdate` reuses them for its "cannot be null" validators, not only
 # `VALIDATION_MESSAGES` below.
 SUBSCRIPTION_EMPTY_UPDATE_MESSAGE = "Hay que enviar al menos un dato para modificar."
+SUBSCRIPTION_TYPE_REQUIRED_MESSAGE = (
+    "El tipo de suscripción es obligatorio y debe ser un número entero positivo."
+)
+SUBSCRIPTION_TYPE_IMMUTABLE_MESSAGE = (
+    "El tipo de suscripción no puede modificarse una vez creada."
+)
 SUBSCRIPTION_NAME_REQUIRED_MESSAGE = "El nombre de la suscripción es obligatorio."
 SUBSCRIPTION_PRICE_REQUIRED_MESSAGE = "El precio mensual es obligatorio."
 SUBSCRIPTION_ANNUAL_PRICE_REQUIRED_MESSAGE = "El precio anual es obligatorio."
@@ -169,6 +176,15 @@ SUBSCRIPTION_ASSISTANTS_LIMIT_INVALID_MESSAGE = (
 )
 SUBSCRIPTION_NEW_PATIENTS_PER_YEAR_LIMIT_INVALID_MESSAGE = (
     "El límite de pacientes nuevos al año debe ser un número entero de 0 a 1 000 000."
+)
+SUBSCRIPTION_CLINICS_LIMIT_INVALID_MESSAGE = (
+    "El límite de clínicas debe ser un número entero de 1 a 100."
+)
+SUBSCRIPTION_CLINICS_LIMIT_MUST_BE_ONE_MESSAGE = (
+    "Una suscripción Individual debe tener límite de clínicas igual a 1."
+)
+SUBSCRIPTION_CLINICS_LIMIT_IMMUTABLE_MESSAGE = (
+    "El límite de clínicas no puede modificarse en una suscripción Individual."
 )
 SUBSCRIPTION_STATUS_NOT_ALLOWED_MESSAGE = (
     "El estatus debe ser uno de los que admite esta operación (1, 2 o 3)."
@@ -255,6 +271,9 @@ FIELD_MESSAGES: dict[tuple[str, str], str] = {}
 
 VALIDATION_MESSAGES: dict[str, dict[tuple[str, str], str]] = {
     "subscriptions": {
+        ("subscription_type_id", "required"): SUBSCRIPTION_TYPE_REQUIRED_MESSAGE,
+        ("subscription_type_id", "invalid"): SUBSCRIPTION_TYPE_REQUIRED_MESSAGE,
+        ("subscription_type_id", "forbidden"): SUBSCRIPTION_TYPE_IMMUTABLE_MESSAGE,
         ("name", "required"): SUBSCRIPTION_NAME_REQUIRED_MESSAGE,
         ("name", "too_long"): "El nombre de la suscripción no puede tener más de 100 caracteres.",
         ("name", "not_text"): "El nombre de la suscripción debe ser un texto.",
@@ -288,6 +307,8 @@ VALIDATION_MESSAGES: dict[str, dict[tuple[str, str], str]] = {
         ("new_patients_per_year_limit", "invalid"): (
             SUBSCRIPTION_NEW_PATIENTS_PER_YEAR_LIMIT_INVALID_MESSAGE
         ),
+        ("clinics_limit", "required"): SUBSCRIPTION_CLINICS_LIMIT_INVALID_MESSAGE,
+        ("clinics_limit", "invalid"): SUBSCRIPTION_CLINICS_LIMIT_INVALID_MESSAGE,
         ("status_id", "required"): _STATUS_REQUIRED_MESSAGE,
         ("status_id", "invalid"): _STATUS_REQUIRED_MESSAGE,
         ("subscription_id", "invalid"): (

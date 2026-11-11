@@ -283,13 +283,19 @@ async def test_unknown_query_parameters_of_the_public_status_are_ignored(health_
 
 @pytest.fixture
 async def cors_client(monkeypatch, components_stub_app):
-    """An application with `CORS_ALLOWED_ORIGINS` (read when the application is built)."""
+    """An application with `CORS_ALLOWED_ORIGINS` (read when the application is built).
+
+    The database ping is replaced by a healthy one: these tests do not use the database, so they
+    must not depend on one answering within the readiness timeout (they belong to the fast tier).
+    """
     from src.main import create_app
 
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", ALLOWED_ORIGIN)
     get_cors_settings.cache_clear()
     app = create_app()
     probe_client = install_health_overrides(app, components_stub_app, HealthConfigHolder(TEST_HEALTH_CONFIG))
+    healthy, _ = pinger_that()
+    app.dependency_overrides[get_database_pinger] = healthy
     failing, _ = pinger_that(raises=DatabaseUnavailableError("connection_error"))
     async with (
         httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://api.test") as client,

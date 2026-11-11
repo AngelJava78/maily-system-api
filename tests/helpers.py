@@ -249,6 +249,7 @@ async def insert_subscription(
     session: AsyncSession,
     *,
     name: str = "Plan",
+    subscription_type_id: int = 1,
     monthly_price: str | Decimal = "100.00",
     annual_price: str | Decimal = "1000.00",
     trial_days: int = 0,
@@ -260,6 +261,7 @@ async def insert_subscription(
     doctors_limit: int = 1,
     assistants_limit: int = 1,
     new_patients_per_year_limit: int = 100,
+    clinics_limit: int = 1,
     status_id: int = 1,
     created_at: datetime | None = None,
 ) -> int:
@@ -267,26 +269,33 @@ async def insert_subscription(
     from sqlalchemy import insert
 
     from src.models.subscription import Subscription
+    from src.models.subscription_module import SubscriptionModule
 
     values: dict[str, Any] = {
         "name": name,
         "description": description,
+        "subscription_type_id": subscription_type_id,
         "monthly_price": Decimal(str(monthly_price)),
         "annual_price": Decimal(str(annual_price)),
         "trial_days": trial_days,
         "self_service": self_service,
-        "module_keys": sorted(module_keys),
         "other_features": list(other_features),
         "consulting_rooms_limit": consulting_rooms_limit,
         "doctors_limit": doctors_limit,
         "assistants_limit": assistants_limit,
         "new_patients_per_year_limit": new_patients_per_year_limit,
+        "clinics_limit": clinics_limit,
         "status_id": status_id,
     }
     if created_at is not None:
         values["created_at"] = created_at
     result = await session.execute(insert(Subscription).values(**values).returning(Subscription.id))
     subscription_id = result.scalar_one()
+    await session.execute(
+        insert(SubscriptionModule).values(
+            [{"subscription_id": subscription_id, "module_key": key} for key in sorted(module_keys)]
+        )
+    )
     await session.commit()
     return subscription_id
 

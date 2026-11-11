@@ -36,7 +36,7 @@ def operations_of(schema: dict) -> dict[str, tuple[str, str, dict]]:
 
 def test_the_document_is_generated_openapi_3_with_the_version_of_the_contract(schema):
     assert schema["openapi"].startswith("3.")
-    assert schema["info"]["version"] == "2.0.0"
+    assert schema["info"]["version"] == "4.0.0"
     assert schema["info"]["title"] == "MailySoft System API"
 
 
@@ -102,6 +102,7 @@ def test_the_schemas_of_the_contract_exist(schema):
         "SubscriptionUpdate",
         "SubscriptionStatusChange",
         "StatusRead",
+        "SubscriptionTypeRead",
         "ErrorResponse",
     ):
         assert name in schemas, name
@@ -109,7 +110,10 @@ def test_the_schemas_of_the_contract_exist(schema):
 
 def test_the_error_codes_are_the_seventeen_of_the_catalog(schema):
     assert set(schema["components"]["schemas"]["ErrorCode"]["enum"]) == {c.value for c in ErrorCode}
-    assert len(ErrorCode) == 28  # spec 006 added 11 clinic-subscription/payments codes
+    # spec 005 added the 2 codes of the registry of components; spec 006-add-subscription-type
+    # added subscription_type_not_found; spec 009 retired subscription_module_prerequisite_missing
+    # (net 17); spec 006-cobro-real-suscripciones added 11 clinic-subscription/payments codes.
+    assert len(ErrorCode) == 28
 
 
 def test_the_price_is_published_as_a_string(schema):

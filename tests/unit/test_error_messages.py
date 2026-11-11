@@ -24,7 +24,6 @@ from src.exceptions import (
     PermissionDeniedError,
     SubscriptionHasClinicsError,
     SubscriptionModuleNotFoundError,
-    SubscriptionModulePrerequisiteMissingError,
     SubscriptionNameAlreadyExistsError,
     SubscriptionNotFoundError,
     SubscriptionStatusUnchangedError,
@@ -61,9 +60,6 @@ EXPECTED_MESSAGES = {
     ErrorCode.SUBSCRIPTION_MODULE_NOT_FOUND: (
         "La API de usuarios no reconoce el módulo «{module_key}» como un módulo de clínica vigente."
     ),
-    ErrorCode.SUBSCRIPTION_MODULE_PREREQUISITE_MISSING: (
-        "El módulo «{module_key}» exige el módulo «{prerequisite_key}», que no está incluido."
-    ),
     ErrorCode.MODULE_CHECK_UNAVAILABLE: (
         "No se pudo comprobar los módulos de la suscripción por ahora. No se guardó ningún cambio; "
         "inténtelo de nuevo más tarde."
@@ -89,14 +85,15 @@ def test_the_error_codes_are_exactly_the_seventeen_of_the_catalog():
         "subscription_has_clinics",
         "clinics_check_unavailable",
         "subscription_module_not_found",
-        "subscription_module_prerequisite_missing",
         "module_check_unavailable",
         "validation_error",
         "internal_error",
         # spec 005: the registry of monitored components
         "monitored_component_not_found",
         "monitored_component_code_already_exists",
-        # spec 006: clinic subscriptions and their charges against mailySoft-pagos
+        # spec 006-add-subscription-type: the subscription type catalog
+        "subscription_type_not_found",
+        # spec 006-cobro-real-suscripciones: clinic subscriptions and their charges against mailySoft-pagos
         "password_change_required",
         "clinic_subscription_not_found",
         "clinic_subscription_charge_not_found",
@@ -173,13 +170,6 @@ def test_every_code_has_the_exact_message_of_the_catalog(code: ErrorCode):
             422,
             None,
             "La API de usuarios no reconoce el módulo «billing» como un módulo de clínica vigente.",
-        ),
-        (
-            SubscriptionModulePrerequisiteMissingError("billing", "finance"),
-            ErrorCode.SUBSCRIPTION_MODULE_PREREQUISITE_MISSING,
-            409,
-            None,
-            "El módulo «billing» exige el módulo «finance», que no está incluido.",
         ),
         (
             ModuleCheckUnavailableError(),

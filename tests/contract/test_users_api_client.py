@@ -179,21 +179,30 @@ async def test_the_token_never_appears_in_an_exception_or_in_the_logs(
 # --- list_clinic_module_keys (contracts/users-api-integration.md, operación 2) ---
 
 
-async def test_it_returns_exactly_the_nine_clinic_module_keys(users_stub, users_api_client):
+async def test_it_returns_exactly_the_eighteen_clinic_module_keys(users_stub, users_api_client):
     await grant(users_stub, TOKEN, [PERMISSION, "modules:read"])
 
     keys = await users_api_client.list_clinic_module_keys(TOKEN)
 
     assert keys == {
         "patients",
-        "scheduling",
-        "reminders",
-        "clinical_records",
-        "clinical_record_templates",
-        "prescriptions",
-        "finance",
-        "reports",
+        "appointments",
         "billing",
+        "clinics",
+        "consulting_rooms",
+        "expenses",
+        "finance",
+        "incomes",
+        "overview",
+        "patient_diagnoses",
+        "prescriptions",
+        "reminders",
+        "reports",
+        "schedule",
+        "services",
+        "staff",
+        "templates",
+        "vital_signs",
     }
 
 

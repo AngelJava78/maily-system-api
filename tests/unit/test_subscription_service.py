@@ -14,15 +14,18 @@ from src.clinic_modules import PATIENTS_KEY
 from src.exceptions import (
     ClinicsCheckUnavailableError,
     ModuleCheckUnavailableError,
+    SubscriptionDataError,
     SubscriptionHasClinicsError,
     SubscriptionModuleNotFoundError,
-    SubscriptionModulePrerequisiteMissingError,
     SubscriptionNameAlreadyExistsError,
     SubscriptionNotFoundError,
     SubscriptionStatusUnchangedError,
+    SubscriptionTypeNotFoundError,
 )
 from src.integrations.errors import ClinicsApiUnavailable
-from src.repositories.errors import UniqueViolationError
+from src.messages import SUBSCRIPTION_CLINICS_LIMIT_IMMUTABLE_MESSAGE
+from src.models.subscription_type import SubscriptionType
+from src.repositories.errors import ForeignKeyViolationError, UniqueViolationError
 from src.services.subscription_service import SubscriptionService
 from tests.unit.fakes import FakeClinicsApi, FakeSubscriptionRepository, FakeUsersApi
 
@@ -150,12 +153,14 @@ def test_the_clinics_double_really_raises_the_integration_error():
 def create_data(**values) -> SubscriptionCreate:
     base = {
         "name": "Pro",
+        "subscription_type_id": 1,
         "monthly_price": "4500",
         "annual_price": "45000",
         "consulting_rooms_limit": 1,
         "doctors_limit": 1,
         "assistants_limit": 1,
         "new_patients_per_year_limit": 100,
+        "clinics_limit": 1,
     }
     return SubscriptionCreate.model_validate({**base, **values})
 
@@ -187,6 +192,50 @@ async def test_create_passes_the_validated_values_to_the_repository():
     assert stored.self_service is True
     assert stored.module_keys == [PATIENTS_KEY, "scheduling"]
     assert stored.status_id == 1
+
+
+@pytest.mark.parametrize("subscription_type_id", [1, 2])
+async def test_create_passes_the_subscription_type_id_through_unchanged(subscription_type_id):
+    repository = FakeSubscriptionRepository()
+
+    view = await service(repository).create(
+        create_data(subscription_type_id=subscription_type_id), TOKEN
+    )
+
+    assert repository.items[view.subscription.id].subscription_type_id == subscription_type_id
+
+
+@pytest.mark.parametrize(
+    ("subscription_type_id", "clinics_limit"), [(1, 1), (2, 25)]
+)
+async def test_create_passes_the_clinics_limit_through_unchanged(subscription_type_id, clinics_limit):
+    repository = FakeSubscriptionRepository()
+
+    view = await service(repository).create(
+        create_data(subscription_type_id=subscription_type_id, clinics_limit=clinics_limit), TOKEN
+    )
+
+    assert repository.items[view.subscription.id].clinics_limit == clinics_limit
+
+
+async def test_a_nonexistent_subscription_type_id_becomes_the_type_not_found_error():
+    class Broken(FakeSubscriptionRepository):
+        async def create(self, *args, **kwargs):
+            raise ForeignKeyViolationError("subscriptions_subscription_type_id_fkey")
+
+    with pytest.raises(SubscriptionTypeNotFoundError) as error:
+        await service(Broken()).create(create_data(subscription_type_id=99), TOKEN)
+
+    assert "99" in error.value.message
+
+
+async def test_another_foreign_key_violation_is_not_mistaken_for_the_type_not_found():
+    class Broken(FakeSubscriptionRepository):
+        async def create(self, *args, **kwargs):
+            raise ForeignKeyViolationError("some_other_constraint")
+
+    with pytest.raises(ForeignKeyViolationError):
+        await service(Broken()).create(create_data(), TOKEN)
 
 
 async def test_a_new_subscription_has_a_true_zero_without_asking_the_clinics_api():
@@ -255,18 +304,6 @@ async def test_create_with_a_recognised_module_asks_the_users_api_once():
     assert users.module_calls == [TOKEN]
 
 
-async def test_create_with_a_dependent_module_without_its_prerequisite_fails_without_asking_the_users_api():
-    users = FakeUsersApi(clinic_module_keys=frozenset({"reminders"}))
-
-    with pytest.raises(SubscriptionModulePrerequisiteMissingError) as error:
-        await service(users=users).create(create_data(module_keys=["reminders"]), TOKEN)
-
-    assert (error.value.message, users.module_calls) == (
-        "El módulo «reminders» exige el módulo «scheduling», que no está incluido.",
-        [],
-    )
-
-
 async def test_create_with_an_unrecognised_module_fails():
     users = FakeUsersApi(clinic_module_keys=frozenset({"scheduling"}))
 
@@ -274,6 +311,16 @@ async def test_create_with_an_unrecognised_module_fails():
         await service(users=users).create(create_data(module_keys=["billing", "finance"]), TOKEN)
 
     assert "«billing»" in error.value.message
+
+
+async def test_create_with_a_retired_module_key_like_scheduling_fails():
+    # "scheduling" is spec.md's own example of a key no catalog recognises any more (US2).
+    users = FakeUsersApi(clinic_module_keys=frozenset({"patients", "reminders"}))
+
+    with pytest.raises(SubscriptionModuleNotFoundError) as error:
+        await service(users=users).create(create_data(module_keys=["scheduling"]), TOKEN)
+
+    assert "«scheduling»" in error.value.message
 
 
 async def test_create_when_the_users_api_cannot_answer_about_modules():
@@ -287,6 +334,18 @@ async def test_patients_is_always_included_even_if_excluded_from_the_request():
     view = await service().create(create_data(module_keys=[]), TOKEN)
 
     assert view.subscription.module_keys == [PATIENTS_KEY]
+
+
+async def test_a_brand_new_module_the_service_never_coded_is_accepted():
+    # No list of known module keys lives in this service's code any more (FR-004 of spec 009): a
+    # key invented for this test, that appears nowhere else in the repository, is accepted just
+    # the same as any other, because the only thing that decides is what the users API answers.
+    novel_key = "un_modulo_que_nadie_codifico"
+    users = FakeUsersApi(clinic_module_keys=frozenset({PATIENTS_KEY, novel_key}))
+
+    view = await service(users=users).create(create_data(module_keys=[novel_key]), TOKEN)
+
+    assert view.subscription.module_keys == [PATIENTS_KEY, novel_key]
 
 
 # --- US4: get ---
@@ -419,6 +478,57 @@ async def test_update_asks_the_clinics_api_after_writing_and_degrades_to_unavail
     assert degraded.clinics_count is None  # the update itself succeeded
 
 
+# --- US3 (007-add-clinics-limit): clinics_limit depends on the subscription's current type ---
+
+
+def fields_of(error: pytest.ExceptionInfo) -> list[str]:
+    return [item["loc"][-1] for item in error.value.errors]
+
+
+@pytest.mark.parametrize("new_value", [1, 50])
+async def test_sending_clinics_limit_on_an_individual_subscription_is_rejected(new_value):
+    # Sending it at all is "trying to change it", even with the value it already has (1).
+    repository = RecordingRepository()
+    repository.add(subscription_type_id=SubscriptionType.INDIVIDUAL, clinics_limit=1)
+
+    with pytest.raises(SubscriptionDataError) as error:
+        await service(repository).update(1, SubscriptionUpdate(clinics_limit=new_value), TOKEN)
+
+    assert fields_of(error) == ["clinics_limit"]
+    assert error.value.errors[0]["msg"] == SUBSCRIPTION_CLINICS_LIMIT_IMMUTABLE_MESSAGE
+    assert repository.received == []
+
+
+async def test_sending_clinics_limit_with_another_valid_field_on_an_individual_is_rejected_whole():
+    repository = RecordingRepository()
+    repository.add(
+        subscription_type_id=SubscriptionType.INDIVIDUAL, clinics_limit=1, monthly_price="900"
+    )
+
+    with pytest.raises(SubscriptionDataError):
+        await service(repository).update(
+            1, SubscriptionUpdate(clinics_limit=1, monthly_price=Decimal("950.00")), TOKEN
+        )
+
+    assert repository.received == []
+    assert repository.items[1].monthly_price == Decimal("900.00")
+
+
+async def test_updating_clinics_limit_of_an_enterprise_subscription_works_normally():
+    repository = RecordingRepository()
+    repository.add(subscription_type_id=SubscriptionType.ENTERPRISE, clinics_limit=10)
+
+    view = await service(repository).update(1, SubscriptionUpdate(clinics_limit=80), TOKEN)
+
+    assert repository.received == [{"clinics_limit": 80}]
+    assert view.subscription.clinics_limit == 80
+
+
+async def test_updating_clinics_limit_of_a_missing_subscription_is_not_found():
+    with pytest.raises(SubscriptionNotFoundError):
+        await service().update(99, SubscriptionUpdate(clinics_limit=50), TOKEN)
+
+
 # --- US5: module validation on update (research R6) ---
 
 
@@ -449,20 +559,6 @@ async def test_updating_modules_without_touching_them_does_not_pre_check_existen
 
     assert repository.extra_lookups == 0
     assert users.module_calls == []
-
-
-async def test_updating_to_a_module_without_its_prerequisite_fails_and_nothing_changes():
-    repository = FakeSubscriptionRepository()
-    repository.add(module_keys=[PATIENTS_KEY, "clinical_records", "clinical_record_templates"])
-    users = FakeUsersApi(clinic_module_keys=frozenset({"clinical_records"}))
-
-    with pytest.raises(SubscriptionModulePrerequisiteMissingError):
-        await service(repository, users=users).update(
-            1, SubscriptionUpdate(module_keys=["clinical_record_templates"]), TOKEN
-        )
-
-    # Alphabetical order (research R7): "clinical_record_templates" < "clinical_records" < "patients"
-    assert repository.items[1].module_keys == ["clinical_record_templates", "clinical_records", PATIENTS_KEY]
 
 
 async def test_updating_modules_replaces_the_whole_set_and_keeps_patients():
@@ -570,6 +666,57 @@ async def test_when_it_still_cannot_decide_after_the_retry_it_reports_the_curren
         await service(repository).change_status(1, to_status(1), TOKEN)
 
     assert "Bloqueada" in error.value.message
+
+
+# --- Datos existentes: reconciliación de tipos (FR-009, FR-010; sin historia de usuario) ---
+
+
+async def test_reconcile_marks_only_the_subscriptions_with_more_than_one_clinic():
+    repository = FakeSubscriptionRepository()
+    repository.add(name="Una")
+    repository.add(name="Dos")
+    repository.add(name="Varias")
+    clinics = FakeClinicsApi({1: 1, 2: 2, 3: 5})
+
+    marked = await service(repository, clinics).reconcile_types_from_clinic_counts(TOKEN)
+
+    assert marked == 2
+    assert repository.calls["mark_enterprise"] == 1
+    assert sorted(
+        s.id for s in repository.items.values() if s.subscription_type_id == SubscriptionType.ENTERPRISE
+    ) == [2, 3]
+    assert repository.items[1].subscription_type_id == SubscriptionType.INDIVIDUAL
+
+
+async def test_reconcile_asks_for_every_subscription_without_a_filter():
+    repository = FakeSubscriptionRepository()
+    repository.add(name="Una")
+    clinics = FakeClinicsApi({1: 2})
+
+    await service(repository, clinics).reconcile_types_from_clinic_counts(TOKEN)
+
+    assert clinics.calls == [(TOKEN, None)]
+
+
+async def test_reconcile_does_not_write_anything_when_nobody_has_more_than_one_clinic():
+    repository = FakeSubscriptionRepository()
+    repository.add(name="Una")
+    clinics = FakeClinicsApi({1: 1})
+
+    marked = await service(repository, clinics).reconcile_types_from_clinic_counts(TOKEN)
+
+    assert marked == 0
+    assert repository.calls["mark_enterprise"] == 0
+
+
+async def test_reconcile_propagates_the_clinics_failure_without_retrying_it_itself():
+    repository = FakeSubscriptionRepository()
+    repository.add(name="Una")
+
+    with pytest.raises(ClinicsApiUnavailable):
+        await service(repository, FakeClinicsApi(fail=True)).reconcile_types_from_clinic_counts(TOKEN)
+
+    assert repository.calls["mark_enterprise"] == 0
 
 
 # --- US7: delete ---

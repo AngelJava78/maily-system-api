@@ -26,10 +26,13 @@ from src.models.clinic_subscription import ClinicSubscription
 from src.models.clinic_subscription_charge import ClinicSubscriptionCharge
 from src.models.clinic_subscription_status import ClinicSubscriptionStatus
 from src.models.subscription import SUBSCRIPTION_NAME_INDEX, Subscription
+from src.models.subscription_module import SubscriptionModule
 from src.models.subscription_status import SubscriptionStatus
+from src.models.subscription_type import SubscriptionType
 from src.repositories.errors import UniqueViolationError
 
 STATUS_NAMES = {1: "Activa", 2: "Inactiva", 3: "Bloqueada", 4: "Eliminada", 5: "Manual"}
+TYPE_NAMES = {1: "Individual", 2: "Empresarial"}
 DELETED = 4
 _EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
 CLINIC_SUBSCRIPTION_STATUS_NAMES = {1: "Activa", 2: "Con cobro pendiente de resolver", 3: "Cancelada"}
@@ -123,6 +126,7 @@ class FakeSubscriptionRepository:
         *,
         name: str = "Plan",
         status_id: int = 1,
+        subscription_type_id: int = 1,
         monthly_price: str | Decimal = "100.00",
         annual_price: str | Decimal = "1000.00",
         trial_days: int = 0,
@@ -134,6 +138,7 @@ class FakeSubscriptionRepository:
         doctors_limit: int = 1,
         assistants_limit: int = 1,
         new_patients_per_year_limit: int = 100,
+        clinics_limit: int = 1,
         created_at: datetime | None = None,
     ) -> Subscription:
         subscription_id = self._next_id
@@ -143,21 +148,26 @@ class FakeSubscriptionRepository:
             id=subscription_id,
             name=name,
             description=description,
+            subscription_type_id=subscription_type_id,
             monthly_price=Decimal(str(monthly_price)).quantize(Decimal("0.01")),
             annual_price=Decimal(str(annual_price)).quantize(Decimal("0.01")),
             trial_days=trial_days,
             self_service=self_service,
-            module_keys=sorted(module_keys),
             other_features=list(other_features),
             consulting_rooms_limit=consulting_rooms_limit,
             doctors_limit=doctors_limit,
             assistants_limit=assistants_limit,
             new_patients_per_year_limit=new_patients_per_year_limit,
+            clinics_limit=clinics_limit,
             status_id=status_id,
             created_at=moment,
             updated_at=moment,
         )
         subscription.status = SubscriptionStatus(id=status_id, name=STATUS_NAMES[status_id])
+        subscription.subscription_type = SubscriptionType(
+            id=subscription_type_id, name=TYPE_NAMES[subscription_type_id]
+        )
+        subscription.modules = [SubscriptionModule(module_key=key) for key in sorted(module_keys)]
         self.items[subscription_id] = subscription
         return subscription
 
@@ -195,6 +205,7 @@ class FakeSubscriptionRepository:
         description: str | None,
         monthly_price: Decimal,
         *,
+        subscription_type_id: int,
         annual_price: Decimal,
         trial_days: int,
         self_service: bool,
@@ -204,6 +215,7 @@ class FakeSubscriptionRepository:
         doctors_limit: int,
         assistants_limit: int,
         new_patients_per_year_limit: int,
+        clinics_limit: int,
     ) -> Subscription:
         self.calls["create"] += 1
         if self._is_name_taken(name):
@@ -211,6 +223,7 @@ class FakeSubscriptionRepository:
         return self.add(
             name=name,
             description=description,
+            subscription_type_id=subscription_type_id,
             monthly_price=monthly_price,
             annual_price=annual_price,
             trial_days=trial_days,
@@ -221,6 +234,7 @@ class FakeSubscriptionRepository:
             doctors_limit=doctors_limit,
             assistants_limit=assistants_limit,
             new_patients_per_year_limit=new_patients_per_year_limit,
+            clinics_limit=clinics_limit,
         )
 
     async def update(
@@ -232,8 +246,12 @@ class FakeSubscriptionRepository:
             return None
         if "name" in changes and self._is_name_taken(changes["name"], excluding=subscription_id):
             raise UniqueViolationError(SUBSCRIPTION_NAME_INDEX)
+        changes = dict(changes)
+        module_keys = changes.pop("module_keys", None)
         for key, value in changes.items():
             setattr(subscription, key, value)
+        if module_keys is not None:
+            subscription.modules = [SubscriptionModule(module_key=key) for key in sorted(module_keys)]
         subscription.updated_at = datetime.now(UTC)
         return subscription
 
@@ -251,6 +269,19 @@ class FakeSubscriptionRepository:
         self.calls["get_status_id"] += 1
         subscription = self.items.get(subscription_id)
         return None if subscription is None else subscription.status_id
+
+    async def mark_enterprise(self, ids: Sequence[int]) -> int:
+        self.calls["mark_enterprise"] += 1
+        changed = 0
+        for subscription_id in ids:
+            subscription = self.items.get(subscription_id)
+            if subscription is not None:
+                subscription.subscription_type_id = SubscriptionType.ENTERPRISE
+                subscription.subscription_type = SubscriptionType(
+                    id=SubscriptionType.ENTERPRISE, name=TYPE_NAMES[SubscriptionType.ENTERPRISE]
+                )
+                changed += 1
+        return changed
 
     async def soft_delete(self, subscription_id: int) -> bool:
         self.calls["soft_delete"] += 1

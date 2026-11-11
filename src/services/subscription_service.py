@@ -2,27 +2,31 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from src.clinic_modules import PATIENTS_KEY, missing_prerequisite
+from src.clinic_modules import PATIENTS_KEY
 from src.dtos.subscription import (
     SubscriptionCreate,
     SubscriptionStatusChange,
     SubscriptionUpdate,
 )
 from src.exceptions import (
+    AppError,
     ClinicsCheckUnavailableError,
     ModuleCheckUnavailableError,
+    SubscriptionDataError,
     SubscriptionHasClinicsError,
     SubscriptionModuleNotFoundError,
-    SubscriptionModulePrerequisiteMissingError,
     SubscriptionNameAlreadyExistsError,
     SubscriptionNotFoundError,
     SubscriptionStatusUnchangedError,
+    SubscriptionTypeNotFoundError,
 )
 from src.integrations.clinics_api import ClinicsApiClient
 from src.integrations.errors import ClinicsApiUnavailable, UsersApiUnavailable
 from src.integrations.users_api import UsersApiClient
-from src.models.subscription import SUBSCRIPTION_NAME_INDEX, Subscription
-from src.repositories.errors import UniqueViolationError
+from src.messages import SUBSCRIPTION_CLINICS_LIMIT_IMMUTABLE_MESSAGE
+from src.models.subscription import SUBSCRIPTION_NAME_INDEX, SUBSCRIPTION_TYPE_FK_NAME, Subscription
+from src.models.subscription_type import SubscriptionType
+from src.repositories.errors import ForeignKeyViolationError, UniqueViolationError
 from src.repositories.subscription_repository import SubscriptionRepository
 
 logger = logging.getLogger(__name__)
@@ -81,20 +85,16 @@ class SubscriptionService:
     async def _resolve_modules(self, requested: list[str] | None, token: str) -> list[str]:
         """The final, ordered set of module keys to store, always including `patients`.
 
-        Validates dependencies locally first (no network call, research R6); only asks the users
-        API when the request wants something besides `patients` (research R5): raises
-        `SubscriptionModulePrerequisiteMissingError` (409), `ModuleCheckUnavailableError` (503) if
-        that API does not answer as expected, or `SubscriptionModuleNotFoundError` (422) for a key
-        it does not recognise as an active, clinic-type module.
+        Only asks the users API when the request wants something besides `patients` (research
+        R5 of spec 004): raises `ModuleCheckUnavailableError` (503) if that API does not answer
+        as expected, or `SubscriptionModuleNotFoundError` (422) for a key it does not recognise
+        as an active, clinic-type module. No dependency between modules is validated any more
+        (spec 009): any combination of modules the users API recognises is valid.
         """
         wanted = frozenset(requested or ()) | {PATIENTS_KEY}
         extra = wanted - {PATIENTS_KEY}
         if not extra:
             return [PATIENTS_KEY]
-
-        pair = missing_prerequisite(wanted)
-        if pair is not None:
-            raise SubscriptionModulePrerequisiteMissingError(*pair)
 
         try:
             valid = await self._users_api.list_clinic_module_keys(token)
@@ -106,11 +106,14 @@ class SubscriptionService:
         return sorted(wanted)
 
     async def create(self, data: SubscriptionCreate, token: str) -> SubscriptionView:
-        """Create an active subscription. The name is not checked beforehand: the database decides.
+        """Create an active subscription. Neither the name nor the type are checked beforehand:
+        the database decides.
 
-        Checking first would leave a race between two requests with the same name (research R11).
-        The clinics count is a true zero without asking the clinics API: a subscription that was
-        just created cannot have clinics yet (research R6).
+        Checking first would leave a race between two requests with the same name (research R11);
+        the same reasoning applies to `subscription_type_id` (research R5): the `INSERT` is tried
+        as is, and the foreign key decides whether the type exists. The clinics count is a true
+        zero without asking the clinics API: a subscription that was just created cannot have
+        clinics yet (research R6).
         """
         module_keys = await self._resolve_modules(data.module_keys, token)
         try:
@@ -118,6 +121,7 @@ class SubscriptionService:
                 data.name,
                 data.description,
                 data.monthly_price,
+                subscription_type_id=data.subscription_type_id,
                 annual_price=data.annual_price,
                 trial_days=data.trial_days,
                 self_service=data.self_service,
@@ -127,10 +131,15 @@ class SubscriptionService:
                 doctors_limit=data.doctors_limit,
                 assistants_limit=data.assistants_limit,
                 new_patients_per_year_limit=data.new_patients_per_year_limit,
+                clinics_limit=data.clinics_limit,
             )
         except UniqueViolationError as error:
             if error.constraint_name == SUBSCRIPTION_NAME_INDEX:
                 raise SubscriptionNameAlreadyExistsError(data.name) from error
+            raise
+        except ForeignKeyViolationError as error:
+            if error.constraint_name == SUBSCRIPTION_TYPE_FK_NAME:
+                raise SubscriptionTypeNotFoundError(data.subscription_type_id) from error
             raise
         return SubscriptionView(subscription, 0)
 
@@ -153,15 +162,30 @@ class SubscriptionService:
     ) -> SubscriptionView:
         """Apply only the fields that were sent; the database decides the name conflicts.
 
-        If `module_keys` is part of the request, existence is checked first (one extra read) so a
-        missing or deleted subscription is answered without spending a call on the users API
-        (research R6); updates that do not touch modules keep the original single-statement path.
+        If `module_keys` and/or `clinics_limit` are part of the request, the subscription is read
+        first (one lookup, shared by both) so a missing one is answered without spending a call
+        on the users API (research R6), and so an Individual subscription's `clinics_limit` can
+        be rejected —it is fixed forever there (spec 007 FR-005)— before writing anything. An
+        update that touches neither keeps the original single-statement path.
         """
         changes = data.model_dump(exclude_unset=True)  # a description sent as null is kept
-        if "module_keys" in changes:
-            if await self._repository.get_current_by_id(subscription_id) is None:
+        if "module_keys" in changes or "clinics_limit" in changes:
+            current = await self._repository.get_current_by_id(subscription_id)
+            if current is None:
                 raise SubscriptionNotFoundError(subscription_id)
-            changes["module_keys"] = await self._resolve_modules(changes["module_keys"], token)
+            if (
+                "clinics_limit" in changes
+                and current.subscription_type_id == SubscriptionType.INDIVIDUAL
+            ):
+                raise SubscriptionDataError(
+                    [
+                        AppError.field_error(
+                            "clinics_limit", SUBSCRIPTION_CLINICS_LIMIT_IMMUTABLE_MESSAGE
+                        )
+                    ]
+                )
+            if "module_keys" in changes:
+                changes["module_keys"] = await self._resolve_modules(changes["module_keys"], token)
         try:
             subscription = await self._repository.update(subscription_id, changes)
         except UniqueViolationError as error:
@@ -200,6 +224,20 @@ class SubscriptionService:
             if current.status_id == target:
                 break
         raise SubscriptionStatusUnchangedError(subscription_id, current.status.name)
+
+    async def reconcile_types_from_clinic_counts(self, token: str) -> int:
+        """Mark `enterprise` every subscription that already has more than one clinic (FR-009).
+
+        Not a request-path operation: no retry here (Principle IX, unchanged) and no degradation —
+        `ClinicsApiUnavailable` propagates so the caller (the one-off backfill script) decides
+        whether to retry (FR-010: never guess a type from a failed answer). Returns how many
+        subscriptions were marked.
+        """
+        counts = await self._clinics_api.get_counts(token, None)
+        ids = [subscription_id for subscription_id, count in counts.items() if count > 1]
+        if not ids:
+            return 0
+        return await self._repository.mark_enterprise(ids)
 
     async def delete(self, subscription_id: int, token: str) -> None:
         """Soft delete a current subscription that has no clinics.

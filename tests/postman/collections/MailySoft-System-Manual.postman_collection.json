@@ -147,9 +147,10 @@
                   "pm.test(\"es un arreglo\", function () { pm.expect(body).to.be.an(\"array\"); });",
                   "pm.test(\"cada suscripción trae los campos del contrato\", function () {",
                   "  (body || []).forEach(function (subscription) {",
-                  "    pm.expect(subscription).to.include.all.keys(\"id\", \"name\", \"monthly_price\", \"features\", \"status\", \"clinics_count\");",
+                  "    pm.expect(subscription).to.include.all.keys(\"id\", \"name\", \"monthly_price\", \"other_features\", \"subscription_type\", \"status\", \"clinics_count\");",
                   "    pm.expect(subscription.monthly_price).to.be.a(\"string\");",
-                  "    pm.expect(subscription.features).to.be.an(\"array\");",
+                  "    pm.expect(subscription.other_features).to.be.an(\"array\");",
+                  "    pm.expect(subscription.subscription_type).to.include.all.keys(\"id\", \"name\");",
                   "    pm.expect(subscription.status).to.include.all.keys(\"id\", \"name\");",
                   "    pm.expect(subscription.clinics_count === null || typeof subscription.clinics_count === \"number\").to.eql(true);",
                   "  });",
@@ -256,10 +257,10 @@
                 "subscriptions"
               ]
             },
-            "description": "Crea una suscripción con un nombre **único en cada ejecución** (`Prueba manual …`) y guarda su identificador y su nombre para las peticiones siguientes. Nace **Activa** y con 0 clínicas.\n\n**Permiso requerido**: `subscriptions:write`.\n\n**Respuestas esperadas**: **201** con la suscripción creada; 401 sin token válido; 403 sin permiso; 409 si el nombre ya existe; 422 si hay datos no válidos; 503 si no se pudo verificar el permiso.",
+            "description": "Crea una suscripción con un nombre **único en cada ejecución** (`Prueba manual …`) y guarda su identificador y su nombre para las peticiones siguientes. Nace **Activa**, con 0 clínicas y tipo **Individual** (`subscription_type_id: 1`; fijo para siempre, no puede cambiarse después).\n\n**Permiso requerido**: `subscriptions:write`.\n\n**Respuestas esperadas**: **201** con la suscripción creada; 401 sin token válido; 403 sin permiso; 409 si el nombre ya existe; 422 si hay datos no válidos; 503 si no se pudo verificar el permiso.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Prueba manual {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": 4500,\n  \"features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"]\n}",
+              "raw": "{\n  \"name\": \"Prueba manual {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"subscription_type_id\": 1,\n  \"monthly_price\": 4500,\n  \"annual_price\": 45000,\n  \"consulting_rooms_limit\": 2,\n  \"doctors_limit\": 3,\n  \"assistants_limit\": 2,\n  \"new_patients_per_year_limit\": 15000,\n  \"other_features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -281,6 +282,7 @@
                   "  pm.collectionVariables.set(\"subscriptionName\", body.name);",
                   "}",
                   "pm.test(\"nace Activa\", function () { pm.expect(body && body.status).to.eql({ id: 1, name: \"Activa\" }); });",
+                  "pm.test(\"el tipo es Individual\", function () { pm.expect(body && body.subscription_type).to.eql({ id: 1, name: \"Individual\" }); });",
                   "pm.test(\"el precio es una cadena con dos decimales\", function () { pm.expect(body && body.monthly_price).to.eql(\"4500.00\"); });",
                   "pm.test(\"una suscripción nueva no tiene clínicas\", function () { pm.expect(body && body.clinics_count).to.eql(0); });"
                 ]
@@ -384,10 +386,10 @@
                 "{{subscriptionId}}"
               ]
             },
-            "description": "Cambia solo el precio y las funciones de la suscripción creada (se envía únicamente lo que cambia).\n\n**Permiso requerido**: `subscriptions:update`.\n\n**Respuestas esperadas**: **200** con la suscripción actualizada; 404 si no existe; 409 si el nombre ya lo usa otra; 422 si hay datos no válidos o campos no permitidos.\n\nAntes de enviarla, la colección comprueba que la suscripción guardada sigue siendo la que ella creó; si no, no la envía y lo explica en la Consola.",
+            "description": "Cambia solo el precio y las otras funcionalidades de la suscripción creada (se envía únicamente lo que cambia; el tipo nunca se envía aquí, es fijo desde la creación).\n\n**Permiso requerido**: `subscriptions:update`.\n\n**Respuestas esperadas**: **200** con la suscripción actualizada; 404 si no existe; 409 si el nombre ya lo usa otra; 422 si hay datos no válidos o campos no permitidos.\n\nAntes de enviarla, la colección comprueba que la suscripción guardada sigue siendo la que ella creó; si no, no la envía y lo explica en la Consola.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"monthly_price\": 4700,\n  \"features\": [\"Hasta 8 consultorios\"]\n}",
+              "raw": "{\n  \"monthly_price\": 4700,\n  \"other_features\": [\"Hasta 8 consultorios\"]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -405,7 +407,7 @@
                   "",
                   "pm.test(\"responde 200\", function () { pm.response.to.have.status(200); });",
                   "pm.test(\"el precio cambió\", function () { pm.expect(body && body.monthly_price).to.eql(\"4700.00\"); });",
-                  "pm.test(\"las funciones cambiaron\", function () { pm.expect(body && body.features).to.eql([\"Hasta 8 consultorios\"]); });"
+                  "pm.test(\"las otras funcionalidades cambiaron\", function () { pm.expect(body && body.other_features).to.eql([\"Hasta 8 consultorios\"]); });"
                 ]
               }
             }
@@ -734,7 +736,7 @@
             "description": "**Preparación.** Crea la suscripción sobre la que actúan los casos 409 y 422 de esta carpeta; sustituye a la suscripción de prueba anterior (guarda su identificador y su nombre).\n\n**Permiso requerido**: `subscriptions:write`. **Respuesta esperada**: **201**.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Prueba manual {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": 4500,\n  \"features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
+              "raw": "{\n  \"name\": \"Prueba manual {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"subscription_type_id\": 1,\n  \"monthly_price\": 4500,\n  \"annual_price\": 45000,\n  \"consulting_rooms_limit\": 2,\n  \"doctors_limit\": 3,\n  \"assistants_limit\": 2,\n  \"new_patients_per_year_limit\": 15000,\n  \"other_features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -786,7 +788,7 @@
             "description": "**Preparación.** Crea una segunda suscripción, necesaria para provocar el choque de nombres al renombrarla (caso 2.10). Guarda su identificador y su nombre.\n\n**Permiso requerido**: `subscriptions:write`. **Respuesta esperada**: **201**.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Prueba manual otra {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": 4500,\n  \"features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
+              "raw": "{\n  \"name\": \"Prueba manual otra {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"subscription_type_id\": 1,\n  \"monthly_price\": 4500,\n  \"annual_price\": 45000,\n  \"consulting_rooms_limit\": 2,\n  \"doctors_limit\": 3,\n  \"assistants_limit\": 2,\n  \"new_patients_per_year_limit\": 15000,\n  \"other_features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -964,7 +966,7 @@
             "description": "**403 — sin permiso.** Igual que el caso anterior pero al **crear**: la segunda aplicación no tiene `subscriptions:write`, así que no se crea nada.\n\n**Es opcional**: sin segunda aplicación configurada se omite y lo explica.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Prueba manual sin permiso {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": 4500,\n  \"features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
+              "raw": "{\n  \"name\": \"Prueba manual sin permiso {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"subscription_type_id\": 1,\n  \"monthly_price\": 4500,\n  \"annual_price\": 45000,\n  \"consulting_rooms_limit\": 2,\n  \"doctors_limit\": 3,\n  \"assistants_limit\": 2,\n  \"new_patients_per_year_limit\": 15000,\n  \"other_features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1095,7 +1097,7 @@
             "description": "**409 — nombre repetido.** Intenta crear una suscripción con el nombre de la que ya existe (la de la preparación 2.1). Los nombres son únicos entre las suscripciones vigentes, sin distinguir mayúsculas.\n\n**Cómo se arregla**: elegir otro nombre. (El nombre de una suscripción eliminada queda libre.)",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"{{subscriptionName}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": 4500,\n  \"features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
+              "raw": "{\n  \"name\": \"{{subscriptionName}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"subscription_type_id\": 1,\n  \"monthly_price\": 4500,\n  \"annual_price\": 45000,\n  \"consulting_rooms_limit\": 2,\n  \"doctors_limit\": 3,\n  \"assistants_limit\": 2,\n  \"new_patients_per_year_limit\": 15000,\n  \"other_features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1246,7 +1248,7 @@
             "description": "**422 — datos no válidos: falta el nombre.** El cuerpo no trae `name`. La respuesta trae la lista `errors` con el campo y un mensaje en español. No se crea nada.\n\n**Cómo se arregla**: enviar un nombre (1 a 100 caracteres).",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"description\": \"Sin nombre.\",\n  \"monthly_price\": 4500,\n  \"features\": [\n    \"Hasta 5 consultorios\"\n  ]\n}",
+              "raw": "{\n  \"description\": \"Sin nombre.\",\n  \"subscription_type_id\": 1,\n  \"monthly_price\": 4500,\n  \"annual_price\": 45000,\n  \"consulting_rooms_limit\": 2,\n  \"doctors_limit\": 3,\n  \"assistants_limit\": 2,\n  \"new_patients_per_year_limit\": 15000,\n  \"other_features\": [\n    \"Hasta 5 consultorios\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1295,7 +1297,7 @@
             "description": "**422 — datos no válidos: precio negativo.** `monthly_price` debe ser un importe de 0 a 99 999 999,99 con hasta dos decimales. No se crea nada.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Prueba manual precio negativo {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": -1,\n  \"features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
+              "raw": "{\n  \"name\": \"Prueba manual precio negativo {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"subscription_type_id\": 1,\n  \"monthly_price\": -1,\n  \"annual_price\": 45000,\n  \"consulting_rooms_limit\": 2,\n  \"doctors_limit\": 3,\n  \"assistants_limit\": 2,\n  \"new_patients_per_year_limit\": 15000,\n  \"other_features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1344,7 +1346,7 @@
             "description": "**422 — datos no válidos: tres decimales.** El precio admite hasta dos decimales; `10.125` se rechaza en lugar de redondearse. No se crea nada.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Prueba manual tres decimales {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": \"10.125\",\n  \"features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
+              "raw": "{\n  \"name\": \"Prueba manual tres decimales {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"subscription_type_id\": 1,\n  \"monthly_price\": \"10.125\",\n  \"annual_price\": 45000,\n  \"consulting_rooms_limit\": 2,\n  \"doctors_limit\": 3,\n  \"assistants_limit\": 2,\n  \"new_patients_per_year_limit\": 15000,\n  \"other_features\": [\n    \"Hasta 5 consultorios\",\n    \"Usuarios ilimitados\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1390,10 +1392,10 @@
                 "subscriptions"
               ]
             },
-            "description": "**422 — datos no válidos: `features` nulo.** Lo que incluye la suscripción debe ser una lista de textos (puede estar vacía), no `null`. No se crea nada.",
+            "description": "**422 — datos no válidos: `other_features` nulo.** Lo que incluye la suscripción debe ser una lista de textos (puede estar vacía), no `null`. No se crea nada.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Prueba manual funciones nulas {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": 4500,\n  \"features\": null\n}",
+              "raw": "{\n  \"name\": \"Prueba manual funciones nulas {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"subscription_type_id\": 1,\n  \"monthly_price\": 4500,\n  \"annual_price\": 45000,\n  \"consulting_rooms_limit\": 2,\n  \"doctors_limit\": 3,\n  \"assistants_limit\": 2,\n  \"new_patients_per_year_limit\": 15000,\n  \"other_features\": null\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1411,7 +1413,7 @@
                   "",
                   "pm.test(\"responde 422\", function () { pm.response.to.have.status(422); });",
                   "pm.test(\"el código es validation_error\", function () { pm.expect(body && body.code).to.eql(\"validation_error\"); });",
-                  "pm.test(\"indica el campo y el mensaje en español\", function () { pm.expect(body && body.errors && body.errors[0]).to.eql({ field: \"features\", message: \"Lo que incluye la suscripción debe ser una lista de textos.\" }); });"
+                  "pm.test(\"indica el campo y el mensaje en español\", function () { pm.expect(body && body.errors && body.errors[0]).to.eql({ field: \"other_features\", message: \"Lo que incluye la suscripción debe ser una lista de textos.\" }); });"
                 ]
               }
             }
@@ -1462,6 +1464,56 @@
                   "pm.test(\"responde 422\", function () { pm.response.to.have.status(422); });",
                   "pm.test(\"el código es validation_error\", function () { pm.expect(body && body.code).to.eql(\"validation_error\"); });",
                   "pm.test(\"indica el campo y el mensaje en español\", function () { pm.expect(body && body.errors && body.errors[0]).to.eql({ field: \"status\", message: \"El campo «status» no está permitido.\" }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "update_subscription: 422 el tipo no se puede modificar",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{subscriptionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{subscriptionId}}"
+              ]
+            },
+            "description": "**422 — el tipo no se puede modificar.** `subscription_type_id` queda fijo desde que se crea la suscripción: enviarlo en una actualización se rechaza por completo, aunque sea con el mismo valor que ya tiene y aunque venga junto con otro campo válido (aquí, `monthly_price`, que tampoco cambia). La API no admite ninguna forma de cambiar el tipo después de creada.\n\n**Permiso requerido**: `subscriptions:update`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subscription_type_id\": 1,\n  \"monthly_price\": 4999\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = (function () { try { return pm.response.json(); } catch (error) { return null; } })();",
+                  "",
+                  "pm.test(\"responde 422\", function () { pm.response.to.have.status(422); });",
+                  "pm.test(\"el código es validation_error\", function () { pm.expect(body && body.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"indica el campo y el mensaje en español\", function () { pm.expect(body && body.errors && body.errors[0]).to.eql({ field: \"subscription_type_id\", message: \"El tipo de suscripción no puede modificarse una vez creada.\" }); });"
                 ]
               }
             }
@@ -1678,7 +1730,7 @@
             "description": "Crea la suscripción sobre la que actúan las demás peticiones de esta carpeta y guarda su identificador y su nombre.\n\n**Permiso requerido**: `subscriptions:write`. **Respuesta esperada**: **201**.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Prueba manual simulación {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"monthly_price\": 4500,\n  \"features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"]\n}",
+              "raw": "{\n  \"name\": \"Prueba manual simulación {{newSuffix}}\",\n  \"description\": \"Creada desde la colección manual.\",\n  \"subscription_type_id\": 1,\n  \"monthly_price\": 4500,\n  \"annual_price\": 45000,\n  \"consulting_rooms_limit\": 2,\n  \"doctors_limit\": 3,\n  \"assistants_limit\": 2,\n  \"new_patients_per_year_limit\": 15000,\n  \"other_features\": [\"Hasta 5 consultorios\", \"Usuarios ilimitados\"]\n}",
               "options": {
                 "raw": {
                   "language": "json"

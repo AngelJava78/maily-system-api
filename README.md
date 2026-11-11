@@ -253,20 +253,32 @@ registra una advertencia (el token viajaría sin cifrar). Las redirecciones nunc
 Copy-Item .env.example .env              # ajusta credenciales, puertos y las dos direcciones
 docker compose up -d db                  # PostgreSQL 17 (bases `maily_system` y `maily_system_test`, puerto 5434)
 docker compose run --rm migrate          # aprovisiona el esquema y los estatus
-docker compose up -d api                 # API en http://localhost:8010 (puerto `API_PORT`)
+docker compose up -d api                 # API en http://localhost:8001 (puerto `API_PORT`)
 ```
 
-Con la API arriba, `http://localhost:8010/docs` muestra la documentación interactiva. Cada operación
+Con la API arriba, `http://localhost:8001/docs` muestra la documentación interactiva. Cada operación
 necesita un token válido para el API de usuarios que hayas configurado.
+
+**Tipo de suscripción, una sola vez por entorno** (spec 006): después de `migrate`, toda suscripción
+que ya existiera queda con el tipo `individual` (lo asigna la propia migración `0005`). Para que las
+que ya tenían más de una clínica queden como `enterprise`, ejecuta a mano, una vez por entorno (no es
+parte del arranque normal ni bloquea `api`):
+
+```powershell
+docker compose run --rm -e BACKFILL_ACCESS_TOKEN=<token-con-permiso-para-leer-conteos> backfill-subscription-types
+```
+
+El token necesita el mismo permiso que ya exige el API de clínicas para leer conteos (no hay
+credencial de servicio nueva). Reintenta sin límite si esa API no responde: nunca adivina un tipo.
 
 Sin Docker para la API (con la base ya migrada y las variables en el entorno o en `.env`):
 
 ```powershell
 uv sync                                  # instala las dependencias
-uv run uvicorn src.main:app --port 8010
+uv run uvicorn src.main:app --port 8001
 ```
 
-Los puertos por defecto (PostgreSQL `5434`, API `8010`) evitan chocar con otros proyectos de MailySoft
+Los puertos por defecto (PostgreSQL `5434`, API `8001`) evitan chocar con otros proyectos de MailySoft
 (`5432`/`5433` y `8000`). Si alguno está ocupado, cambia `POSTGRES_PORT` (y el puerto de las dos URLs de
 base de datos) o `API_PORT` en `.env`.
 
@@ -282,7 +294,7 @@ Revertir `0002` borra el catálogo de estatus y falla si hay suscripciones que l
 bases de desarrollo.
 
 **Sin Alembic**: [`project-definition/create_database.sql`](project-definition/create_database.sql) crea
-todo el esquema (equivale a las migraciones `0001` y `0002`), carga los 4 estatus y registra la versión
+todo el esquema (equivale a las migraciones `0001` a `0005`), carga los 4 estatus y registra la versión
 de Alembic, en una sola transacción. Úsalo en una base **propia** de este servicio (no en la de
 mailySoft-usuarios: comparten el nombre de `alembic_version` y de `set_updated_at()`; si ya existen, el
 script se detiene sin cambiar nada):
@@ -425,7 +437,7 @@ y recrea). Se crea una vez y se migra; Alembic y uvicorn leen `DATABASE_URL` del
 docker compose exec db psql -U postgres -c "CREATE DATABASE maily_system_manual"
 $env:DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5434/maily_system_manual"
 uv run alembic upgrade head
-uv run uvicorn src.main:app --port 8010      # en esta misma terminal
+uv run uvicorn src.main:app --port 8001      # en esta misma terminal
 ```
 
 No uses `docker compose up api` para esto: esa API usa `maily_system`. (El script de `docker/postgres/init/` solo corre al
@@ -433,7 +445,7 @@ crear el volumen, por eso la base se crea a mano.)
 
 ### Levantar lo necesario en local
 
-- **La API** en `http://127.0.0.1:8010` (arriba), con `USERS_API_BASE_URL` (por defecto `http://localhost:8000`, el API de
+- **La API** en `http://127.0.0.1:8001` (arriba), con `USERS_API_BASE_URL` (por defecto `http://localhost:8000`, el API de
   usuarios real) y `CLINICS_API_BASE_URL` (`http://localhost:8001`) en su `.env`.
 - **La simulación de clínicas** (opcional, solo local), en el puerto 8001 que ya usa el `.env`:
 
@@ -515,9 +527,12 @@ src/
 │                      # v1 (`health_contract.py`)
 ├── dtos/              # esquemas de entrada y salida (Pydantic)
 ├── database/          # engine y sesiones async
-└── models/            # modelos SQLAlchemy (sin lógica de negocio)
+├── models/            # modelos SQLAlchemy (sin lógica de negocio)
+└── scripts/           # pasos de despliegue de un solo uso (p. ej. backfill_subscription_types.py);
+                       # no son rutas de la API ni los ejecuta Alembic
 alembic/versions/      # 0001 esquema, 0002 catálogo de estatus, 0003 corrección de suscripciones, 0004 registro
-                       # de componentes, 0005 suscripción de clínica y su historial de cobros
+                       # de componentes, 0005 tipo de suscripción, 0006 límite de clínicas, 0007 módulos de
+                       # suscripción, 0008 historial de cobros de suscripciones de clínica
 tests/unit/            # sin base de datos (DTOs, Services, seguridad, configuración, capas)
 tests/integration/     # PostgreSQL real (esquema, migraciones y Repositories)
 tests/contract/        # la API por HTTP, el documento OpenAPI, la cobertura de permisos y las colecciones de Postman

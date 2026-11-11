@@ -1,41 +1,11 @@
-"""Catalog of clinic modules and their dependencies (research R1 to R3).
+"""The one clinic-module key this service still knows about on its own (spec 009).
 
-The catalog of clinic modules itself belongs to the users API, not to this service (Principle IX):
-this module only fixes the keys this service already knows about and the dependency rule between
-them, which the users API does not model. No I/O here.
+The catalog of clinic modules belongs entirely to the users API, not to this service
+(Principle IX): this service has no fixed list of module keys and validates no dependency between
+them (that rule was retired, spec 009). `patients` is the only exception, because it MUST always
+be included in every subscription regardless of what the request asks for (FR-017 of spec
+004-correct-subscriptions-api, unchanged) — a guarantee this service makes on its own, not one the
+users API enforces for it.
 """
 
 PATIENTS_KEY = "patients"
-
-# The nine proposed keys (contracts/users-api-integration.md); a module added later to the users
-# API is still accepted as long as it is not one of the dependants below without its prerequisite.
-CLINIC_MODULE_KEYS = frozenset(
-    {
-        PATIENTS_KEY,
-        "scheduling",
-        "reminders",
-        "clinical_records",
-        "clinical_record_templates",
-        "prescriptions",
-        "finance",
-        "reports",
-        "billing",
-    }
-)
-
-# Dependent module key -> prerequisite module key (FR-018). Pure business rule of this service: the
-# users API does not model dependencies between modules.
-MODULE_DEPENDENCIES: dict[str, str] = {
-    "reminders": "scheduling",
-    "clinical_record_templates": "clinical_records",
-    "prescriptions": "clinical_records",
-    "billing": "finance",
-}
-
-
-def missing_prerequisite(keys: frozenset[str]) -> tuple[str, str] | None:
-    """The first `(dependent, prerequisite)` pair in `keys` whose prerequisite is missing, if any."""
-    for dependent, prerequisite in MODULE_DEPENDENCIES.items():
-        if dependent in keys and prerequisite not in keys:
-            return dependent, prerequisite
-    return None

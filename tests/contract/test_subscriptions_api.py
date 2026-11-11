@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from tests.helpers import Api
 
 URL = "/api/v1/subscriptions"
@@ -9,6 +11,7 @@ FIELDS = {
     "id",
     "name",
     "description",
+    "subscription_type",
     "monthly_price",
     "annual_price",
     "trial_days",
@@ -19,6 +22,7 @@ FIELDS = {
     "doctors_limit",
     "assistants_limit",
     "new_patients_per_year_limit",
+    "clinics_limit",
     "status",
     "clinics_count",
     "created_at",
@@ -26,7 +30,8 @@ FIELDS = {
 }
 MOMENT = datetime(2026, 1, 1, tzinfo=UTC)
 
-# The nine clinic-module keys the stub seeds by default (src/clinic_modules.py).
+# The real clinic-module keys the stub seeds by default (tests/stubs/users_api/app.py); no
+# dependencies between them any more (spec 009).
 BASE_LIMITS = {
     "annual_price": 12990,
     "consulting_rooms_limit": 2,
@@ -36,11 +41,13 @@ BASE_LIMITS = {
 }
 PRO = {
     "name": "Profesional",
+    "subscription_type_id": 1,
     "monthly_price": 1299,
     "trial_days": 14,
     "self_service": True,
-    "module_keys": ["scheduling", "reminders", "clinical_records"],
+    "module_keys": ["appointments", "reminders", "prescriptions"],
     "other_features": ["Soporte por correo y WhatsApp", "Capacitación inicial en línea"],
+    "clinics_limit": 1,
     **BASE_LIMITS,
 }
 
@@ -49,12 +56,14 @@ def minimal_body(name: str, monthly_price: float = 1, **extra) -> dict:
     """The smallest valid `SubscriptionCreate` body (no modules beyond `patients`)."""
     return {
         "name": name,
+        "subscription_type_id": extra.pop("subscription_type_id", 1),
         "monthly_price": monthly_price,
         "annual_price": extra.pop("annual_price", 10),
         "consulting_rooms_limit": extra.pop("consulting_rooms_limit", 1),
         "doctors_limit": extra.pop("doctors_limit", 1),
         "assistants_limit": extra.pop("assistants_limit", 1),
         "new_patients_per_year_limit": extra.pop("new_patients_per_year_limit", 1),
+        "clinics_limit": extra.pop("clinics_limit", 1),
         **extra,
     }
 
@@ -86,6 +95,7 @@ async def test_the_catalog_is_a_json_array_with_exactly_the_fields_of_the_contra
     subscription = body[0]
     assert set(subscription) == FIELDS
     assert subscription["name"] == "Básico"
+    assert subscription["subscription_type"] == {"id": 1, "name": "Individual"}
     assert subscription["description"] is None
     assert subscription["monthly_price"] == "1500.00"  # a string with two decimals
     assert subscription["annual_price"] == "15000.00"
@@ -95,6 +105,7 @@ async def test_the_catalog_is_a_json_array_with_exactly_the_fields_of_the_contra
     assert subscription["other_features"] == ["Soporte por correo"]
     assert subscription["consulting_rooms_limit"] == 1
     assert subscription["new_patients_per_year_limit"] == 5000
+    assert subscription["clinics_limit"] == 1
     assert subscription["status"] == {"id": 1, "name": "Activa"}
     assert subscription["clinics_count"] == 2
     assert datetime.fromisoformat(subscription["created_at"]).tzinfo is not None
@@ -102,7 +113,8 @@ async def test_the_catalog_is_a_json_array_with_exactly_the_fields_of_the_contra
 
 
 async def test_excluding_a_module_does_not_exclude_what_depends_on_it(api: Api):
-    # "Avanzado" del mockup: 8 de 9 módulos (todos salvo billing), billing depende de finance.
+    # "Avanzado" del mockup: todos los módulos salvo billing (ya no hay dependencias entre ellos,
+    # spec 009; esto solo prueba que excluir uno no arrastra ningún otro).
     await api.insert(
         name="Avanzado",
         module_keys=[
@@ -188,6 +200,63 @@ async def test_the_catalog_asks_the_users_api_for_the_read_permission_but_not_fo
     assert not [call for call in users_calls if call["path"] == "/api/v1/modules"]
 
 
+async def test_the_catalog_shows_each_subscriptions_own_type_without_mixing_them_up(api: Api):
+    await api.insert(name="Solo", subscription_type_id=1)
+    await api.insert(name="Corporativo", subscription_type_id=2)
+
+    body = (await api.client.get(URL)).json()
+
+    assert [(s["name"], s["subscription_type"]) for s in body] == [
+        ("Solo", {"id": 1, "name": "Individual"}),
+        ("Corporativo", {"id": 2, "name": "Empresarial"}),
+    ]
+
+
+async def test_getting_by_id_shows_the_correct_type_for_each(api: Api):
+    individual = await api.insert(name="Solo", subscription_type_id=1)
+    enterprise = await api.insert(name="Corporativo", subscription_type_id=2)
+
+    first = (await api.client.get(f"{URL}/{individual}")).json()
+    second = (await api.client.get(f"{URL}/{enterprise}")).json()
+
+    assert (first["subscription_type"], second["subscription_type"]) == (
+        {"id": 1, "name": "Individual"},
+        {"id": 2, "name": "Empresarial"},
+    )
+
+
+async def test_the_catalog_shows_each_subscriptions_own_clinics_limit_without_mixing_them_up(
+    api: Api,
+):
+    await api.insert(name="Solo", subscription_type_id=1, clinics_limit=1)
+    await api.insert(name="Corporativo", subscription_type_id=2, clinics_limit=40)
+
+    body = (await api.client.get(URL)).json()
+
+    assert [(s["name"], s["clinics_limit"]) for s in body] == [
+        ("Solo", 1),
+        ("Corporativo", 40),
+    ]
+    for subscription in body:
+        for field in (
+            "consulting_rooms_limit",
+            "doctors_limit",
+            "assistants_limit",
+            "new_patients_per_year_limit",
+        ):
+            assert field in subscription
+
+
+async def test_getting_by_id_shows_the_correct_clinics_limit_for_each(api: Api):
+    individual = await api.insert(name="Solo", subscription_type_id=1, clinics_limit=1)
+    enterprise = await api.insert(name="Corporativo", subscription_type_id=2, clinics_limit=40)
+
+    first = (await api.client.get(f"{URL}/{individual}")).json()
+    second = (await api.client.get(f"{URL}/{enterprise}")).json()
+
+    assert (first["clinics_limit"], second["clinics_limit"]) == (1, 40)
+
+
 async def test_without_the_read_permission_the_catalog_is_forbidden(api: Api):
     await api.insert(name="Visible")
     await api.set_permissions(["subscriptions:write", "subscriptions:update"])
@@ -221,9 +290,10 @@ async def test_creating_a_subscription_answers_201_with_everything_the_contract_
     assert body["annual_price"] == "12990.00"
     assert body["trial_days"] == 14
     assert body["self_service"] is True
-    assert body["module_keys"] == ["clinical_records", "patients", "reminders", "scheduling"]
+    assert body["module_keys"] == ["appointments", "patients", "prescriptions", "reminders"]
     assert body["other_features"] == ["Soporte por correo y WhatsApp", "Capacitación inicial en línea"]
     assert body["consulting_rooms_limit"] == 2
+    assert body["clinics_limit"] == 1
     assert body["clinics_count"] == 0
     assert body["description"] is None
     assert response.headers["Location"] == f"{URL}/{body['id']}"
@@ -235,6 +305,128 @@ async def test_creating_does_not_ask_the_clinics_api_and_the_new_one_is_in_the_c
     assert await api.clinics_calls() == []
     names = [s["name"] for s in (await api.client.get(URL)).json()]
     assert names == ["Profesional"]
+
+
+async def test_creating_with_each_subscription_type_id_is_accepted_and_shown(api: Api):
+    individual = await api.client.post(URL, json=minimal_body("Solo", 900, subscription_type_id=1))
+    enterprise = await api.client.post(URL, json=minimal_body("Corporativo", 5000, subscription_type_id=2))
+
+    assert individual.status_code == enterprise.status_code == 201
+    assert individual.json()["subscription_type"] == {"id": 1, "name": "Individual"}
+    assert enterprise.json()["subscription_type"] == {"id": 2, "name": "Empresarial"}
+
+
+async def test_creating_without_a_subscription_type_id_is_rejected_and_creates_nothing(api: Api):
+    body = minimal_body("Sin tipo", 1)
+    del body["subscription_type_id"]
+
+    response = await api.client.post(URL, json=body)
+
+    assert response.status_code == 422
+    assert response.json()["errors"] == [
+        {
+            "field": "subscription_type_id",
+            "message": "El tipo de suscripción es obligatorio y debe ser un número entero positivo.",
+        }
+    ]
+    assert await api.fetch_all("SELECT id FROM subscriptions") == []
+
+
+@pytest.mark.parametrize("value", ["", "Individual", "premium", 0, -1, 1.5, True])
+async def test_creating_with_a_malformed_subscription_type_id_is_rejected(api: Api, value):
+    response = await api.client.post(URL, json=minimal_body("Inválido", 1, subscription_type_id=value))
+
+    assert response.status_code == 422
+    assert response.json()["errors"] == [
+        {
+            "field": "subscription_type_id",
+            "message": "El tipo de suscripción es obligatorio y debe ser un número entero positivo.",
+        }
+    ]
+    assert await api.fetch_all("SELECT id FROM subscriptions") == []
+
+
+async def test_creating_with_a_subscription_type_id_that_does_not_exist_is_rejected(api: Api):
+    response = await api.client.post(URL, json=minimal_body("Inexistente", 1, subscription_type_id=99))
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "code": "subscription_type_not_found",
+        "message": "No se encontró el tipo de suscripción con el identificador 99.",
+    }
+    assert await api.fetch_all("SELECT id FROM subscriptions") == []
+
+
+async def test_creating_an_individual_with_clinics_limit_one_is_accepted(api: Api):
+    response = await api.client.post(
+        URL, json=minimal_body("Solo", 1, subscription_type_id=1, clinics_limit=1)
+    )
+
+    assert response.status_code == 201
+    assert response.json()["clinics_limit"] == 1
+
+
+@pytest.mark.parametrize("value", [0, 2, 50, 100])
+async def test_creating_an_individual_with_a_clinics_limit_other_than_one_is_rejected(
+    api: Api, value
+):
+    response = await api.client.post(
+        URL, json=minimal_body("Individual mal", 1, subscription_type_id=1, clinics_limit=value)
+    )
+
+    assert response.status_code == 422
+    # 0 fails the plain 1-100 range first; 2/50/100 fail the Individual-only cross rule.
+    expected_message = (
+        "El límite de clínicas debe ser un número entero de 1 a 100."
+        if value == 0
+        else "Una suscripción Individual debe tener límite de clínicas igual a 1."
+    )
+    assert response.json()["errors"] == [{"field": "clinics_limit", "message": expected_message}]
+    assert await api.fetch_all("SELECT id FROM subscriptions") == []
+
+
+@pytest.mark.parametrize("value", [1, 50, 100])
+async def test_creating_an_enterprise_with_clinics_limit_in_its_range_is_accepted(api: Api, value):
+    response = await api.client.post(
+        URL, json=minimal_body("Corporativo", 1, subscription_type_id=2, clinics_limit=value)
+    )
+
+    assert response.status_code == 201
+    assert response.json()["clinics_limit"] == value
+
+
+@pytest.mark.parametrize("value", [0, 101])
+async def test_creating_an_enterprise_with_a_clinics_limit_outside_its_range_is_rejected(
+    api: Api, value
+):
+    response = await api.client.post(
+        URL, json=minimal_body("Fuera de rango", 1, subscription_type_id=2, clinics_limit=value)
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errors"] == [
+        {
+            "field": "clinics_limit",
+            "message": "El límite de clínicas debe ser un número entero de 1 a 100.",
+        }
+    ]
+    assert await api.fetch_all("SELECT id FROM subscriptions") == []
+
+
+async def test_creating_without_a_clinics_limit_is_rejected_and_creates_nothing(api: Api):
+    body = minimal_body("Sin limite", 1)
+    del body["clinics_limit"]
+
+    response = await api.client.post(URL, json=body)
+
+    assert response.status_code == 422
+    assert response.json()["errors"] == [
+        {
+            "field": "clinics_limit",
+            "message": "El límite de clínicas debe ser un número entero de 1 a 100.",
+        }
+    ]
+    assert await api.fetch_all("SELECT id FROM subscriptions") == []
 
 
 async def test_only_the_required_data_is_enough(api: Api):
@@ -251,10 +443,10 @@ async def test_only_the_required_data_is_enough(api: Api):
 
 async def test_patients_is_always_included_even_if_the_request_excludes_it(api: Api):
     response = await api.client.post(
-        URL, json=minimal_body("Esencial", 1, module_keys=["scheduling"])
+        URL, json=minimal_body("Esencial", 1, module_keys=["reminders"])
     )
 
-    assert response.json()["module_keys"] == ["patients", "scheduling"]
+    assert response.json()["module_keys"] == ["patients", "reminders"]
 
 
 async def test_the_texts_are_saved_without_surrounding_spaces(api: Api):
@@ -337,26 +529,81 @@ async def test_without_the_annual_price_or_a_limit_the_request_is_rejected(api: 
     assert response.json()["errors"][0]["field"] == "annual_price"
 
 
-async def test_a_module_without_its_prerequisite_is_a_conflict(api: Api):
+async def test_a_module_without_what_used_to_be_its_prerequisite_is_accepted(api: Api):
     response = await api.client.post(URL, json=minimal_body("Con factura", 1, module_keys=["billing"]))
 
-    assert response.status_code == 409
-    assert response.json() == {
-        "code": "subscription_module_prerequisite_missing",
-        "message": "El módulo «billing» exige el módulo «finance», que no está incluido.",
-    }
-    assert await api.fetch_all("SELECT id FROM subscriptions") == []
+    assert response.status_code == 201
+    assert response.json()["module_keys"] == ["billing", "patients"]
 
 
-async def test_an_unrecognised_module_is_a_validation_error(api: Api):
+async def test_creating_saturno_with_all_eighteen_active_modules_is_accepted(api: Api):
+    saturno = minimal_body(
+        "Saturno",
+        1500,
+        subscription_type_id=2,
+        module_keys=[
+            "appointments",
+            "billing",
+            "clinics",
+            "consulting_rooms",
+            "expenses",
+            "finance",
+            "incomes",
+            "overview",
+            "patient_diagnoses",
+            "prescriptions",
+            "reminders",
+            "reports",
+            "schedule",
+            "services",
+            "staff",
+            "templates",
+            "vital_signs",
+        ],
+        clinics_limit=10,
+    )
+
+    response = await api.client.post(URL, json=saturno)
+
+    assert response.status_code == 201
+    assert response.json()["module_keys"] == [
+        "appointments",
+        "billing",
+        "clinics",
+        "consulting_rooms",
+        "expenses",
+        "finance",
+        "incomes",
+        "overview",
+        "patient_diagnoses",
+        "patients",
+        "prescriptions",
+        "reminders",
+        "reports",
+        "schedule",
+        "services",
+        "staff",
+        "templates",
+        "vital_signs",
+    ]
+
+
+@pytest.mark.parametrize(
+    "module_key",
+    [
+        "no_existe",
+        "scheduling",  # retired from the real catalog (US2's example in spec.md)
+    ],
+)
+async def test_an_unrecognised_module_is_a_validation_error(api: Api, module_key: str):
     response = await api.client.post(
-        URL, json=minimal_body("Inventado", 1, module_keys=["no_existe"])
+        URL, json=minimal_body("Inventado", 1, module_keys=[module_key])
     )
 
     assert response.status_code == 422
     assert response.json() == {
         "code": "subscription_module_not_found",
-        "message": "La API de usuarios no reconoce el módulo «no_existe» como un módulo de clínica vigente.",
+        "message": f"La API de usuarios no reconoce el módulo «{module_key}» como un módulo de clínica vigente.",
     }
 
 
@@ -518,6 +765,116 @@ async def test_updating_only_the_annual_price_keeps_everything_else_and_moves_th
     assert datetime.fromisoformat(after["updated_at"]) > datetime.fromisoformat(before["updated_at"])
 
 
+async def test_trying_to_change_the_subscription_type_id_rejects_the_whole_update(api: Api):
+    subscription_id = await api.insert(name="Pro", subscription_type_id=1, monthly_price="900")
+
+    response = await api.client.patch(
+        f"{URL}/{subscription_id}",
+        json={"subscription_type_id": 2, "monthly_price": "950.00"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errors"] == [
+        {
+            "field": "subscription_type_id",
+            "message": "El tipo de suscripción no puede modificarse una vez creada.",
+        }
+    ]
+    unchanged = (await api.client.get(f"{URL}/{subscription_id}")).json()
+    assert (unchanged["subscription_type"], unchanged["monthly_price"]) == (
+        {"id": 1, "name": "Individual"},
+        "900.00",
+    )
+
+
+async def test_sending_the_same_subscription_type_id_it_already_has_is_still_rejected(api: Api):
+    subscription_id = await api.insert(name="Pro", subscription_type_id=1)
+
+    response = await api.client.patch(
+        f"{URL}/{subscription_id}", json={"subscription_type_id": 1}
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["field"] == "subscription_type_id"
+
+
+async def test_updating_without_the_subscription_type_id_field_works_normally_and_the_type_stays(api: Api):
+    subscription_id = await api.insert(name="Pro", subscription_type_id=2)
+
+    response = await api.client.patch(f"{URL}/{subscription_id}", json={"monthly_price": "950.00"})
+
+    assert response.status_code == 200
+    assert response.json()["subscription_type"] == {"id": 2, "name": "Empresarial"}
+
+
+# --- US3 (007-add-clinics-limit): clinics_limit depends on the type when updating ---
+
+
+async def test_trying_to_change_the_clinics_limit_of_an_individual_rejects_the_whole_update(api: Api):
+    subscription_id = await api.insert(
+        name="Solo", subscription_type_id=1, clinics_limit=1, monthly_price="900"
+    )
+
+    response = await api.client.patch(
+        f"{URL}/{subscription_id}",
+        json={"clinics_limit": 50, "monthly_price": "950.00"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errors"] == [
+        {
+            "field": "clinics_limit",
+            "message": "El límite de clínicas no puede modificarse en una suscripción Individual.",
+        }
+    ]
+    unchanged = (await api.client.get(f"{URL}/{subscription_id}")).json()
+    assert (unchanged["clinics_limit"], unchanged["monthly_price"]) == (1, "900.00")
+
+
+async def test_sending_the_same_clinics_limit_an_individual_already_has_is_still_rejected(api: Api):
+    subscription_id = await api.insert(name="Solo", subscription_type_id=1, clinics_limit=1)
+
+    response = await api.client.patch(f"{URL}/{subscription_id}", json={"clinics_limit": 1})
+
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["field"] == "clinics_limit"
+
+
+async def test_updating_an_enterprises_clinics_limit_within_its_range_works(api: Api):
+    subscription_id = await api.insert(name="Corporativo", subscription_type_id=2, clinics_limit=10)
+
+    response = await api.client.patch(f"{URL}/{subscription_id}", json={"clinics_limit": 80})
+
+    assert response.status_code == 200
+    assert response.json()["clinics_limit"] == 80
+
+
+@pytest.mark.parametrize("value", [0, 101])
+async def test_updating_an_enterprises_clinics_limit_outside_its_range_is_rejected(api: Api, value):
+    subscription_id = await api.insert(name="Corporativo", subscription_type_id=2, clinics_limit=10)
+
+    response = await api.client.patch(f"{URL}/{subscription_id}", json={"clinics_limit": value})
+
+    assert response.status_code == 422
+    assert response.json()["errors"] == [
+        {
+            "field": "clinics_limit",
+            "message": "El límite de clínicas debe ser un número entero de 1 a 100.",
+        }
+    ]
+    unchanged = (await api.client.get(f"{URL}/{subscription_id}")).json()
+    assert unchanged["clinics_limit"] == 10
+
+
+async def test_updating_without_the_clinics_limit_field_works_normally_and_it_stays(api: Api):
+    subscription_id = await api.insert(name="Pro", subscription_type_id=2, clinics_limit=15)
+
+    response = await api.client.patch(f"{URL}/{subscription_id}", json={"monthly_price": "950.00"})
+
+    assert response.status_code == 200
+    assert response.json()["clinics_limit"] == 15
+
+
 async def test_a_name_can_change_its_capitals_but_not_take_the_one_of_another(api: Api):
     pro = await api.insert(name="Pro")
     await api.insert(name="Básico")
@@ -607,19 +964,17 @@ async def test_updating_modules_replaces_the_whole_set_but_keeps_patients(api: A
     assert response.json()["module_keys"] == ["finance", "patients"]
 
 
-async def test_updating_to_a_module_without_its_prerequisite_is_a_conflict_and_nothing_changes(
+async def test_updating_to_a_module_without_what_used_to_be_its_prerequisite_is_accepted(
     api: Api,
 ):
-    subscription_id = await api.insert(name="Pro", module_keys=["patients", "scheduling"])
+    subscription_id = await api.insert(name="Pro", module_keys=["patients", "reminders"])
 
     response = await api.client.patch(
         f"{URL}/{subscription_id}", json={"module_keys": ["billing"]}
     )
 
-    assert response.status_code == 409
-    assert response.json()["code"] == "subscription_module_prerequisite_missing"
-    unchanged = (await api.client.get(f"{URL}/{subscription_id}")).json()
-    assert unchanged["module_keys"] == ["patients", "scheduling"]
+    assert response.status_code == 200
+    assert response.json()["module_keys"] == ["billing", "patients"]
 
 
 async def test_updating_modules_of_a_deleted_subscription_is_not_found_before_asking_the_users_api(
@@ -856,11 +1211,15 @@ async def test_deleting_does_not_touch_modules_prices_or_limits(api: Api):
 
     await api.client.delete(f"{URL}/{subscription_id}")
 
-    row = await api.fetch_all(
-        "SELECT module_keys, consulting_rooms_limit FROM subscriptions WHERE id = :id",
+    modules = await api.fetch_all(
+        "SELECT module_key FROM subscription_modules WHERE subscription_id = :id ORDER BY module_key",
         id=subscription_id,
     )
-    assert row == [(["billing", "finance", "patients"], 4)]
+    assert modules == [("billing",), ("finance",), ("patients",)]
+    limits = await api.fetch_all(
+        "SELECT consulting_rooms_limit FROM subscriptions WHERE id = :id", id=subscription_id
+    )
+    assert limits == [(4,)]
 
 
 async def test_a_subscription_with_clinics_cannot_be_deleted(api: Api):

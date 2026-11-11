@@ -31,14 +31,17 @@ async def create_minimal(
     monthly_price: Decimal = Decimal("1"),
     other_features: list[str] | None = None,
     module_keys: list[str] | None = None,
+    subscription_type_id: int = 1,
+    clinics_limit: int = 1,
 ):
-    """`repository.create(...)` with sensible defaults for the seven fields this module does not
+    """`repository.create(...)` with sensible defaults for the fields this module does not
     exercise (module validation is the Service's job, already covered in test_subscription_service.py).
     """
     return await repository.create(
         name,
         description,
         monthly_price,
+        subscription_type_id=subscription_type_id,
         annual_price=Decimal("10"),
         trial_days=0,
         self_service=False,
@@ -48,6 +51,7 @@ async def create_minimal(
         doctors_limit=1,
         assistants_limit=1,
         new_patients_per_year_limit=100,
+        clinics_limit=clinics_limit,
     )
 
 
@@ -121,6 +125,7 @@ async def test_create_inserts_an_active_subscription_and_returns_it_reloaded(
         "Pro",
         "Para clínicas",
         Decimal("4500"),
+        subscription_type_id=2,
         annual_price=Decimal("45000"),
         trial_days=14,
         self_service=True,
@@ -130,9 +135,11 @@ async def test_create_inserts_an_active_subscription_and_returns_it_reloaded(
         doctors_limit=3,
         assistants_limit=2,
         new_patients_per_year_limit=15000,
+        clinics_limit=25,
     )
 
     assert created.id >= 1
+    assert created.subscription_type_id == 2
     assert created.status_id == 1
     assert (created.status.id, created.status.name) == (1, "Activa")
     assert created.monthly_price == Decimal("4500.00")  # two decimals even if sent without them
@@ -144,6 +151,7 @@ async def test_create_inserts_an_active_subscription_and_returns_it_reloaded(
     assert created.other_features == ["Hasta 5 consultorios", "Usuarios ilimitados"]  # same order
     assert (created.consulting_rooms_limit, created.doctors_limit) == (2, 3)
     assert (created.assistants_limit, created.new_patients_per_year_limit) == (2, 15000)
+    assert created.clinics_limit == 25
     assert created.description == "Para clínicas"
     assert created.created_at == created.updated_at
 
@@ -154,6 +162,22 @@ async def test_create_without_description_stores_none(db_session: AsyncSession):
     assert created.description is None
     assert created.other_features == []
     assert created.monthly_price == Decimal("1.00")
+
+
+async def test_create_persists_the_exact_clinics_limit_for_individual_and_enterprise(
+    db_session: AsyncSession,
+):
+    repository = SubscriptionRepository(db_session)
+
+    individual = await create_minimal(
+        repository, "Solo", subscription_type_id=1, clinics_limit=1
+    )
+    enterprise = await create_minimal(
+        repository, "Corporativo", subscription_type_id=2, clinics_limit=30
+    )
+
+    assert individual.clinics_limit == 1
+    assert enterprise.clinics_limit == 30
 
 
 async def test_a_repeated_name_with_other_capitals_is_a_unique_violation_of_the_name_index(
@@ -314,6 +338,77 @@ async def test_update_of_an_identifier_above_int4_does_not_query_the_database():
     repository = SubscriptionRepository(ForbiddenSession())
 
     assert await repository.update(INT4_MAX + 1, {"name": "X"}) is None
+
+
+async def test_update_replaces_the_module_rows_atomically_leaving_no_orphan(
+    db_session: AsyncSession,
+):
+    """FR-009: a full module replacement leaves exactly the new set, nothing from the old one."""
+    subscription_id = await insert_subscription(
+        db_session, name="Pro", module_keys=["patients", "scheduling", "reminders"]
+    )
+    repository = SubscriptionRepository(db_session)
+
+    updated = await repository.update(subscription_id, {"module_keys": ["patients", "finance"]})
+
+    assert updated is not None
+    assert updated.module_keys == ["finance", "patients"]
+    rows = (
+        await db_session.execute(
+            text(
+                "SELECT module_key FROM subscription_modules "
+                "WHERE subscription_id = :id ORDER BY module_key"
+            ),
+            {"id": subscription_id},
+        )
+    ).all()
+    assert [row[0] for row in rows] == ["finance", "patients"]
+
+
+# --- Datos existentes: mark_enterprise (FR-009; sin historia de usuario) ---
+
+
+async def test_mark_enterprise_changes_only_the_given_ids(db_session: AsyncSession):
+    first = await insert_subscription(db_session, name="Una")
+    second = await insert_subscription(db_session, name="Dos")
+    third = await insert_subscription(db_session, name="Tres")
+
+    changed = await SubscriptionRepository(db_session).mark_enterprise([second, third])
+
+    assert changed == 2
+    types = await db_session.execute(
+        text("SELECT id, subscription_type_id FROM subscriptions ORDER BY id")
+    )
+    assert dict(types.all()) == {first: 1, second: 2, third: 2}
+
+
+async def test_mark_enterprise_with_an_empty_list_does_nothing(db_session: AsyncSession):
+    subscription_id = await insert_subscription(db_session, name="Una")
+
+    changed = await SubscriptionRepository(db_session).mark_enterprise([])
+
+    assert changed == 0
+    value = (
+        await db_session.execute(
+            text("SELECT subscription_type_id FROM subscriptions WHERE id = :id"),
+            {"id": subscription_id},
+        )
+    ).scalar_one()
+    assert value == 1
+
+
+async def test_mark_enterprise_also_reaches_a_deleted_subscription(db_session: AsyncSession):
+    deleted = await insert_subscription(db_session, name="Eliminada", status_id=4)
+
+    changed = await SubscriptionRepository(db_session).mark_enterprise([deleted])
+
+    assert changed == 1
+    value = (
+        await db_session.execute(
+            text("SELECT subscription_type_id FROM subscriptions WHERE id = :id"), {"id": deleted}
+        )
+    ).scalar_one()
+    assert value == 2
 
 
 # --- US6: change_status and get_status_id ---
