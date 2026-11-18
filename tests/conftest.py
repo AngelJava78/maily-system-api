@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 
 from tests.helpers import (
     CLINICS_BASE_URL,
+    PAYMENTS_BASE_URL,
     ROOT,
     TEST_TOKEN,
     USERS_BASE_URL,
@@ -41,6 +42,7 @@ _NEEDS_REAL_DATABASE = {
     "committing_session",
     "api",
     "health_api",
+    "billing_api",
 }
 
 
@@ -54,6 +56,26 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         if _NEEDS_REAL_DATABASE.intersection(getattr(item, "fixturenames", ())):
             item.add_marker(pytest.mark.slow)
+
+
+@pytest.fixture(autouse=True)
+def billing_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Define the two mandatory variables of the subscription periods for every test (spec 010, A6).
+
+    The tests that start the service (`lifespan`) would refuse to start without them, and those tests
+    do not know about this feature. The cutoff is far in the past, so it never interferes. The tests of
+    the configuration itself remove them again. The configurations are cached, so they are cleared
+    before and after.
+    """
+    from src.config import get_billing_settings, get_payments_settings
+
+    monkeypatch.setenv("PAYMENTS_API_BASE_URL", "http://payments-api:8080")
+    monkeypatch.setenv("BILLING_CUTOFF_AT", "2020-01-01T00:00:00Z")
+    for cached in (get_payments_settings, get_billing_settings):
+        cached.cache_clear()
+    yield
+    for cached in (get_payments_settings, get_billing_settings):
+        cached.cache_clear()
 
 
 def _test_database_url() -> str | None:
@@ -224,6 +246,31 @@ def clinics_api_client(clinics_stub: httpx.AsyncClient):
     return ClinicsApiClient(clinics_stub, CLINICS_BASE_URL, 5.0)
 
 
+# --- Simulation of the payments API (tests/stubs/payments_api, spec 010) ---
+
+
+@pytest.fixture
+def payments_stub_app():
+    from tests.stubs.payments_api.app import create_stub_app
+
+    return create_stub_app()
+
+
+@pytest_asyncio.fixture
+async def payments_stub(payments_stub_app) -> AsyncIterator[httpx.AsyncClient]:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=payments_stub_app), base_url=PAYMENTS_BASE_URL
+    ) as client:
+        yield client
+
+
+@pytest.fixture
+def payments_api_client(payments_stub: httpx.AsyncClient):
+    from src.integrations.payments_api import PaymentsApiClient
+
+    return PaymentsApiClient(payments_stub, PAYMENTS_BASE_URL, 5.0)
+
+
 # --- Simulation of the monitored components (tests/stubs/components, spec 005) ---
 
 
@@ -254,17 +301,24 @@ async def api(
     migrated_db: None,
     users_stub: httpx.AsyncClient,
     clinics_stub: httpx.AsyncClient,
+    payments_stub: httpx.AsyncClient,
     components_stub_app,
 ) -> AsyncIterator[Api]:
-    """The real application over HTTP, talking to the real PostgreSQL and to the two simulations.
+    """The real application over HTTP, talking to the real PostgreSQL and to the simulations.
 
     The clients of the other APIs are the real ones (their translation of answers and failures is
     part of what is tested); only their transport is replaced by the in-memory simulations. The
-    health checks (spec 005) go to the simulation of components.
+    health checks (spec 005) go to the simulation of components, and the subscription periods
+    (spec 010) to the simulation of the payments API.
     """
     from src.database import get_session
-    from src.dependencies import get_clinics_api_client, get_users_api_client
+    from src.dependencies import (
+        get_clinics_api_client,
+        get_payments_api_client,
+        get_users_api_client,
+    )
     from src.integrations.clinics_api import ClinicsApiClient
+    from src.integrations.payments_api import PaymentsApiClient
     from src.integrations.users_api import UsersApiClient
     from src.main import create_app
     from tests.health_support import (
@@ -274,7 +328,7 @@ async def api(
     )
 
     app = create_app()
-    timeouts = {"users": 5.0, "clinics": 5.0}
+    timeouts = {"users": 5.0, "clinics": 5.0, "payments": 5.0}
 
     async def users_client() -> UsersApiClient:
         return UsersApiClient(users_stub, USERS_BASE_URL, timeouts["users"])
@@ -282,12 +336,16 @@ async def api(
     async def clinics_client() -> ClinicsApiClient:
         return ClinicsApiClient(clinics_stub, CLINICS_BASE_URL, timeouts["clinics"])
 
+    async def payments_client() -> PaymentsApiClient:
+        return PaymentsApiClient(payments_stub, PAYMENTS_BASE_URL, timeouts["payments"])
+
     async def session() -> AsyncIterator[AsyncSession]:
         async with AsyncSession(engine, expire_on_commit=False) as new_session:
             yield new_session
 
     app.dependency_overrides[get_users_api_client] = users_client
     app.dependency_overrides[get_clinics_api_client] = clinics_client
+    app.dependency_overrides[get_payments_api_client] = payments_client
     app.dependency_overrides[get_session] = session
     probe_client = install_health_overrides(
         app, components_stub_app, HealthConfigHolder(TEST_HEALTH_CONFIG)
@@ -304,11 +362,14 @@ async def api(
         httpx.AsyncClient(transport=transport, base_url="http://api.test") as anonymous,
         probe_client,
     ):
-        yield Api(client, anonymous, users_stub, clinics_stub, engine, timeouts)
+        yield Api(client, anonymous, users_stub, clinics_stub, engine, timeouts, payments_stub)
 
     async with engine.begin() as connection:
         await connection.execute(
-            text("TRUNCATE subscriptions, monitored_components RESTART IDENTITY CASCADE")
+            text(
+                "TRUNCATE subscriptions, monitored_components, subscription_charges, "
+                "subscription_periods RESTART IDENTITY CASCADE"
+            )
         )
 
 
@@ -368,3 +429,77 @@ async def health_api(
 
     async with engine.begin() as connection:
         await connection.execute(text("TRUNCATE monitored_components"))
+
+
+@pytest_asyncio.fixture
+async def billing_api(
+    engine: AsyncEngine,
+    migrated_db: None,
+    users_stub: httpx.AsyncClient,
+    clinics_stub: httpx.AsyncClient,
+    payments_stub: httpx.AsyncClient,
+) -> AsyncIterator["BillingApi"]:
+    """The real application for the tests of the subscription periods (spec 010).
+
+    The real PostgreSQL, the three APIs simulated (the clients are the real ones, only their transport
+    is the in-memory simulation) and a `FakeClock` that each test moves. `TEST_TOKEN` starts with the
+    two permissions of the subscription periods.
+    """
+    from src.database import get_session
+    from src.dependencies import (
+        get_clinics_api_client,
+        get_clock,
+        get_payments_api_client,
+        get_users_api_client,
+    )
+    from src.integrations.clinics_api import ClinicsApiClient
+    from src.integrations.payments_api import PaymentsApiClient
+    from src.integrations.users_api import UsersApiClient
+    from src.main import create_app
+    from tests.billing_support import PERMISSIONS, BillingApi, at
+    from tests.health_support import FakeClock
+
+    app = create_app()
+    clock = FakeClock(at("2026-11-25T15:30:00Z"))
+    timeouts = {"users": 5.0, "clinics": 5.0, "payments": 5.0}  # a test shortens one to try a slow API
+
+    async def users_client() -> UsersApiClient:
+        return UsersApiClient(users_stub, USERS_BASE_URL, timeouts["users"])
+
+    async def clinics_client() -> ClinicsApiClient:
+        return ClinicsApiClient(clinics_stub, CLINICS_BASE_URL, timeouts["clinics"])
+
+    async def payments_client() -> PaymentsApiClient:
+        return PaymentsApiClient(payments_stub, PAYMENTS_BASE_URL, timeouts["payments"])
+
+    async def session() -> AsyncIterator[AsyncSession]:
+        async with AsyncSession(engine, expire_on_commit=False) as new_session:
+            yield new_session
+
+    async def fake_clock() -> FakeClock:
+        return clock
+
+    app.dependency_overrides[get_users_api_client] = users_client
+    app.dependency_overrides[get_clinics_api_client] = clinics_client
+    app.dependency_overrides[get_payments_api_client] = payments_client
+    app.dependency_overrides[get_session] = session
+    app.dependency_overrides[get_clock] = fake_clock
+
+    await grant(users_stub, TEST_TOKEN, PERMISSIONS)
+    transport = httpx.ASGITransport(app=app)
+    async with (
+        httpx.AsyncClient(
+            transport=transport,
+            base_url="http://api.test",
+            headers={"Authorization": f"Bearer {TEST_TOKEN}"},
+        ) as client,
+        httpx.AsyncClient(transport=transport, base_url="http://api.test") as anonymous,
+    ):
+        yield BillingApi(
+            app, client, anonymous, users_stub, clinics_stub, payments_stub, engine, clock, timeouts
+        )
+
+    async with engine.begin() as connection:
+        await connection.execute(
+            text("TRUNCATE subscriptions, subscription_charges, subscription_periods RESTART IDENTITY CASCADE")
+        )

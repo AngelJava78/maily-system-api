@@ -30,8 +30,9 @@ def test_the_two_new_messages_are_the_exact_texts_of_the_catalog():
     )
 
 
-def test_the_catalog_has_seventeen_codes_with_the_two_new_ones():
-    assert len(ErrorCode) == 17
+def test_the_catalog_has_twenty_two_codes_with_the_two_new_ones():
+    # 17 after this spec; spec 010 (subscription periods) later added 5 more.
+    assert len(ErrorCode) == 22
     assert ErrorCode.MONITORED_COMPONENT_NOT_FOUND.value == "monitored_component_not_found"
     assert ErrorCode.MONITORED_COMPONENT_CODE_ALREADY_EXISTS.value == "monitored_component_code_already_exists"
 

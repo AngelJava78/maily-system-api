@@ -6,11 +6,14 @@ especificaciones. Cada regla lleva el comentario `-- [spec NNN-nombre]` de la es
 introduce. Hoy coincide con lo que entregan las migraciones `0001` y `0002` (esquema y datos
 iniciales de `001-subscriptions-api`), `0003` (`004-correct-subscriptions-api`), `0004`
 (`005-health-monitoring`), `0005` (`006-add-subscription-type`), `0006`
-(`007-add-clinics-limit`) y `0007` (`008-subscription-modules-table`), y con
+(`007-add-clinics-limit`), `0007` (`008-subscription-modules-table`) y `0008`
+(`010-subscription-periods`), y con
 `specs/008-subscription-modules-table/contracts/database-schema.sql` (el esquema completo vigente
 de `subscriptions`, ya sin `module_keys`, y de la tabla nueva `subscription_modules`; el de
-`007-add-clinics-limit` quedó superado por esta feature solo en esos dos puntos) y
-`specs/005-health-monitoring/contracts/database-schema.sql` (`monitored_components`).
+`007-add-clinics-limit` quedó superado por esta feature solo en esos dos puntos),
+`specs/005-health-monitoring/contracts/database-schema.sql` (`monitored_components`) y
+`specs/010-subscription-periods/contracts/database-schema.sql` (`subscription_periods` y
+`subscription_charges`).
 
 La asignación del tipo a las suscripciones que ya existían (FR-009/FR-010 de `006-add-subscription-type`)
 no es parte de este esquema: la ejecuta, una sola vez, `src/scripts/backfill_subscription_types.py`
@@ -45,12 +48,23 @@ PostgreSQL les pone el automático (`<tabla>_pkey`, `<tabla>_<columna>_key`, `<t
 | `monitored_components_sort_order_check` | El orden va de 0 a 9999 -- [spec 005-health-monitoring] |
 | `monitored_components_service_paths_check` | Un servicio tiene `ready_path` e `info_path` -- [spec 005-health-monitoring] |
 | `monitored_components_frontend_ready_path_check` | Un frontend no tiene `ready_path` -- [spec 005-health-monitoring] |
+| `subscription_periods_trial_ends_check` | El fin de la prueba no es anterior al inicio del periodo -- [spec 010-subscription-periods] |
+| `subscription_periods_paid_until_check` | La fecha hasta la que está pagada la organización es posterior al inicio -- [spec 010-subscription-periods] |
+| `subscription_charges_payment_id_key` | Un pago de Pagos es un solo cobro: el mismo `payment_id` no se registra dos veces (el Service lo traduce a «ya registrado») -- [spec 010-subscription-periods] |
+| `subscription_charges_terms_attempt_key` | Mismas condiciones (organización, fecha de pago que salda, periodo de cobro e importe) e intento son el mismo cobro: decide la carrera de dos inicios simultáneos -- [spec 010-subscription-periods] |
+| `subscription_charges_pending_terms_key` | Índice único parcial (`WHERE status = 'pending'`): a lo sumo un cobro sin resolver por periodo e importe, cualquiera que sea el intento -- [spec 010-subscription-periods] |
+| `subscription_charges_amount_check`, `subscription_charges_currency_check`, `subscription_charges_billing_period_check`, `subscription_charges_attempt_check`, `subscription_charges_status_check`, `subscription_charges_closed_reason_check` | El importe es mayor que 0; la moneda es `MXN`; el periodo es `monthly` o `annual`; el intento es 1 o más; el estado es `pending`, `applied` o `closed`; el motivo de cierre es `rejected`, `cancelled`, `inconsistent` o `refunded` -- [spec 010-subscription-periods] |
+| `subscription_charges_resolution_check` | El estado fija qué columnas llevan valor: `pending` no tiene motivo, periodo cubierto ni fecha de resolución; `applied` tiene periodo cubierto y fecha; `closed` tiene motivo y fecha pero no periodo -- [spec 010-subscription-periods] |
 
 Los índices con nombre explícito son `subscriptions_name_not_deleted_key` (el servicio lo usa para
 traducir un nombre repetido a un 409) y `monitored_components_code_not_deleted_key` (traduce un código de
 componente repetido a un 409) -- [spec 005-health-monitoring]; también llevan nombre explícito la función
 `set_updated_at` y los disparadores `subscriptions_set_updated_at` y `monitored_components_set_updated_at`
-(este último de `005-health-monitoring`, que reutiliza la función). Las restricciones de tabla de
+(este último de `005-health-monitoring`, que reutiliza la función). `010-subscription-periods` añade los
+índices `subscription_charges_pending_idx` (parcial: la conciliación solo lee los cobros pendientes de una
+organización) y `subscription_charges_pending_terms_key` (único parcial, arriba) y los disparadores
+`subscription_periods_set_updated_at` y `subscription_charges_set_updated_at`, que reutilizan la misma
+función. Las restricciones de tabla de
 `monitored_components` (`…_service_paths_check` y `…_frontend_ready_path_check`) y de `subscriptions`
 (`subscriptions_clinics_limit_check`, spec 007) se nombran a propósito, porque PostgreSQL no da un
 nombre estable a una restricción de varias columnas.
@@ -61,7 +75,8 @@ nombre estable a una restricción de varias columnas.
 -- Esquema vigente tras 001-subscriptions-api (migraciones 0001, 0002), su corrección
 -- 004-correct-subscriptions-api (migración 0003), 005-health-monitoring (migración 0004),
 -- 006-add-subscription-type (migración 0005), 007-add-clinics-limit (migración 0006) y
--- 008-subscription-modules-table (migración 0007), PostgreSQL 17. Es el contenido que entregan
+-- 008-subscription-modules-table (migración 0007) y 010-subscription-periods (migración 0008),
+-- PostgreSQL 17. Es el contenido que entregan
 -- esas migraciones y el que se refleja en project-definition/DATA_SCHEMA.md (esquema objetivo del
 -- proyecto). `subscriptions` se muestra ya sin `module_keys` (movida a `subscription_modules`,
 -- abajo) y con el tipo y el límite de clínicas; el delta que aplica 0007 está documentado en
@@ -234,5 +249,85 @@ CREATE UNIQUE INDEX monitored_components_code_not_deleted_key
 -- [spec 005 FR-028] updated_at cambia con cualquier UPDATE (reutiliza set_updated_at de 001).
 CREATE TRIGGER monitored_components_set_updated_at
 	BEFORE UPDATE ON monitored_components
+	FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------------------------------------------------------------------------------------------
+-- Periodo de suscripción de cada organización  -- [spec 010-subscription-periods FR-007 a FR-012, FR-042]
+-- Cuándo empezó su primer periodo, cuándo termina la prueba y hasta cuándo está pagada (migración
+-- 0008). La organización es de otro API (Clínicas): su identificador es una referencia, sin clave
+-- foránea. La fecha del siguiente pago, el estado y los días que faltan NO se guardan: se derivan al
+-- consultar. El registro se crea en la primera consulta, una sola vez por organización. Empieza vacío.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE subscription_periods (
+	organization_id uuid PRIMARY KEY,
+	started_at timestamptz NOT NULL, -- [spec 010 FR-007] el más tardío entre el alta de la organización y la fecha de corte
+	trial_ends_at timestamptz, -- [spec 010 FR-009] NULL = el plan no tenía prueba; una vez fijada no cambia
+	paid_until timestamptz, -- [spec 010 FR-010] NULL = ningún pago aplicado; solo lo mueve un cobro aprobado
+	created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	CONSTRAINT subscription_periods_trial_ends_check
+		CHECK (trial_ends_at IS NULL OR trial_ends_at >= started_at),
+	CONSTRAINT subscription_periods_paid_until_check
+		CHECK (paid_until IS NULL OR paid_until > started_at)
+);
+
+-- [spec 010 FR-043] updated_at cambia con cualquier UPDATE (reutiliza set_updated_at de 001).
+CREATE TRIGGER subscription_periods_set_updated_at
+	BEFORE UPDATE ON subscription_periods
+	FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------------------------------------------------------------------------------------------
+-- Cobros que esta API inició  -- [spec 010-subscription-periods FR-021, FR-022, FR-032]
+-- `payment_id` es el pago en Pagos (único). `status` es el resultado PROPIO de la conciliación
+-- (`pending`, `applied`, `closed`); el estatus del pago y su checkout NO se guardan (son de Pagos).
+-- El importe es NUMERIC (Principio VI), nunca float. Empieza vacío.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE subscription_charges (
+	id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	organization_id uuid NOT NULL REFERENCES subscription_periods (organization_id),
+	payment_id uuid NOT NULL, -- [spec 010 FR-021] el pago en Pagos; único
+	amount numeric(10,2) NOT NULL, -- [spec 010 FR-016, FR-018] pesos mexicanos, sin IVA, nunca float
+	currency varchar(3) NOT NULL,
+	billing_period varchar(10) NOT NULL, -- [spec 010 FR-029] duración del periodo que cubrirá
+	settles_due_at timestamptz NOT NULL, -- [spec 010 FR-022] la fecha de pago que salda
+	attempt integer NOT NULL, -- [spec 010 FR-022, FR-023] 1 + intentos previos ya terminados con las mismas condiciones
+	status varchar(10) NOT NULL DEFAULT 'pending',
+	closed_reason varchar(20), -- solo si status = 'closed'
+	period_starts_at timestamptz, -- solo si status = 'applied' [spec 010 FR-029]
+	period_ends_at timestamptz, -- solo si status = 'applied'; es el nuevo paid_until
+	resolved_at timestamptz, -- cuándo se aplicó o se cerró
+	created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	CONSTRAINT subscription_charges_payment_id_key UNIQUE (payment_id),
+	CONSTRAINT subscription_charges_terms_attempt_key
+		UNIQUE (organization_id, settles_due_at, billing_period, amount, attempt),
+	CONSTRAINT subscription_charges_amount_check CHECK (amount > 0),
+	CONSTRAINT subscription_charges_currency_check CHECK (currency = 'MXN'),
+	CONSTRAINT subscription_charges_billing_period_check CHECK (billing_period IN ('monthly', 'annual')),
+	CONSTRAINT subscription_charges_attempt_check CHECK (attempt >= 1),
+	CONSTRAINT subscription_charges_status_check CHECK (status IN ('pending', 'applied', 'closed')),
+	CONSTRAINT subscription_charges_closed_reason_check
+		CHECK (closed_reason IS NULL OR closed_reason IN ('rejected', 'cancelled', 'inconsistent', 'refunded')),
+	CONSTRAINT subscription_charges_resolution_check CHECK (
+		(status = 'pending' AND closed_reason IS NULL AND period_starts_at IS NULL
+			AND period_ends_at IS NULL AND resolved_at IS NULL)
+		OR (status = 'applied' AND closed_reason IS NULL AND period_starts_at IS NOT NULL
+			AND period_ends_at > period_starts_at AND resolved_at IS NOT NULL)
+		OR (status = 'closed' AND closed_reason IS NOT NULL AND period_starts_at IS NULL
+			AND period_ends_at IS NULL AND resolved_at IS NOT NULL)
+	) -- [spec 010 FR-032] el estado fija qué columnas llevan valor
+);
+
+-- [spec 010 FR-026] la conciliación y la búsqueda del cobro pendiente solo leen los pendientes de una organización.
+CREATE INDEX subscription_charges_pending_idx
+	ON subscription_charges (organization_id, created_at) WHERE status = 'pending';
+
+-- [spec 010 FR-022] a lo sumo un cobro sin resolver por periodo e importe, cualquiera que sea el intento:
+-- dos inicios simultáneos no pueden dejar dos cobros, así que solo se ofrece un checkout.
+CREATE UNIQUE INDEX subscription_charges_pending_terms_key
+	ON subscription_charges (organization_id, settles_due_at, billing_period, amount) WHERE status = 'pending';
+
+CREATE TRIGGER subscription_charges_set_updated_at
+	BEFORE UPDATE ON subscription_charges
 	FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 ```

@@ -36,3 +36,17 @@ class DashboardSourceUnavailable(IntegrationError):
 
     def __init__(self) -> None:
         super().__init__("The dashboard data source did not answer as expected")
+
+
+class OrganizationNotFound(IntegrationError):
+    """The clinics API answered that the organization does not exist or is not the person's own."""
+
+    def __init__(self) -> None:
+        super().__init__("The clinics API has no such organization for this token")
+
+
+class PaymentsApiUnavailable(IntegrationError):
+    """The payments API did not answer as expected: the state of a payment cannot be known."""
+
+    def __init__(self) -> None:
+        super().__init__("The payments API did not answer as expected")

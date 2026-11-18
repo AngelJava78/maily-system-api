@@ -72,7 +72,7 @@ BEARER = {"WWW-Authenticate": "Bearer"}
 BEARER_INVALID = {"WWW-Authenticate": 'Bearer error="invalid_token"'}
 
 
-def test_the_error_codes_are_exactly_the_seventeen_of_the_catalog():
+def test_the_error_codes_are_exactly_the_twenty_two_of_the_catalog():
     assert {code.value for code in ErrorCode} == {
         "unauthenticated",
         "token_expired",
@@ -93,6 +93,12 @@ def test_the_error_codes_are_exactly_the_seventeen_of_the_catalog():
         "monitored_component_code_already_exists",
         # spec 006: the subscription type catalog
         "subscription_type_not_found",
+        # spec 010: the subscription periods
+        "organization_not_found",
+        "organization_check_unavailable",
+        "payments_unavailable",
+        "nothing_to_charge",
+        "organization_subscription_not_found",
     }
 
 

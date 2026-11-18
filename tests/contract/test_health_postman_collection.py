@@ -261,7 +261,10 @@ def test_the_scripts_of_newman_run_the_health_collection_alone_and_with_the_othe
 
     assert "MailySoft-System-Salud.postman_collection.json" in scripts["e2e:health"]
     assert "junit-health.xml" in scripts["e2e:health"]
-    assert scripts["e2e:all"] == "npm run e2e && npm run e2e:dashboard && npm run e2e:health"
+    # Spec 010 (adjustment A15) adds the collection of the subscription periods to the last place.
+    assert scripts["e2e:all"] == (
+        "npm run e2e && npm run e2e:dashboard && npm run e2e:health && npm run e2e:periods"
+    )
 
 
 # ================== the rules detect what they are for (altered in-memory copies) ==================

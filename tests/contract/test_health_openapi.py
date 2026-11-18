@@ -331,8 +331,9 @@ def test_a_registered_component_is_published_without_its_deletion_date(schema):
     assert enum_of(read["properties"]["kind"]) == {"service", "frontend"}
 
 
-def test_the_error_codes_of_the_api_are_seventeen(schema):
+def test_the_error_codes_of_the_api_are_twenty_two(schema):
     codes = set(schema["components"]["schemas"]["ErrorCode"]["enum"])
 
-    assert len(codes) == 17
+    # 17 with the health spec; spec 010 (subscription periods) added 5 more.
+    assert len(codes) == 22
     assert {"monitored_component_not_found", "monitored_component_code_already_exists"} <= codes

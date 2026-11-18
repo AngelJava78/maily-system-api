@@ -22,10 +22,12 @@ from src.config import (
     BuildInfo,
     HealthConfig,
     build_info_from,
+    get_billing_settings,
     get_build_settings,
     get_dashboard_settings,
     get_health_settings,
     get_integration_settings,
+    get_payments_settings,
     health_config_from,
 )
 from src.database import get_session, get_session_factory
@@ -33,10 +35,12 @@ from src.integrations.clinics_api import ClinicsApiClient
 from src.integrations.dashboard_source import DashboardSource
 from src.integrations.dummy_dashboard_source import DummyDashboardSource
 from src.integrations.health_probe import HealthProbeClient
+from src.integrations.payments_api import PaymentsApiClient
 from src.integrations.users_api import UsersApiClient
 from src.models.monitored_component import MonitoredComponent
 from src.repositories.database_health_repository import DatabaseHealthRepository
 from src.repositories.monitored_component_repository import MonitoredComponentRepository
+from src.repositories.subscription_period_repository import SubscriptionPeriodRepository
 from src.repositories.subscription_repository import SubscriptionRepository
 from src.services.authorization_service import AuthorizationService
 from src.services.clock import Clock, SystemClock
@@ -44,6 +48,7 @@ from src.services.dashboard_service import DashboardService
 from src.services.health_service import HealthService
 from src.services.health_state import HealthState
 from src.services.monitored_component_service import MonitoredComponentService
+from src.services.subscription_period_service import SubscriptionPeriodService
 from src.services.subscription_service import SubscriptionService
 
 RegistryReader = Callable[[], Awaitable[Sequence[MonitoredComponent]]]
@@ -76,6 +81,15 @@ async def get_clinics_api_client(
     settings = get_integration_settings()
     return ClinicsApiClient(
         client, settings.clinics_api_base_url, settings.clinics_api_timeout_seconds
+    )
+
+
+async def get_payments_api_client(
+    client: Annotated[httpx.AsyncClient, Depends(get_http_client)],
+) -> PaymentsApiClient:
+    settings = get_payments_settings()
+    return PaymentsApiClient(
+        client, settings.payments_api_base_url, settings.payments_api_timeout_seconds
     )
 
 
@@ -203,3 +217,30 @@ async def get_monitored_component_service(
 ) -> MonitoredComponentService:
     """The registry: a change invalidates the cached result of the health of this application."""
     return MonitoredComponentService(repository, state, config)
+
+
+# --- Subscription periods (spec 010) ---
+
+
+async def get_subscription_period_repository(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SubscriptionPeriodRepository:
+    return SubscriptionPeriodRepository(session)
+
+
+async def get_subscription_period_service(
+    periods: Annotated[SubscriptionPeriodRepository, Depends(get_subscription_period_repository)],
+    subscriptions: Annotated[SubscriptionRepository, Depends(get_subscription_repository)],
+    clinics_api: Annotated[ClinicsApiClient, Depends(get_clinics_api_client)],
+    payments_api: Annotated[PaymentsApiClient, Depends(get_payments_api_client)],
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> SubscriptionPeriodService:
+    """The cutoff date is read once at start-up (FR-039); the clock is the one that the tests replace."""
+    return SubscriptionPeriodService(
+        periods,
+        subscriptions,
+        clinics_api,
+        payments_api,
+        clock,
+        get_billing_settings().billing_cutoff_at,
+    )

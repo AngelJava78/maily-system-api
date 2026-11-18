@@ -1,0 +1,4021 @@
+{
+  "info": {
+    "name": "MailySoft System API — Periodos de suscripción",
+    "description": "Pruebas de punta a punta de los periodos de suscripción (spec 010) contra el servicio real, las simulaciones de los APIs de usuarios, de clínicas y de pagos de la pila aislada (`docker-compose.e2e.yml`). Cubre consultar el estado, iniciar el pago, el pago aprobado que mueve la fecha, el control de acceso y la degradación. No repite lo que prueban pytest y el reloj fijo (límites exactos, meses cortos, año bisiesto, el orden de dos pagos). Los tokens de las cinco personas se generan al azar en cada ejecución y viven solo en variables de colección.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Las personas de prueba se registran en la simulación del API de usuarios (`{{usersStubUrl}}`) la",
+          "// primera vez y quedan solo en variables de colección (en memoria): ningún token se escribe en este",
+          "// archivo. Cada token se genera al azar en cada ejecución.",
+          "const random = function () { return Date.now().toString(36) + Math.random().toString(36).slice(2, 10); };",
+          "const usersStubUrl = pm.environment.get(\"usersStubUrl\");",
+          "if (!pm.collectionVariables.get(\"ownerToken\") && usersStubUrl) {",
+          "  const register = function (variable, prefix, permissions, next) {",
+          "    const token = prefix + random();",
+          "    pm.sendRequest({",
+          "      url: usersStubUrl + \"/__test__/tokens\",",
+          "      method: \"POST\",",
+          "      header: { \"Content-Type\": \"application/json\" },",
+          "      body: { mode: \"raw\", raw: JSON.stringify({ token: token, permissions: permissions }) }",
+          "    }, function (error, response) {",
+          "      if (error || response.code !== 200) {",
+          "        throw new Error(\"No se pudo registrar a la persona de prueba (\" + variable + \"). ¿Está levantada la pila de pruebas?\");",
+          "      }",
+          "      pm.collectionVariables.set(variable, token);",
+          "      if (next) { next(); }",
+          "    });",
+          "  };",
+          "  register(\"ownerToken\", \"e2e-owner-\", [\"subscription_periods:read\", \"subscription_periods:write\"], function () {",
+          "    // El Dueño es la persona de la colección: su token es el de la autenticación de la colección.",
+          "    pm.collectionVariables.set(\"accessToken\", pm.collectionVariables.get(\"ownerToken\"));",
+          "    register(\"readerToken\", \"e2e-reader-\", [\"subscription_periods:read\"], function () {",
+          "      register(\"plainToken\", \"e2e-plain-\", [], function () {",
+          "        register(\"adminToken\", \"e2e-admin-\", [\"subscriptions:read\", \"subscriptions:write\", \"subscriptions:update\", \"subscriptions:delete\", \"modules:read\"]);",
+          "      });",
+          "    });",
+          "  });",
+          "}",
+          "pm.variables.set(\"badToken\", \"e2e-invalid-\" + random());"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "trialPlanId",
+      "value": ""
+    },
+    {
+      "key": "trialPlanName",
+      "value": ""
+    },
+    {
+      "key": "noTrialPlanId",
+      "value": ""
+    },
+    {
+      "key": "noTrialPlanName",
+      "value": ""
+    },
+    {
+      "key": "freePlanId",
+      "value": ""
+    },
+    {
+      "key": "freePlanName",
+      "value": ""
+    },
+    {
+      "key": "suffix",
+      "value": ""
+    },
+    {
+      "key": "orgId",
+      "value": ""
+    },
+    {
+      "key": "orgCreatedAt",
+      "value": ""
+    },
+    {
+      "key": "paymentId",
+      "value": ""
+    },
+    {
+      "key": "checkoutUrl",
+      "value": ""
+    },
+    {
+      "key": "trialEndsAt",
+      "value": ""
+    },
+    {
+      "key": "paymentDueAt",
+      "value": ""
+    },
+    {
+      "key": "paymentsBefore",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Preparación",
+      "description": "Deja las simulaciones en un estado conocido, comprueba que la API publica las dos operaciones y crea los tres planes de los escenarios (con prueba, sin prueba y sin cobro) con la persona de preparación.",
+      "item": [
+        {
+          "name": "setup: reiniciar la simulación del API de usuarios",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{usersStubUrl}}/__test__/reset",
+              "host": [
+                "{{usersStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "reset"
+              ]
+            },
+            "description": "Vacía la simulación del API de usuarios (`{{usersStubUrl}}`): su estado, sus fallas programadas y sus llamadas.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "// Tras reiniciar se pierden los tokens: se vuelven a registrar en la siguiente petición.",
+                  "pm.collectionVariables.unset(\"accessToken\");",
+                  "pm.collectionVariables.unset(\"ownerToken\");",
+                  "pm.collectionVariables.unset(\"readerToken\");",
+                  "pm.collectionVariables.unset(\"plainToken\");",
+                  "pm.collectionVariables.unset(\"adminToken\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: reiniciar la simulación del API de clínicas",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/reset",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "reset"
+              ]
+            },
+            "description": "Vacía la simulación del API de clínicas (`{{clinicsStubUrl}}`): su estado, sus fallas programadas y sus llamadas.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: reiniciar la simulación del API de pagos",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/reset",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "reset"
+              ]
+            },
+            "description": "Vacía la simulación del API de pagos (`{{paymentsStubUrl}}`): su estado, sus fallas programadas y sus llamadas.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "docs: la API publica las dos operaciones de los periodos",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openapi.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openapi.json"
+              ]
+            },
+            "description": "Lee el contrato público (sin token) y comprueba que están las dos operaciones de los periodos de suscripción.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const spec = pm.response.json();",
+                  "pm.test(\"publica consultar el periodo\", function () {",
+                  "  const consult = spec.paths[\"/api/v1/subscription-periods/{organization_id}\"].get;",
+                  "  const pay = spec.paths[\"/api/v1/subscription-periods/{organization_id}/payments\"].post;",
+                  "  pm.expect(consult.operationId).to.eql(\"get_subscription_period\");",
+                  "});",
+                  "pm.test(\"publica iniciar el pago\", function () {",
+                  "  const consult = spec.paths[\"/api/v1/subscription-periods/{organization_id}\"].get;",
+                  "  const pay = spec.paths[\"/api/v1/subscription-periods/{organization_id}/payments\"].post;",
+                  "  pm.expect(pay.operationId).to.eql(\"create_subscription_payment\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: crear el plan con prueba (14 días, 499.00 al mes, 4990.00 al año)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "Crea con la persona de preparación el plan con 14 días de prueba, 499.00 mensual y 4990.00 anual, y guarda su identificador y su nombre.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Periodos con prueba {{suffix}}\", \"subscription_type_id\": 2, \"description\": \"Plan de las pruebas de los periodos de suscripción.\", \"monthly_price\": 499, \"annual_price\": 4990, \"trial_days\": 14, \"self_service\": false, \"module_keys\": [\"reminders\"], \"other_features\": [], \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000, \"clinics_limit\": 25}"
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"suffix\", Date.now().toString(36) + Math.random().toString(36).slice(2, 6));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "const plan = pm.response.json();",
+                  "pm.collectionVariables.set(\"trialPlanId\", String(plan.id));",
+                  "pm.collectionVariables.set(\"trialPlanName\", plan.name);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: crear el plan sin prueba (0 días, 499.00 al mes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "Crea el plan sin días de prueba: el primer pago vence en la fecha de inicio.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Periodos sin prueba {{suffix}}\", \"subscription_type_id\": 2, \"description\": \"Plan de las pruebas de los periodos de suscripción.\", \"monthly_price\": 499, \"annual_price\": 4990, \"trial_days\": 0, \"self_service\": false, \"module_keys\": [\"reminders\"], \"other_features\": [], \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000, \"clinics_limit\": 25}"
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"suffix\", Date.now().toString(36) + Math.random().toString(36).slice(2, 6));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "const plan = pm.response.json();",
+                  "pm.collectionVariables.set(\"noTrialPlanId\", String(plan.id));",
+                  "pm.collectionVariables.set(\"noTrialPlanName\", plan.name);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: crear el plan sin cobro (0.00 al mes y al año)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions"
+              ]
+            },
+            "description": "Crea el plan cuyo importe es 0.00 en las dos tarifas: no hay cobro ni fecha de pago.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Periodos sin cobro {{suffix}}\", \"subscription_type_id\": 2, \"description\": \"Plan de las pruebas de los periodos de suscripción.\", \"monthly_price\": 0, \"annual_price\": 0, \"trial_days\": 0, \"self_service\": false, \"module_keys\": [\"reminders\"], \"other_features\": [], \"consulting_rooms_limit\": 2, \"doctors_limit\": 3, \"assistants_limit\": 2, \"new_patients_per_year_limit\": 15000, \"clinics_limit\": 25}"
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"suffix\", Date.now().toString(36) + Math.random().toString(36).slice(2, 6));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "const plan = pm.response.json();",
+                  "pm.collectionVariables.set(\"freePlanId\", String(plan.id));",
+                  "pm.collectionVariables.set(\"freePlanName\", plan.name);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Consulta",
+      "description": "Consultar el estado del periodo con el token del Dueño: en prueba, la misma consulta, vencida, sin prueba, sin cobro y con tarifa anual.",
+      "item": [
+        {
+          "name": "setup: dar de alta una organización en prueba (hace 5 días, plan de 14 días)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta en la simulación de Clínicas una organización creada hace 5 días con el plan de 14 días de prueba, mensual, cuyo Dueño es la persona de la prueba.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (5 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"trialPlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: en prueba, faltan 9 días",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "Primera consulta: crea el registro y responde en prueba, con la fecha de pago igual al fin de la prueba, el plan, el importe y sin cobro en curso."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es trial\", function () { pm.expect(body.state).to.eql(\"trial\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"trialPlanId\")), name: pm.collectionVariables.get(\"trialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"499.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.test(\"faltan 9 días\", function () { pm.expect(body.days_remaining).to.eql(9); });",
+                  "pm.test(\"la prueba dura 14 días desde el alta\", function () { pm.expect(Date.parse(body.trial_ends_at)).to.eql(Date.parse(pm.collectionVariables.get(\"orgCreatedAt\")) + 14 * 86400000); });",
+                  "pm.test(\"la fecha de pago es el fin de la prueba, en UTC\", function () { pm.expect(body.payment_due_at).to.eql(body.trial_ends_at); pm.expect(body.trial_ends_at).to.match(/Z$/); });",
+                  "pm.collectionVariables.set(\"trialEndsAt\", body.trial_ends_at);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: la misma consulta devuelve las mismas fechas",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "Segunda consulta: el registro ya existe y no se crea otro; las fechas son exactamente las mismas."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es trial\", function () { pm.expect(body.state).to.eql(\"trial\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"trialPlanId\")), name: pm.collectionVariables.get(\"trialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"499.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.test(\"la fecha de fin de prueba no cambió\", function () { pm.expect(body.trial_ends_at).to.eql(pm.collectionVariables.get(\"trialEndsAt\")); });",
+                  "pm.test(\"siguen faltando 9 días\", function () { pm.expect(body.days_remaining).to.eql(9); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: dar de alta una organización cuya prueba ya terminó (hace 40 días)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización creada hace 40 días: su prueba de 14 días terminó hace 26.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (40 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"trialPlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: vencida, 26 días de atraso",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "La prueba terminó hace 26 días y nada se pagó: está vencida y los días son negativos (de atraso)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es overdue\", function () { pm.expect(body.state).to.eql(\"overdue\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"trialPlanId\")), name: pm.collectionVariables.get(\"trialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"499.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.test(\"hay 26 días de atraso\", function () { pm.expect(body.days_remaining).to.eql(-26); });",
+                  "pm.test(\"la fecha de pago sigue siendo el fin de la prueba\", function () { pm.expect(body.payment_due_at).to.eql(body.trial_ends_at); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: dar de alta una organización con un plan sin prueba (hace 1 hora)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización creada hace una hora con el plan sin días de prueba.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (60 * 60 * 1000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"noTrialPlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: sin prueba, vence en la fecha de inicio",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "Con 0 días de prueba no hay fin de prueba (`null`) y el primer pago vence en la fecha de inicio: ya está vencida."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es overdue\", function () { pm.expect(body.state).to.eql(\"overdue\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"noTrialPlanId\")), name: pm.collectionVariables.get(\"noTrialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"499.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.test(\"trial_ends_at es null\", function () { pm.expect(body.trial_ends_at).to.eql(null); });",
+                  "pm.test(\"vence en el alta de la organización\", function () { pm.expect(Date.parse(body.payment_due_at)).to.eql(Date.parse(pm.collectionVariables.get(\"orgCreatedAt\"))); });",
+                  "pm.test(\"no le faltan días\", function () { pm.expect(body.days_remaining).to.be.at.most(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: dar de alta una organización con un plan sin cobro",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización cuyo plan tiene importe 0.00.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (5 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"freePlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: sin cobro, sin fechas de pago",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "El importe es 0.00: no hay cobro ni fecha de pago ni días que contar."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es no_charge\", function () { pm.expect(body.state).to.eql(\"no_charge\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"freePlanId\")), name: pm.collectionVariables.get(\"freePlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"0.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.test(\"las fechas y los días son null\", function () { pm.expect(body.trial_ends_at).to.eql(null); pm.expect(body.payment_due_at).to.eql(null); pm.expect(body.days_remaining).to.eql(null); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: dar de alta una organización con periodo de cobro anual",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización creada hace 5 días con el plan de 14 días de prueba y periodo de cobro anual.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (5 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"trialPlanId\")),",
+                  "  billing_period: \"annual\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: periodo de cobro anual, importe anual",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "Con periodo de cobro anual el importe es el anual del catálogo."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es trial\", function () { pm.expect(body.state).to.eql(\"trial\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"trialPlanId\")), name: pm.collectionVariables.get(\"trialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"annual\");",
+                  "  pm.expect(body.amount).to.eql(\"4990.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Iniciar el pago",
+      "description": "Iniciar el pago con el token del Dueño: el importe sale del catálogo, repetirlo no duplica el cobro, la consulta informa el cobro en curso y sin importe a cobrar responde 409.",
+      "item": [
+        {
+          "name": "setup: dar de alta una organización con la prueba terminada",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización creada hace 40 días con el plan de 14 días de prueba, mensual.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (40 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"trialPlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription_payment: crea el cobro y devuelve el checkout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "payments"
+              ]
+            },
+            "description": "Inicia el pago sin cuerpo: el importe lo calcula la API con el precio del catálogo y devuelve la dirección del checkout."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "const payment = pm.response.json();",
+                  "pm.test(\"devuelve exactamente los cuatro campos\", function () { pm.expect(Object.keys(payment).sort()).to.eql([\"amount\", \"billing_period\", \"checkout_url\", \"currency\"]); });",
+                  "pm.test(\"el importe es el mensual del catálogo, en pesos mexicanos\", function () { pm.expect(payment.amount).to.eql(\"499.00\"); pm.expect(payment.currency).to.eql(\"MXN\"); pm.expect(payment.billing_period).to.eql(\"monthly\"); });",
+                  "pm.test(\"trae la dirección del checkout\", function () { pm.expect(payment.checkout_url).to.match(/^https?:\\/\\//); });",
+                  "pm.test(\"no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.collectionVariables.set(\"checkoutUrl\", payment.checkout_url);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: comprobar en Pagos el importe, la moneda y la referencia",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/payments",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "payments"
+              ]
+            },
+            "description": "Lee la simulación de Pagos: el cobro se creó por 499.00 en la unidad mínima (49900), en `MXN` y con la organización como referencia.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const payments = pm.response.json();",
+                  "const mine = payments.filter(function (p) { return p.resource_id === pm.collectionVariables.get(\"orgId\"); });",
+                  "pm.test(\"Pagos tiene un solo cobro de esta organización\", function () { pm.expect(mine.length).to.eql(1); });",
+                  "pm.test(\"su estatus en Pagos es pending\", function () { pm.expect(mine[0].status).to.eql(\"pending\"); });",
+                  "pm.test(\"lleva la referencia de la suscripción\", function () { pm.expect(mine[0].resource_type).to.eql(\"system-api:subscription\"); });",
+                  "pm.collectionVariables.set(\"paymentId\", mine[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription_payment: repetirlo devuelve el mismo checkout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "payments"
+              ]
+            },
+            "description": "Iniciar el pago otra vez para el mismo periodo no crea otro cobro: responde 200 con el mismo checkout."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const payment = pm.response.json();",
+                  "pm.test(\"es el mismo checkout\", function () { pm.expect(payment.checkout_url).to.eql(pm.collectionVariables.get(\"checkoutUrl\")); });",
+                  "pm.test(\"el importe es el mismo\", function () { pm.expect(payment.amount).to.eql(\"499.00\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: comprobar que Pagos sigue teniendo un solo cobro",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/payments",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "payments"
+              ]
+            },
+            "description": "Después de repetir el inicio, Pagos sigue teniendo un único cobro de la organización.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const payments = pm.response.json();",
+                  "const mine = payments.filter(function (p) { return p.resource_id === pm.collectionVariables.get(\"orgId\"); });",
+                  "pm.test(\"Pagos tiene un solo cobro de esta organización\", function () { pm.expect(mine.length).to.eql(1); });",
+                  "pm.test(\"su estatus en Pagos es pending\", function () { pm.expect(mine[0].status).to.eql(\"pending\"); });",
+                  "pm.test(\"lleva la referencia de la suscripción\", function () { pm.expect(mine[0].resource_type).to.eql(\"system-api:subscription\"); });",
+                  "pm.collectionVariables.set(\"paymentId\", mine[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: informa el cobro en curso",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "Con un cobro pendiente en Pagos, la consulta lo informa y sigue vencida."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es overdue\", function () { pm.expect(body.state).to.eql(\"overdue\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"trialPlanId\")), name: pm.collectionVariables.get(\"trialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"499.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: true\", function () { pm.expect(body.payment_in_progress).to.eql(true); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.test(\"la fecha no se movió\", function () { pm.expect(body.payment_due_at).to.eql(body.trial_ends_at); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: dar de alta una organización con un plan sin cobro para pagar",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización con el plan de importe 0.00.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (5 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"freePlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription_payment: sin nada que cobrar responde 409",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "payments"
+              ]
+            },
+            "description": "Con importe 0.00 no hay cobro que iniciar: 409 `nothing_to_charge`, sin llamar a Pagos."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 409\", function () { pm.response.to.have.status(409); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código nothing_to_charge\", function () { pm.expect(error.code).to.eql(\"nothing_to_charge\"); });",
+                  "pm.test(\"solo trae código y mensaje en español\", function () { pm.expect(Object.keys(error).sort()).to.eql([\"code\", \"message\"]); });",
+                  "pm.test(\"no llega nada interno del otro API\", function () { pm.expect(pm.response.text()).to.not.include(\"SECRE\" + \"TO-INTERNO\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Pago aprobado",
+      "description": "Lo que mueve la fecha: un cobro aprobado en Pagos extiende la fecha del siguiente pago una sola vez; rechazado, con otro importe o creado por otra vía no mueve nada.",
+      "item": [
+        {
+          "name": "setup: dar de alta una organización vencida para pagar",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización con la prueba terminada hace 26 días.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (40 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"trialPlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription_payment: inicia el cobro de la organización vencida",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "payments"
+              ]
+            },
+            "description": "Inicia el pago de la organización vencida: queda un cobro pendiente en Pagos."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: leer el cobro en Pagos",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/payments",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "payments"
+              ]
+            },
+            "description": "Guarda el identificador del cobro en Pagos.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const payments = pm.response.json();",
+                  "const mine = payments.filter(function (p) { return p.resource_id === pm.collectionVariables.get(\"orgId\"); });",
+                  "pm.test(\"Pagos tiene un solo cobro de esta organización\", function () { pm.expect(mine.length).to.eql(1); });",
+                  "pm.test(\"su estatus en Pagos es pending\", function () { pm.expect(mine[0].status).to.eql(\"pending\"); });",
+                  "pm.test(\"lleva la referencia de la suscripción\", function () { pm.expect(mine[0].resource_type).to.eql(\"system-api:subscription\"); });",
+                  "pm.collectionVariables.set(\"paymentId\", mine[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: aprobar el cobro en Pagos",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/payments/{{paymentId}}/status",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "payments",
+                "{{paymentId}}",
+                "status"
+              ]
+            },
+            "description": "Cambia el cobro a aprobado en la simulación de Pagos, como lo haría Mercado Pago.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status\": \"approved\"}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: el pago aprobado mueve la fecha un mes",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "Al consultar, la API pregunta a Pagos, aplica el cobro aprobado y la fecha de pago queda un mes adelante, a partir de la aprobación porque estaba vencida."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es current\", function () { pm.expect(body.state).to.eql(\"current\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"trialPlanId\")), name: pm.collectionVariables.get(\"trialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"499.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.test(\"al corriente: faltan entre 28 y 31 días\", function () { pm.expect(body.days_remaining).to.be.within(28, 31); });",
+                  "pm.test(\"la fecha de pago es posterior al fin de la prueba\", function () { pm.expect(Date.parse(body.payment_due_at)).to.be.above(Date.parse(body.trial_ends_at)); });",
+                  "pm.test(\"el cobro ya no está en curso\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.collectionVariables.set(\"paymentDueAt\", body.payment_due_at);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: una segunda consulta no la mueve otra vez",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "El cobro se aplica exactamente una vez: la misma consulta devuelve la misma fecha."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es current\", function () { pm.expect(body.state).to.eql(\"current\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"trialPlanId\")), name: pm.collectionVariables.get(\"trialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"499.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.test(\"la fecha de pago es la misma\", function () { pm.expect(body.payment_due_at).to.eql(pm.collectionVariables.get(\"paymentDueAt\")); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: dar de alta una organización en prueba para pagar",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización en prueba (creada hace 5 días).",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (5 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"trialPlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription_payment: inicia el cobro durante la prueba",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "payments"
+              ]
+            },
+            "description": "Se puede pagar antes de que termine la prueba."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: leer el cobro de la prueba en Pagos",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/payments",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "payments"
+              ]
+            },
+            "description": "Guarda el identificador del cobro en Pagos.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const payments = pm.response.json();",
+                  "const mine = payments.filter(function (p) { return p.resource_id === pm.collectionVariables.get(\"orgId\"); });",
+                  "pm.test(\"Pagos tiene un solo cobro de esta organización\", function () { pm.expect(mine.length).to.eql(1); });",
+                  "pm.test(\"su estatus en Pagos es pending\", function () { pm.expect(mine[0].status).to.eql(\"pending\"); });",
+                  "pm.test(\"lleva la referencia de la suscripción\", function () { pm.expect(mine[0].resource_type).to.eql(\"system-api:subscription\"); });",
+                  "pm.collectionVariables.set(\"paymentId\", mine[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: aprobar el cobro de la prueba en Pagos",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/payments/{{paymentId}}/status",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "payments",
+                "{{paymentId}}",
+                "status"
+              ]
+            },
+            "description": "Aprueba el cobro durante la prueba.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status\": \"approved\"}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: un pago durante la prueba no la recorta",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "La prueba sigue siendo la misma y el periodo pagado empieza al terminar: la fecha de pago es un mes después del fin de la prueba."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es trial\", function () { pm.expect(body.state).to.eql(\"trial\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"trialPlanId\")), name: pm.collectionVariables.get(\"trialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"499.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.test(\"la prueba no se acortó: faltan 9 días de prueba\", function () { pm.expect(Date.parse(body.trial_ends_at)).to.eql(Date.parse(pm.collectionVariables.get(\"orgCreatedAt\")) + 14 * 86400000); });",
+                  "pm.test(\"el siguiente pago es un mes después del fin de la prueba\", function () { pm.expect(body.days_remaining).to.be.within(37, 40); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: dar de alta una organización para un pago rechazado",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización vencida (creada hace 40 días).",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (40 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"trialPlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription_payment: inicia un cobro que será rechazado",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "payments"
+              ]
+            },
+            "description": "Inicia el pago."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.collectionVariables.set(\"checkoutUrl\", pm.response.json().checkout_url);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: leer el cobro que será rechazado",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/payments",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "payments"
+              ]
+            },
+            "description": "Guarda el identificador del cobro en Pagos.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const payments = pm.response.json();",
+                  "const mine = payments.filter(function (p) { return p.resource_id === pm.collectionVariables.get(\"orgId\"); });",
+                  "pm.test(\"Pagos tiene un solo cobro de esta organización\", function () { pm.expect(mine.length).to.eql(1); });",
+                  "pm.test(\"su estatus en Pagos es pending\", function () { pm.expect(mine[0].status).to.eql(\"pending\"); });",
+                  "pm.test(\"lleva la referencia de la suscripción\", function () { pm.expect(mine[0].resource_type).to.eql(\"system-api:subscription\"); });",
+                  "pm.collectionVariables.set(\"paymentId\", mine[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: rechazar el cobro en Pagos",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/payments/{{paymentId}}/status",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "payments",
+                "{{paymentId}}",
+                "status"
+              ]
+            },
+            "description": "Cambia el cobro a rechazado en la simulación de Pagos.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status\": \"rejected\"}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: un pago rechazado no mueve la fecha",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "El cobro rechazado se cierra sin mover fechas: sigue vencida y ya no hay cobro en curso."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es overdue\", function () { pm.expect(body.state).to.eql(\"overdue\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"trialPlanId\")), name: pm.collectionVariables.get(\"trialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"499.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.test(\"la fecha no se movió\", function () { pm.expect(body.payment_due_at).to.eql(body.trial_ends_at); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription_payment: tras el rechazo se puede pagar de nuevo",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "payments"
+              ]
+            },
+            "description": "Un cobro cerrado sin aplicarse permite iniciar otro: 201 con otro checkout."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });",
+                  "pm.test(\"es otro checkout\", function () { pm.expect(pm.response.json().checkout_url).to.not.eql(pm.collectionVariables.get(\"checkoutUrl\")); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: dar de alta una organización para un pago con otro importe",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización vencida (creada hace 40 días).",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (40 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"trialPlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription_payment: inicia un cobro cuyo importe cambiará en Pagos",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "payments"
+              ]
+            },
+            "description": "Inicia el pago."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: leer el cobro cuyo importe cambiará",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/payments",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "payments"
+              ]
+            },
+            "description": "Guarda el identificador del cobro en Pagos.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const payments = pm.response.json();",
+                  "const mine = payments.filter(function (p) { return p.resource_id === pm.collectionVariables.get(\"orgId\"); });",
+                  "pm.test(\"Pagos tiene un solo cobro de esta organización\", function () { pm.expect(mine.length).to.eql(1); });",
+                  "pm.test(\"su estatus en Pagos es pending\", function () { pm.expect(mine[0].status).to.eql(\"pending\"); });",
+                  "pm.test(\"lleva la referencia de la suscripción\", function () { pm.expect(mine[0].resource_type).to.eql(\"system-api:subscription\"); });",
+                  "pm.collectionVariables.set(\"paymentId\", mine[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: aprobar el cobro con otro importe en Pagos",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/payments/{{paymentId}}/status",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "payments",
+                "{{paymentId}}",
+                "status"
+              ]
+            },
+            "description": "Aprueba el cobro, pero por 100.00 en lugar de 499.00.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status\": \"approved\", \"amount\": 10000}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: un pago aprobado con otro importe no se aplica",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "El importe de Pagos no coincide con lo que la API pidió: el cobro no cuenta y la fecha no se mueve."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es overdue\", function () { pm.expect(body.state).to.eql(\"overdue\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"trialPlanId\")), name: pm.collectionVariables.get(\"trialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"499.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.test(\"la fecha no se movió\", function () { pm.expect(body.payment_due_at).to.eql(body.trial_ends_at); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: dar de alta una organización para un pago creado por otra vía",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización vencida (creada hace 40 días).",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (40 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"trialPlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: primera consulta antes del pago por otra vía",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "Crea el registro de la organización."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es overdue\", function () { pm.expect(body.state).to.eql(\"overdue\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"trialPlanId\")), name: pm.collectionVariables.get(\"trialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"499.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: crear en Pagos un pago aprobado por otra vía con la misma referencia",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/payments",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "payments"
+              ]
+            },
+            "description": "Crea directamente en la simulación de Pagos un pago aprobado con la referencia de la organización, sin pasar por esta API.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"resource_id\": \"{{orgId}}\", \"status\": \"approved\", \"amount\": 49900}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: un pago creado por otra vía no mueve la fecha",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "Solo cuenta un pago que esta API inició: el pago creado por otra vía no mueve ninguna fecha."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es overdue\", function () { pm.expect(body.state).to.eql(\"overdue\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"trialPlanId\")), name: pm.collectionVariables.get(\"trialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"499.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.test(\"la fecha no se movió\", function () { pm.expect(body.payment_due_at).to.eql(body.trial_ends_at); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Control de acceso",
+      "description": "Solo el Dueño con el permiso de la operación y sobre su organización obtiene respuesta: sin token, token inválido, sin permiso, solo lectura al pagar, organización ajena, identificador inválido, el orden de las comprobaciones y Usuarios caído.",
+      "item": [
+        {
+          "name": "setup: dar de alta la organización del Dueño",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización de la persona de la prueba.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (5 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"trialPlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: sin token responde 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "Sin token la API pide autenticarse.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 401\", function () { pm.response.to.have.status(401); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código unauthenticated\", function () { pm.expect(error.code).to.eql(\"unauthenticated\"); });",
+                  "pm.test(\"solo trae código y mensaje en español\", function () { pm.expect(Object.keys(error).sort()).to.eql([\"code\", \"message\"]); });",
+                  "pm.test(\"no llega nada interno del otro API\", function () { pm.expect(pm.response.text()).to.not.include(\"SECRE\" + \"TO-INTERNO\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription_payment: token inválido responde 401",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "payments"
+              ]
+            },
+            "description": "Un token que Usuarios no reconoce se rechaza.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{badToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 401\", function () { pm.response.to.have.status(401); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código invalid_token\", function () { pm.expect(error.code).to.eql(\"invalid_token\"); });",
+                  "pm.test(\"solo trae código y mensaje en español\", function () { pm.expect(Object.keys(error).sort()).to.eql([\"code\", \"message\"]); });",
+                  "pm.test(\"no llega nada interno del otro API\", function () { pm.expect(pm.response.text()).to.not.include(\"SECRE\" + \"TO-INTERNO\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: sin permiso responde 403",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "Una persona sin permisos no consulta: el mensaje nombra el permiso que falta.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{plainToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 403\", function () { pm.response.to.have.status(403); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código permission_denied\", function () { pm.expect(error.code).to.eql(\"permission_denied\"); });",
+                  "pm.test(\"solo trae código y mensaje en español\", function () { pm.expect(Object.keys(error).sort()).to.eql([\"code\", \"message\"]); });",
+                  "pm.test(\"no llega nada interno del otro API\", function () { pm.expect(pm.response.text()).to.not.include(\"SECRE\" + \"TO-INTERNO\"); });",
+                  "pm.test(\"el mensaje nombra el permiso subscription_periods:read\", function () { pm.expect(error.message).to.include(\"subscription_periods:read\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription_payment: con solo lectura responde 403",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "payments"
+              ]
+            },
+            "description": "Quien solo puede consultar no inicia el pago: el mensaje nombra el permiso de escritura.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{readerToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 403\", function () { pm.response.to.have.status(403); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código permission_denied\", function () { pm.expect(error.code).to.eql(\"permission_denied\"); });",
+                  "pm.test(\"solo trae código y mensaje en español\", function () { pm.expect(Object.keys(error).sort()).to.eql([\"code\", \"message\"]); });",
+                  "pm.test(\"no llega nada interno del otro API\", function () { pm.expect(pm.response.text()).to.not.include(\"SECRE\" + \"TO-INTERNO\"); });",
+                  "pm.test(\"el mensaje nombra el permiso subscription_periods:write\", function () { pm.expect(error.message).to.include(\"subscription_periods:write\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: dar de alta una organización de otra persona",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización cuyo Dueño es otra persona.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (5 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"trialPlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: \"otra-persona-\" + Date.now().toString(36)",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: la organización de otra persona responde 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "No se distingue una organización ajena de una que no existe: 404 `organization_not_found`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 404\", function () { pm.response.to.have.status(404); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código organization_not_found\", function () { pm.expect(error.code).to.eql(\"organization_not_found\"); });",
+                  "pm.test(\"solo trae código y mensaje en español\", function () { pm.expect(Object.keys(error).sort()).to.eql([\"code\", \"message\"]); });",
+                  "pm.test(\"no llega nada interno del otro API\", function () { pm.expect(pm.response.text()).to.not.include(\"SECRE\" + \"TO-INTERNO\"); });",
+                  "pm.test(\"solo repite el identificador que se envió\", function () { pm.expect(error.message).to.include(pm.collectionVariables.get(\"orgId\")); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: un identificador que no es UUID responde 422",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/no-es-un-uuid",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "no-es-un-uuid"
+              ]
+            },
+            "description": "Con el permiso concedido, un identificador inválido es un error de validación con el campo y su mensaje."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 422\", function () { pm.response.to.have.status(422); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código validation_error\", function () { pm.expect(error.code).to.eql(\"validation_error\"); });",
+                  "pm.test(\"trae el campo y su mensaje en español\", function () { pm.expect(error.errors).to.eql([{ field: \"organization_id\", message: \"El identificador de la organización debe ser un UUID.\" }]); });",
+                  "pm.test(\"no llega nada interno del otro API\", function () { pm.expect(pm.response.text()).to.not.include(\"SECRE\" + \"TO-INTERNO\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription_payment: el permiso se comprueba antes que el formato",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/no-es-un-uuid/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "no-es-un-uuid",
+                "payments"
+              ]
+            },
+            "description": "Sin permiso y con un identificador inválido responde 403, no 422: primero se autoriza.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{plainToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 403\", function () { pm.response.to.have.status(403); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código permission_denied\", function () { pm.expect(error.code).to.eql(\"permission_denied\"); });",
+                  "pm.test(\"solo trae código y mensaje en español\", function () { pm.expect(Object.keys(error).sort()).to.eql([\"code\", \"message\"]); });",
+                  "pm.test(\"no llega nada interno del otro API\", function () { pm.expect(pm.response.text()).to.not.include(\"SECRE\" + \"TO-INTERNO\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: programar la caída de Usuarios",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{usersStubUrl}}/__test__/faults",
+              "host": [
+                "{{usersStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "faults"
+              ]
+            },
+            "description": "Programa una falla de la simulación de Usuarios para la siguiente comprobación de permiso.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\": \"unavailable\", \"count\": 1, \"operation\": \"check\"}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: con Usuarios caído responde 503",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "Si no se puede verificar el permiso, el acceso falla cerrado."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 503\", function () { pm.response.to.have.status(503); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código authorization_unavailable\", function () { pm.expect(error.code).to.eql(\"authorization_unavailable\"); });",
+                  "pm.test(\"solo trae código y mensaje en español\", function () { pm.expect(Object.keys(error).sort()).to.eql([\"code\", \"message\"]); });",
+                  "pm.test(\"no llega nada interno del otro API\", function () { pm.expect(pm.response.text()).to.not.include(\"SECRE\" + \"TO-INTERNO\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Degradación",
+      "description": "Si falla un API ajeno la respuesta degrada sin inventar nada: sin Clínicas no hay acceso (503); sin Pagos la consulta devuelve lo guardado y avisa que no pudo verificar, y el pago no se inicia (503).",
+      "item": [
+        {
+          "name": "setup: dar de alta la organización de la degradación",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización en prueba (creada hace 5 días).",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (5 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"trialPlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: programar la caída de Clínicas",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/faults",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "faults"
+              ]
+            },
+            "description": "Programa una falla de la simulación de Clínicas para la siguiente lectura de una organización.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\": \"unavailable\", \"count\": 1, \"operation\": \"organizations\"}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: con Clínicas caída responde 503",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "Sin Clínicas no se puede comprobar que la persona es la Dueña: 503 `organization_check_unavailable`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 503\", function () { pm.response.to.have.status(503); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código organization_check_unavailable\", function () { pm.expect(error.code).to.eql(\"organization_check_unavailable\"); });",
+                  "pm.test(\"solo trae código y mensaje en español\", function () { pm.expect(Object.keys(error).sort()).to.eql([\"code\", \"message\"]); });",
+                  "pm.test(\"no llega nada interno del otro API\", function () { pm.expect(pm.response.text()).to.not.include(\"SECRE\" + \"TO-INTERNO\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: programar una respuesta de Clínicas sin periodo de cobro",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/faults",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "faults"
+              ]
+            },
+            "description": "Programa que Clínicas responda sin `billing_period`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\": \"missing_billing_period\", \"count\": 1, \"operation\": \"organizations\"}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription_payment: Clínicas sin periodo de cobro responde 503",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "payments"
+              ]
+            },
+            "description": "No se supone «mensual»: sin periodo de cobro no se inicia ningún pago."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 503\", function () { pm.response.to.have.status(503); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código organization_check_unavailable\", function () { pm.expect(error.code).to.eql(\"organization_check_unavailable\"); });",
+                  "pm.test(\"solo trae código y mensaje en español\", function () { pm.expect(Object.keys(error).sort()).to.eql([\"code\", \"message\"]); });",
+                  "pm.test(\"no llega nada interno del otro API\", function () { pm.expect(pm.response.text()).to.not.include(\"SECRE\" + \"TO-INTERNO\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription_payment: inicia un cobro que quedará sin verificar",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "payments"
+              ]
+            },
+            "description": "Inicia el pago para tener un cobro pendiente."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 201\", function () { pm.response.to.have.status(201); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: programar la caída de Pagos al consultar un pago",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/faults",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "faults"
+              ]
+            },
+            "description": "Programa una falla de la simulación de Pagos para la siguiente consulta de un pago.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\": \"unavailable\", \"count\": 1, \"operation\": \"get\"}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: con Pagos caído devuelve lo guardado y no verifica",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "La consulta no falla: devuelve las fechas, el estado y el importe guardados y marca `payment_in_progress` como `null` (no se pudo verificar)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es trial\", function () { pm.expect(body.state).to.eql(\"trial\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"trialPlanId\")), name: pm.collectionVariables.get(\"trialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"499.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: null\", function () { pm.expect(body.payment_in_progress).to.eql(null); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
+                  "pm.test(\"las fechas guardadas siguen igual\", function () { pm.expect(body.payment_due_at).to.eql(body.trial_ends_at); });",
+                  "pm.test(\"nada interno de Pagos llega al cliente\", function () { pm.expect(pm.response.text()).to.not.include(\"SECRE\" + \"TO-INTERNO\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: dar de alta una organización para la caída de Pagos al pagar",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/organizations",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "organizations"
+              ]
+            },
+            "description": "Da de alta una organización vencida (creada hace 40 días).",
+            "body": {
+              "mode": "raw",
+              "raw": "{{orgBody}}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// La antigüedad se calcula con la fecha de hoy: la API usa su reloj real y no hay que moverlo.",
+                  "const created = new Date(Date.now() - (40 * 86400000)).toISOString();",
+                  "const id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "pm.collectionVariables.set(\"orgId\", id);",
+                  "pm.collectionVariables.set(\"orgCreatedAt\", created);",
+                  "pm.variables.set(\"orgBody\", JSON.stringify({",
+                  "  id: id,",
+                  "  subscription_id: Number(pm.collectionVariables.get(\"trialPlanId\")),",
+                  "  billing_period: \"monthly\",",
+                  "  created_at: created,",
+                  "  owner_token: pm.collectionVariables.get(\"ownerToken\")",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: contar los cobros de Pagos antes de la falla",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/payments",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "payments"
+              ]
+            },
+            "description": "Guarda cuántos pagos tiene la simulación de Pagos, para comprobar que la falla no crea ninguno.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.collectionVariables.set(\"paymentsBefore\", String(pm.response.json().length));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: programar la caída de Pagos al crear un pago",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/faults",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "faults"
+              ]
+            },
+            "description": "Programa una falla de la simulación de Pagos para la siguiente creación de un pago.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\": \"unavailable\", \"count\": 1, \"operation\": \"create\"}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "create_subscription_payment: con Pagos caído responde 503",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "payments"
+              ]
+            },
+            "description": "Si Pagos no responde no se inicia el pago: 503 `payments_unavailable`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 503\", function () { pm.response.to.have.status(503); });",
+                  "const error = pm.response.json();",
+                  "pm.test(\"código payments_unavailable\", function () { pm.expect(error.code).to.eql(\"payments_unavailable\"); });",
+                  "pm.test(\"solo trae código y mensaje en español\", function () { pm.expect(Object.keys(error).sort()).to.eql([\"code\", \"message\"]); });",
+                  "pm.test(\"no llega nada interno del otro API\", function () { pm.expect(pm.response.text()).to.not.include(\"SECRE\" + \"TO-INTERNO\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: comprobar que Pagos no ganó ningún cobro",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/payments",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "payments"
+              ]
+            },
+            "description": "La falla no dejó ningún pago nuevo en Pagos.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Pagos no tiene pagos nuevos\", function () { pm.expect(String(pm.response.json().length)).to.eql(pm.collectionVariables.get(\"paymentsBefore\")); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "get_subscription_period: tras la falla de Pagos no hay cobro en curso",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}"
+              ]
+            },
+            "description": "Sin cobros pendientes la consulta responde normal: no hay nada que verificar y `payment_in_progress` es `false`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"los nueve campos siempre están\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]); });",
+                  "pm.test(\"el estado es overdue\", function () { pm.expect(body.state).to.eql(\"overdue\"); });",
+                  "pm.test(\"plan, periodo de cobro e importe son los de la organización\", function () {",
+                  "  pm.expect(body.subscription).to.eql({ id: Number(pm.collectionVariables.get(\"trialPlanId\")), name: pm.collectionVariables.get(\"trialPlanName\") });",
+                  "  pm.expect(body.billing_period).to.eql(\"monthly\");",
+                  "  pm.expect(body.amount).to.eql(\"499.00\");",
+                  "  pm.expect(body.currency).to.eql(\"MXN\");",
+                  "});",
+                  "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Contrato",
+      "description": "El contrato público (sin token) declara el permiso de cada operación y la forma de las respuestas.",
+      "item": [
+        {
+          "name": "docs: cada operación declara su permiso y su seguridad",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openapi.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openapi.json"
+              ]
+            },
+            "description": "Lee el contrato público y comprueba el permiso, la seguridad y la etiqueta de cada operación.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const spec = pm.response.json();",
+                  "pm.test(\"consultar exige subscription_periods:read\", function () {",
+                  "  const consult = spec.paths[\"/api/v1/subscription-periods/{organization_id}\"].get;",
+                  "  const pay = spec.paths[\"/api/v1/subscription-periods/{organization_id}/payments\"].post;",
+                  "  pm.expect(consult[\"x-required-permission\"]).to.eql(\"subscription_periods:read\");",
+                  "  pm.expect(consult.security).to.eql([{ BearerAuth: [] }]);",
+                  "  pm.expect(consult.tags).to.eql([\"subscription-periods\"]);",
+                  "});",
+                  "pm.test(\"iniciar el pago exige subscription_periods:write\", function () {",
+                  "  const consult = spec.paths[\"/api/v1/subscription-periods/{organization_id}\"].get;",
+                  "  const pay = spec.paths[\"/api/v1/subscription-periods/{organization_id}/payments\"].post;",
+                  "  pm.expect(pay[\"x-required-permission\"]).to.eql(\"subscription_periods:write\");",
+                  "  pm.expect(pay.security).to.eql([{ BearerAuth: [] }]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "docs: las respuestas y los esquemas tienen la forma del contrato",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openapi.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openapi.json"
+              ]
+            },
+            "description": "Comprueba los estatus documentados de cada operación y los campos obligatorios de las respuestas.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const spec = pm.response.json();",
+                  "pm.test(\"consultar documenta sus respuestas\", function () {",
+                  "  const consult = spec.paths[\"/api/v1/subscription-periods/{organization_id}\"].get;",
+                  "  const pay = spec.paths[\"/api/v1/subscription-periods/{organization_id}/payments\"].post;",
+                  "  pm.expect(Object.keys(consult.responses).sort()).to.eql([\"200\", \"401\", \"403\", \"404\", \"409\", \"422\", \"500\", \"503\"]);",
+                  "});",
+                  "pm.test(\"iniciar el pago documenta sus respuestas\", function () {",
+                  "  const consult = spec.paths[\"/api/v1/subscription-periods/{organization_id}\"].get;",
+                  "  const pay = spec.paths[\"/api/v1/subscription-periods/{organization_id}/payments\"].post;",
+                  "  pm.expect(Object.keys(pay.responses).sort()).to.eql([\"200\", \"201\", \"401\", \"403\", \"404\", \"409\", \"422\", \"500\", \"503\"]);",
+                  "});",
+                  "pm.test(\"el periodo tiene sus nueve campos obligatorios\", function () {",
+                  "  pm.expect(spec.components.schemas.SubscriptionPeriodRead.required.slice().sort()).to.eql([\"amount\", \"billing_period\", \"currency\", \"days_remaining\", \"payment_due_at\", \"payment_in_progress\", \"state\", \"subscription\", \"trial_ends_at\"]);",
+                  "});",
+                  "pm.test(\"el pago tiene sus cuatro campos obligatorios\", function () {",
+                  "  pm.expect(spec.components.schemas.SubscriptionPaymentRead.required.slice().sort()).to.eql([\"amount\", \"billing_period\", \"checkout_url\", \"currency\"]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. Limpieza",
+      "description": "Elimina los planes que creó la preparación y deja las simulaciones vacías para que la colección se pueda repetir.",
+      "item": [
+        {
+          "name": "setup: eliminar el plan con prueba",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{trialPlanId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{trialPlanId}}"
+              ]
+            },
+            "description": "Elimina el plan «con prueba» que creó la preparación, para dejar el catálogo como estaba.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 204\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: eliminar el plan sin prueba",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{noTrialPlanId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{noTrialPlanId}}"
+              ]
+            },
+            "description": "Elimina el plan «sin prueba» que creó la preparación, para dejar el catálogo como estaba.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 204\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: eliminar el plan sin cobro",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscriptions/{{freePlanId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscriptions",
+                "{{freePlanId}}"
+              ]
+            },
+            "description": "Elimina el plan «sin cobro» que creó la preparación, para dejar el catálogo como estaba.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 204\", function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: reiniciar al terminar la simulación del API de clínicas",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{clinicsStubUrl}}/__test__/reset",
+              "host": [
+                "{{clinicsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "reset"
+              ]
+            },
+            "description": "Vacía la simulación del API de clínicas (`{{clinicsStubUrl}}`): su estado, sus fallas programadas y sus llamadas.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: reiniciar al terminar la simulación del API de pagos",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{paymentsStubUrl}}/__test__/reset",
+              "host": [
+                "{{paymentsStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "reset"
+              ]
+            },
+            "description": "Vacía la simulación del API de pagos (`{{paymentsStubUrl}}`): su estado, sus fallas programadas y sus llamadas.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup: reiniciar al terminar la simulación del API de usuarios",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{usersStubUrl}}/__test__/reset",
+              "host": [
+                "{{usersStubUrl}}"
+              ],
+              "path": [
+                "__test__",
+                "reset"
+              ]
+            },
+            "description": "Vacía la simulación del API de usuarios (`{{usersStubUrl}}`): su estado, sus fallas programadas y sus llamadas.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "// Tras reiniciar se pierden los tokens: se vuelven a registrar en la siguiente petición.",
+                  "pm.collectionVariables.unset(\"accessToken\");",
+                  "pm.collectionVariables.unset(\"ownerToken\");",
+                  "pm.collectionVariables.unset(\"readerToken\");",
+                  "pm.collectionVariables.unset(\"plainToken\");",
+                  "pm.collectionVariables.unset(\"adminToken\");"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

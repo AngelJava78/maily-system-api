@@ -19,20 +19,23 @@ from src.config import (
     InvalidSettingsError,
     configuration_error_message,
     database_schedule_from,
+    get_billing_settings,
     get_build_settings,
     get_cors_settings,
     get_dashboard_settings,
     get_database_schedule_settings,
     get_health_settings,
     get_integration_settings,
+    get_payments_settings,
     get_settings,
     health_config_from,
     insecure_url_warnings,
+    payments_url_warnings,
 )
 from src.dependencies import build_dashboard_source
 from src.error_handlers import register_error_handlers
 from src.integrations.health_probe import create_health_http_client
-from src.routers import dashboard, health, monitored_components, subscriptions
+from src.routers import dashboard, health, monitored_components, subscription_periods, subscriptions
 from src.services.health_state import HealthState
 
 logger = logging.getLogger(__name__)
@@ -81,6 +84,16 @@ La **salud de servicios** cumple el contrato de salud de Maily v1 en la raíz (`
 (siempre 200 una vez concedido el acceso): este servicio, la base de datos y los servicios y
 frontends del registro de componentes, que se administra sin redesplegar. `/health/status` publica
 sin token un estado mínimo, sin versiones, direcciones ni detalles técnicos.
+
+Los **periodos de suscripción** (`/api/v1/subscription-periods/{organization_id}`) llevan, por
+organización cliente de MailySoft, su periodo de prueba y la fecha de su siguiente pago, para que la
+aplicación muestre cuánto tiempo le falta y lleve a la persona a pagar. Los consulta e inicia el pago
+solo la persona Dueña de la organización, con su permiso. El estado (`trial`, `current`, `overdue` o
+`no_charge`) se calcula al consultar; la API **informa y cobra, pero no bloquea ni suspende** el acceso
+al vencer. **El importe lo calcula la API** con el precio del catálogo: el cliente nunca lo envía. Un
+cobro aprobado en Pagos mueve la fecha exactamente una vez. Las fechas van en UTC. Si Pagos no responde
+al consultar, se devuelve lo guardado con `payment_in_progress` en `null`; sin Usuarios o sin Clínicas
+la respuesta es 503.
 """
 
 OPENAPI_TAGS = [
@@ -96,6 +109,13 @@ OPENAPI_TAGS = [
         "description": (
             "Resumen general de la plataforma de Maily («Panel de Maily»). Solo lectura; los datos "
             "de la Fase 1 son ficticios."
+        ),
+    },
+    {
+        "name": "subscription-periods",
+        "description": (
+            "Periodo de prueba, siguiente pago y cobro de cada organización. La API informa y cobra: "
+            "no bloquea ni suspende el acceso al vencer."
         ),
     },
     {
@@ -117,6 +137,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     loaders = (
         get_settings,
         get_integration_settings,
+        get_payments_settings,
+        get_billing_settings,
         get_dashboard_settings,
         get_health_settings,
         get_build_settings,
@@ -144,6 +166,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_integration_settings()
 
     for warning in insecure_url_warnings(settings):
+        logger.warning(warning)
+    for warning in payments_url_warnings(get_payments_settings()):
         logger.warning(warning)
     if build_dashboard_source().is_dummy:
         logger.warning(DUMMY_DASHBOARD_NOTICE)
@@ -179,6 +203,7 @@ def create_app() -> FastAPI:
     app.state.health = HealthState()
     app.include_router(subscriptions.router)
     app.include_router(dashboard.router)
+    app.include_router(subscription_periods.router)
     app.include_router(health.public_router)
     app.include_router(health.router)
     app.include_router(monitored_components.router)

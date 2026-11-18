@@ -16,7 +16,8 @@ from tests.health_support import insert_component
 from tests.helpers import TEST_TOKEN, Api
 
 # The permission matrix: contracts/permission-matrix.md of spec 001 (the six subscriptions), the
-# row of spec 003 (the dashboard) and the rows of spec 005 (the health of the services).
+# row of spec 003 (the dashboard), the rows of spec 005 (the health of the services) and the two of
+# spec 010 (the subscription periods).
 EXPECTED_PERMISSIONS = {
     "list_subscriptions": "subscriptions:read",
     "get_subscription": "subscriptions:read",
@@ -31,6 +32,8 @@ EXPECTED_PERMISSIONS = {
     "create_monitored_component": "health:write",
     "update_monitored_component": "health:update",
     "delete_monitored_component": "health:delete",
+    "get_subscription_period": "subscription_periods:read",
+    "create_subscription_payment": "subscription_periods:write",
 }
 # The documentation and the public health routes that spec 005 defines (Principle VIII exception).
 PUBLIC_ROUTES = {
@@ -48,6 +51,8 @@ ALL_PERMISSIONS = sorted(set(EXPECTED_PERMISSIONS.values()))
 URL = "/api/v1/subscriptions"
 COMPONENTS_URL = "/api/v1/monitored-components"
 COMPONENT_ID = "00000000-0000-4000-8000-000000000001"
+PERIODS_URL = "/api/v1/subscription-periods"
+ORGANIZATION_ID = "0f4e2b9a-6d1c-4f7e-9a3b-5c8d7e6f1a2b"
 # operation_id -> (method, path, JSON body) against the subscription with id 1 and the component
 # COMPONENT_ID
 REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
@@ -82,6 +87,8 @@ REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
     ),
     "update_monitored_component": ("PATCH", f"{COMPONENTS_URL}/{COMPONENT_ID}", {"name": "Cambio"}),
     "delete_monitored_component": ("DELETE", f"{COMPONENTS_URL}/{COMPONENT_ID}", None),
+    "get_subscription_period": ("GET", f"{PERIODS_URL}/{ORGANIZATION_ID}", None),
+    "create_subscription_payment": ("POST", f"{PERIODS_URL}/{ORGANIZATION_ID}/payments", None),
 }
 
 
@@ -150,13 +157,22 @@ async def snapshot(api: Api) -> list[tuple]:
     components = await api.fetch_all(
         "SELECT id, code, name, enabled, deleted_at, updated_at FROM monitored_components ORDER BY id"
     )
-    return subscriptions + components
+    periods = await api.fetch_all(
+        "SELECT organization_id, started_at, trial_ends_at, paid_until, updated_at "
+        "FROM subscription_periods ORDER BY organization_id"
+    )
+    charges = await api.fetch_all(
+        "SELECT id, organization_id, payment_id, status, updated_at FROM subscription_charges ORDER BY id"
+    )
+    return subscriptions + components + periods + charges
 
 
 @pytest.fixture
 async def seeded(api: Api) -> Api:
     await api.insert(name="Base")  # the subscription with id 1
     await insert_component(api.engine, code="base", id=UUID(COMPONENT_ID))
+    # The organization of the subscription periods, on that plan and owned by the person of TEST_TOKEN.
+    await api.register_organization(ORGANIZATION_ID, subscription_id=1)
     return api
 
 

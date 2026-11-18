@@ -2,8 +2,10 @@
 
 **MailySoft System API**: servicio REST de MailySoft. Su primer dominio es el catálogo de
 **suscripciones** (planes) que se asignan a las clínicas: precio mensual, lo que incluye cada plan y
-su estatus. No administra identidades: **consulta al API de usuarios** para saber quién puede operar
-y **al API de clínicas** para saber cuántas clínicas tiene cada plan.
+su estatus, y el control del **periodo de prueba y la fecha del siguiente pago** de cada organización
+cliente. No administra identidades: **consulta al API de usuarios** para saber quién puede operar, **al API
+de clínicas** para saber cuántas clínicas tiene cada plan y a quién pertenece cada organización, y **al API de
+pagos** para cobrar.
 
 ## Qué incluye hoy
 
@@ -157,10 +159,49 @@ tráfico) y *liveness* no (no se reinicia el contenedor).
 > **Permisos**: los cuatro `health:*` los administra el API de usuarios. Mientras no existan allí (con su
 > módulo «Salud de servicios»), las seis operaciones protegidas responden 403 en ambientes reales.
 
-> **Importante**: sin las direcciones del API de usuarios y del de clínicas el servicio **no arranca**, y si
-> el API de usuarios no responde, **todas** las operaciones devuelven 503 (la documentación sigue
-> pública). Para desarrollar sin esos servicios, usa las simulaciones de la pila de pruebas de punta a
-> punta (más abajo).
+### Periodos de suscripción (prueba y siguiente pago)
+
+Spec [`010-subscription-periods`](specs/010-subscription-periods/spec.md): esta API es la dueña, por
+organización cliente de MailySoft, de su **periodo de prueba** y de **la fecha de su siguiente pago**, y se
+lo informa a la aplicación para que muestre cuánto tiempo le falta y lleve a la persona a pagar. Solo
+informa y cobra: **no bloquea ni suspende el acceso** al vencer. Contrato en
+[`openapi-subscription-periods.yaml`](specs/010-subscription-periods/contracts/openapi-subscription-periods.yaml).
+
+| Operación | Método y ruta | Permiso |
+|---|---|---|
+| `get_subscription_period` | `GET /api/v1/subscription-periods/{organization_id}` | `subscription_periods:read` |
+| `create_subscription_payment` | `POST /api/v1/subscription-periods/{organization_id}/payments` | `subscription_periods:write` |
+
+- **Quién**: la persona **Dueña** de la organización (rol Owner), con su token. Que la organización es suya lo
+  comprueba el API de clínicas: la de otra persona y una que no existe responden el mismo 404.
+- **Los cuatro estados** (`state`): `trial` (en prueba), `current` (al corriente), `overdue` (vencida) y
+  `no_charge` (importe 0.00: no hay cobro ni fecha de pago). Se **calculan al consultar** con las fechas y el
+  reloj: no hay tareas programadas. La respuesta trae también `trial_ends_at`, `payment_due_at`,
+  `days_remaining` (redondeado hacia arriba; negativo son días de atraso), el plan, el periodo de cobro, el
+  importe (texto con dos decimales, en `MXN`) y `payment_in_progress`. Todas las fechas, en UTC.
+- **La primera consulta crea el registro** de la organización, una sola vez aunque lleguen consultas
+  simultáneas: empieza en el alta que informa Clínicas, pero nunca antes de `BILLING_CUTOFF_AT`; la prueba
+  dura los `trial_days` del plan en ese momento y, una vez fijada, no cambia aunque cambie el plan.
+- **Cada consulta concilia**: si hay cobros iniciados sin resolver, pregunta por ellos a Pagos y aplica los
+  aprobados, **exactamente una vez** aunque lleguen peticiones simultáneas. Solo cuenta un pago que esta API
+  inició, que Pagos reporta como aprobado y cuyo importe y moneda coinciden con lo registrado.
+- **Iniciar el pago** crea el cobro en Pagos (`resource_type` `system-api:subscription`, `resource_id` la
+  organización) y devuelve la dirección del checkout. **El importe lo calcula la API** con el catálogo: el
+  cliente nunca lo envía. Iniciarlo dos veces para el mismo periodo no duplica el cobro (200 con el mismo
+  checkout).
+- **Degradación**: sin Usuarios o sin Clínicas, 503 (el acceso falla cerrado). Si Pagos no responde al
+  consultar, devuelve lo guardado con `payment_in_progress: null`; al iniciar el pago, 503. Nunca se
+  inventan fechas ni importes.
+- **Contra los servicios reales** hacen falta los pedidos a otros equipos, que no bloquean el desarrollo ni
+  las pruebas (usan simulaciones): [Usuarios](specs/010-subscription-periods/contracts/pedidos-usuarios.md)
+  (los permisos y el `tenant_id` del Dueño), [Clínicas](specs/010-subscription-periods/contracts/pedidos-clinicas.md)
+  (`billing_period` en la lectura de la organización) y [Pagos](specs/010-subscription-periods/contracts/pedidos-pagos.md)
+  (regreso del checkout y fecha de aprobación).
+
+> **Importante**: sin las direcciones del API de usuarios, del de clínicas y del de pagos, ni la fecha de
+> corte (`BILLING_CUTOFF_AT`), el servicio **no arranca**, y si el API de usuarios no responde, **todas** las
+> operaciones devuelven 503 (la documentación sigue pública). Para desarrollar sin esos servicios, usa las
+> simulaciones de la pila de pruebas de punta a punta (más abajo).
 
 ## Requisitos
 
@@ -177,9 +218,12 @@ Copia `.env.example` a `.env` (no se versiona). Variables del servicio:
 | `DATABASE_URL` | sí | — | Base de datos (PostgreSQL, `postgresql+asyncpg://…`) |
 | `USERS_API_BASE_URL` | sí | — | Dirección del API de usuarios, sin barra final |
 | `CLINICS_API_BASE_URL` | sí | — | Dirección del API de clínicas, sin barra final |
+| `PAYMENTS_API_BASE_URL` | sí | — | Dirección del API de pagos, sin barra final (spec 010) |
+| `BILLING_CUTOFF_AT` | sí | — | Fecha de corte, ISO 8601 con zona (`2026-11-18T00:00:00Z`): ningún primer periodo de prueba empieza antes. En el primer despliegue, el instante del despliegue: así las organizaciones que ya existen no quedan vencidas de golpe (las que tengan un plan sin prueba vencen ese día; una fecha posterior les da margen). Un cambio requiere reiniciar |
 | `USERS_API_TIMEOUT_SECONDS` | no | `5` | Tiempo máximo total de cada llamada (mayor que 0, hasta 30) |
 | `CLINICS_API_TIMEOUT_SECONDS` | no | `5` | Ídem, para el API de clínicas |
-| `CORS_ALLOWED_ORIGINS` | no | vacía | Sitios web del Front que pueden llamar desde el navegador (lista separada por comas); vacía = ninguno |
+| `PAYMENTS_API_TIMEOUT_SECONDS` | no | `5` | Ídem, para el API de pagos |
+| `CORS_ALLOWED_ORIGINS` | no | vacía | Sitios web del Front que pueden llamar desde el navegador (lista separada por comas); vacía = ninguno. El origen del Front que consulta y paga las suscripciones va aquí: no hay otra variable de CORS |
 | `DASHBOARD_RECENT_CLINICS_LIMIT` | no | `5` | Clínicas recientes del dashboard cuando no se envía `limit`: solo `3`, `5` o `10` (cualquier otro valor impide arrancar). Un cambio requiere reiniciar |
 | `HEALTH_CHECK_TIMEOUT_SECONDS` | no | `3` | Tiempo máximo de cada llamada a un componente monitoreado (entero de 1 a 10) |
 | `HEALTH_CACHE_SECONDS` | no | `15` | Segundos que se reutiliza el resultado de salud entre consultas (entero de 0 a 300); `/health/status` lo reutiliza al menos 15 |
@@ -197,14 +241,14 @@ El arranque valida la configuración (también `DATABASE_URL`) y, si falta una v
 opcional no es válida, se niega a iniciar y nombra la variable (nunca su valor); un horario de la base de
 datos incompleto o con un valor no válido también impide arrancar.
 
-**Seguridad de las direcciones**: a esas dos direcciones se reenvía el token de la persona. Usa `https://`
+**Seguridad de las direcciones**: a esas tres direcciones se reenvía el token de la persona. Usa `https://`
 salvo en local o en la red de Docker: con una dirección `http://` no local el servicio arranca pero
 registra una advertencia (el token viajaría sin cifrar). Las redirecciones nunca se siguen.
 
 ## Puesta en marcha
 
 ```powershell
-Copy-Item .env.example .env              # ajusta credenciales, puertos y las dos direcciones
+Copy-Item .env.example .env              # ajusta credenciales, puertos, las tres direcciones y la fecha de corte
 docker compose up -d db                  # PostgreSQL 17 (bases `maily_system` y `maily_system_test`, puerto 5434)
 docker compose run --rm migrate          # aprovisiona el esquema y los estatus
 docker compose up -d api                 # API en http://localhost:8001 (puerto `API_PORT`)
@@ -275,20 +319,27 @@ uv run pytest -k dashboard
 ```
 
 Las de salud usan PostgreSQL real y la simulación de componentes (`tests/stubs/components/`), con un reloj
-controlable para el horario de la base de datos.
+controlable para el horario de la base de datos. Las de los periodos de suscripción usan PostgreSQL real, las
+simulaciones de usuarios, clínicas y pagos (`tests/stubs/`) y un reloj controlable (`tests/billing_support.py`):
+ningún API real.
 
 Guías de validación con el mapa historia → pruebas:
 [`specs/001-subscriptions-api/quickstart.md`](specs/001-subscriptions-api/quickstart.md) (suscripciones),
 [`specs/003-platform-dashboard/quickstart.md`](specs/003-platform-dashboard/quickstart.md) (dashboard) y
-[`specs/005-health-monitoring/quickstart.md`](specs/005-health-monitoring/quickstart.md) (salud).
+[`specs/005-health-monitoring/quickstart.md`](specs/005-health-monitoring/quickstart.md) (salud) y
+[`specs/010-subscription-periods/quickstart.md`](specs/010-subscription-periods/quickstart.md) (periodos de suscripción).
 
 ## Pruebas de punta a punta (Postman)
 
-Hay **tres colecciones automáticas** para Newman, una por recurso, que recorren la API real contra las
+Hay **cuatro colecciones automáticas** para Newman, una por recurso, que recorren la API real contra las
 simulaciones de sus dependencias: la de **suscripciones** (las 6 operaciones y los errores clave: 401, 403,
 404, 409, 422 y 503), la del **dashboard** (`get_dashboard`: el resumen, `limit`, el orden y los errores 401,
 403, 422 y 503; es de solo lectura) y la de **salud** (las 10 operaciones de salud: el contrato público, el
-registro de componentes, componentes caídos y los errores 401, 403, 404, 409, 422 y 503). **Complementan a
+registro de componentes, componentes caídos y los errores 401, 403, 404, 409, 422 y 503) y la de **periodos de
+suscripción** (las 2 operaciones: consultar en prueba, vencida, sin prueba, sin cobro y anual; iniciar el pago;
+el pago aprobado que mueve la fecha una sola vez, el rechazado, el de otro importe y el creado por otra vía; el
+control de acceso y la degradación de Clínicas y de Pagos). Con el reloj real y la antigüedad de cada
+organización fijada en la simulación, no necesita mover el reloj. **Complementan a
 pytest, que sigue siendo la puerta de calidad; no lo sustituyen.** No necesitan cuenta de Postman ni envían nada a servicios externos. Viven en `tests/postman/` y
 se ejecutan con [Newman](https://github.com/postmanlabs/newman).
 
@@ -299,24 +350,27 @@ npm run e2e --prefix tests/postman       # suscripciones: consola + tests/postma
 npm run e2e --prefix tests/postman -- --folder "5. Control de acceso"   # solo una carpeta (las 2 a 4 usan lo que crea la 1)
 npm run e2e:dashboard --prefix tests/postman   # dashboard → tests/postman/reports/junit-dashboard.xml
 npm run e2e:health --prefix tests/postman      # salud → tests/postman/reports/junit-health.xml
-npm run e2e:all --prefix tests/postman         # las tres, una tras otra
+npm run e2e:periods --prefix tests/postman    # periodos → tests/postman/reports/junit-periods.xml
+npm run e2e:all --prefix tests/postman         # las cuatro, una tras otra
 docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml down -v
 ```
 
 - **Pila aislada**: el proyecto `maily-system-e2e` tiene su propia base de datos desechable (sin puerto
   publicado), la API en `127.0.0.1:8011` y las simulaciones del API de usuarios (`:8012`), del de
-  clínicas (`:8013`) y de los componentes monitoreados (`:8014`). Usa `--build` para que la imagen lleve el
+  clínicas (`:8013`), de los componentes monitoreados (`:8014`) y del API de pagos (`:8015`). Usa `--build` para que la imagen lleve el
   código actual (sin él, Compose reutiliza la de una ejecución anterior). **No apuntes nunca la colección a un
   servicio con datos reales**: la de suscripciones crea y elimina de forma lógica suscripciones, así que
-  quedan filas «Eliminada», y la de salud crea, modifica y elimina componentes del registro (la del dashboard
-  no escribe nada).
+  quedan filas «Eliminada», la de salud crea, modifica y elimina componentes del registro, y la de periodos
+  crea y elimina de forma lógica tres planes y deja registros de periodos y cobros en las tablas de la pila
+  (la del dashboard no escribe nada).
 - **Resultado**: código de salida `0` si todo pasa y `1` si falla una comprobación o la pila no responde.
 - **Si la API cambia**: cada recurso tiene su colección y toda feature que añada, quite o cambie operaciones
   actualiza la de su recurso (y, si es de suscripciones, también la [manual](#colección-manual-de-postman))
   en el mismo cambio. `test_postman_collection.py`, `test_manual_postman_collection.py`,
-  `test_dashboard_postman_collection.py` y `test_health_postman_collection.py` (parte de `uv run pytest`)
-  fallan nombrando las operaciones que faltan o sobran, y la del dashboard comprueba además que **las cuatro
-  colecciones juntas cubren toda la API**.
+  `test_dashboard_postman_collection.py`, `test_health_postman_collection.py` y
+  `test_periods_postman_collection.py` (parte de `uv run pytest`) fallan nombrando las operaciones que
+  faltan o sobran, y la del dashboard comprueba además que **las cinco colecciones juntas (las cuatro
+  automáticas y la manual) cubren toda la API**.
 
 ## Colección manual de Postman
 
@@ -473,9 +527,10 @@ src/
 ├── messages.py        # códigos de error y mensajes en español
 ├── routers/           # endpoints HTTP: solo validan, llaman a un Service y serializan
 ├── services/          # reglas de negocio y autorización; la salud (`health_service.py`, `health_schedule.py`,
-│                      # `health_state.py`) y el registro de componentes (`monitored_component_service.py`)
+│                      # `health_state.py`), el registro de componentes (`monitored_component_service.py`) y
+│                      # los periodos de suscripción (`billing_rules.py`, `subscription_period_service.py`)
 ├── repositories/      # acceso a datos (únicas consultas SQL)
-├── integrations/      # clientes del API de usuarios y del de clínicas, y el puerto de datos del dashboard
+├── integrations/      # clientes del API de usuarios, del de clínicas y del de pagos (`payments_api.py`), y el puerto de datos del dashboard
 │                      # (`dashboard_source.py`) con su fuente ficticia de la Fase 1; y el cliente de los
 │                      # chequeos de salud (`health_probe.py`) con el contrato v1 (`health_contract.py`)
 ├── dtos/              # esquemas de entrada y salida (Pydantic)
@@ -484,15 +539,17 @@ src/
 └── scripts/           # pasos de despliegue de un solo uso (p. ej. backfill_subscription_types.py);
                        # no son rutas de la API ni los ejecuta Alembic
 alembic/versions/      # 0001 esquema, 0002 catálogo de estatus, 0003 corrección de suscripciones,
-                       # 0004 registro de componentes, 0005 tipo de suscripción
+                       # 0004 registro de componentes, 0005 tipo de suscripción, 0006 límite de clínicas,
+                       # 0007 módulos de la suscripción, 0008 periodos de suscripción y sus cobros
 tests/unit/            # sin base de datos (DTOs, Services, seguridad, configuración, capas)
 tests/integration/     # PostgreSQL real (esquema, migraciones y Repositories)
 tests/contract/        # la API por HTTP, el documento OpenAPI, la cobertura de permisos y las colecciones de Postman
                        # (postman_support.py: apoyo compartido; conftest.py: fixtures del dashboard, sin base de datos)
 tests/dashboard_support.py   # fuente de datos doble y ayudas de las pruebas del dashboard
 tests/health_support.py     # reloj, transporte con fallas y ayudas de las pruebas de salud
-tests/stubs/           # simulaciones del API de usuarios, del API de clínicas y de los componentes monitoreados
-tests/postman/         # colecciones (suscripciones, dashboard y salud), entornos y pila aislada de las pruebas de
+tests/billing_support.py    # dobles y ayudas de las pruebas de los periodos de suscripción
+tests/stubs/           # simulaciones del API de usuarios, de clínicas, de pagos y de los componentes monitoreados
+tests/postman/         # colecciones (suscripciones, dashboard, salud y periodos), entornos y pila aislada de las pruebas de
                        # punta a punta (Newman) y colección y entornos de la colección manual
 project-definition/    # esquema de datos objetivo (DATA_SCHEMA.md)
 specs/                 # especificaciones de Spec Kit

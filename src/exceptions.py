@@ -14,6 +14,11 @@ from src.messages import (
     MODULE_CHECK_UNAVAILABLE_MESSAGE,
     MONITORED_COMPONENT_CODE_ALREADY_EXISTS_MESSAGE,
     MONITORED_COMPONENT_NOT_FOUND_MESSAGE,
+    NOTHING_TO_CHARGE_MESSAGE,
+    ORGANIZATION_CHECK_UNAVAILABLE_MESSAGE,
+    ORGANIZATION_NOT_FOUND_MESSAGE,
+    ORGANIZATION_SUBSCRIPTION_NOT_FOUND_MESSAGE,
+    PAYMENTS_UNAVAILABLE_MESSAGE,
     PERMISSION_DENIED_MESSAGE,
     SUBSCRIPTION_HAS_CLINICS_MESSAGE,
     SUBSCRIPTION_MODULE_NOT_FOUND_MESSAGE,
@@ -248,3 +253,59 @@ class MonitoredComponentDataError(AppError):
     def __init__(self, errors: list[dict[str, Any]]) -> None:
         super().__init__(VALIDATION_ERROR_MESSAGE)
         self.errors = errors
+
+
+# --- Subscription periods (spec 010) ---
+
+
+class OrganizationNotFoundError(AppError):
+    """The clinics API answered that the organization does not exist or is not the person's own.
+
+    The two cases are not told apart: the answer never reveals whether the organization exists.
+    """
+
+    code = ErrorCode.ORGANIZATION_NOT_FOUND
+    status_code = 404
+
+    def __init__(self, organization_id: UUID) -> None:
+        super().__init__(ORGANIZATION_NOT_FOUND_MESSAGE.format(organization_id=organization_id))
+
+
+class OrganizationCheckUnavailableError(AppError):
+    """The organization could not be checked: the access fails closed and nothing is done."""
+
+    code = ErrorCode.ORGANIZATION_CHECK_UNAVAILABLE
+    status_code = 503
+
+    def __init__(self) -> None:
+        super().__init__(ORGANIZATION_CHECK_UNAVAILABLE_MESSAGE)
+
+
+class PaymentsUnavailableError(AppError):
+    """The payments API could not create the payment: no new charge was registered."""
+
+    code = ErrorCode.PAYMENTS_UNAVAILABLE
+    status_code = 503
+
+    def __init__(self) -> None:
+        super().__init__(PAYMENTS_UNAVAILABLE_MESSAGE)
+
+
+class NothingToChargeError(AppError):
+    """The current amount of the organization is 0.00: there is nothing to charge."""
+
+    code = ErrorCode.NOTHING_TO_CHARGE
+    status_code = 409
+
+    def __init__(self) -> None:
+        super().__init__(NOTHING_TO_CHARGE_MESSAGE)
+
+
+class OrganizationSubscriptionNotFoundError(AppError):
+    """The plan that the clinics API reports for the organization is not in the catalog."""
+
+    code = ErrorCode.ORGANIZATION_SUBSCRIPTION_NOT_FOUND
+    status_code = 409
+
+    def __init__(self) -> None:
+        super().__init__(ORGANIZATION_SUBSCRIPTION_NOT_FOUND_MESSAGE)
