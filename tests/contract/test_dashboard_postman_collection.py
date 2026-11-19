@@ -26,6 +26,8 @@ from tests.contract.postman_support import (
     JWT_PATTERN,
     MANUAL_COLLECTION,
     MANUAL_HELPER_PREFIXES,
+    PERIODS_COLLECTION,
+    PERIODS_HELPER_PREFIXES,
     POSTMAN,
     folders_of,
     load_json,
@@ -212,7 +214,7 @@ def check_variable_names(collection: dict, environment: dict) -> list[str]:
     return [f"the environment variable «{key}» would hide the one of the collection" for key in hidden]
 
 
-# --- G9: the four collections together cover the API ---
+# --- G9: the five collections together cover the API ---
 
 
 def check_union(prefixes_by_collection: dict[str, set[str]], api_operations: set[str]) -> list[str]:
@@ -228,6 +230,7 @@ def prefixes_of_the_collections(dashboard: dict) -> dict[str, set[str]]:
         "subscriptions (manual)": operation_prefixes(load_json(MANUAL_COLLECTION), MANUAL_HELPER_PREFIXES),
         "dashboard": operation_prefixes(dashboard, DASHBOARD_HELPER_PREFIXES),
         "health": operation_prefixes(load_json(HEALTH_COLLECTION), HEALTH_HELPER_PREFIXES),
+        "periods": operation_prefixes(load_json(PERIODS_COLLECTION), PERIODS_HELPER_PREFIXES),
     }
 
 
@@ -267,7 +270,7 @@ def test_g8_no_variable_of_the_environment_hides_one_of_the_collection(collectio
     assert check_variable_names(collection, environment) == []
 
 
-def test_g9_the_four_collections_together_cover_exactly_the_operations_of_the_api(collection):
+def test_g9_the_five_collections_together_cover_exactly_the_operations_of_the_api(collection):
     assert check_union(prefixes_of_the_collections(collection), api_operations_covered_by_postman()) == []
 
 

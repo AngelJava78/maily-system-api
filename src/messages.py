@@ -7,7 +7,9 @@ texts of another one. The texts come from `specs/004-correct-subscriptions-api/c
 (the complete catalog, superseding `specs/001-subscriptions-api/contracts/error-catalog.md`) and, for
 the registry of monitored components, from `specs/005-health-monitoring/contracts/error-catalog.md`;
 the module-related codes that survive `009-remove-module-dependencies` are documented in
-`specs/009-remove-module-dependencies/contracts/error-catalog.md`. They must not be paraphrased.
+`specs/009-remove-module-dependencies/contracts/error-catalog.md`, and the five codes of the
+subscription periods in `specs/010-subscription-periods/contracts/error-catalog.md`. They must not be
+paraphrased.
 """
 
 from enum import StrEnum
@@ -39,6 +41,10 @@ class ErrorCode(StrEnum):
     PAYMENT_NOT_AUTHORIZED = "payment_not_authorized"
     CLINIC_SUBSCRIPTION_CHARGE_CONFLICT = "clinic_subscription_charge_conflict"
     PAYMENTS_UNAVAILABLE = "payments_unavailable"
+    ORGANIZATION_NOT_FOUND = "organization_not_found"
+    ORGANIZATION_CHECK_UNAVAILABLE = "organization_check_unavailable"
+    NOTHING_TO_CHARGE = "nothing_to_charge"
+    ORGANIZATION_SUBSCRIPTION_NOT_FOUND = "organization_subscription_not_found"
 
 
 # --- Access control ---
@@ -90,7 +96,7 @@ MONITORED_COMPONENT_CODE_ALREADY_EXISTS_MESSAGE = (
     "Ya existe un componente monitoreado con el código «{code}»."
 )
 
-# --- Domain errors of the clinic subscription charges (spec 010, contracts/error-catalog.md) ---
+# --- Domain errors of the clinic subscription charges (spec 010-cobro-real-suscripciones) ---
 
 PASSWORD_CHANGE_REQUIRED_MESSAGE = "Debe cambiar su contraseña antes de usar esta operación."
 CLINIC_SUBSCRIPTION_NOT_FOUND_MESSAGE = (
@@ -113,8 +119,27 @@ PAYMENT_NOT_AUTHORIZED_MESSAGE = "No se pudo autorizar el cobro con el proveedor
 CLINIC_SUBSCRIPTION_CHARGE_CONFLICT_MESSAGE = (
     "Ya existe un cobro distinto para este periodo. Revise el historial antes de reintentar."
 )
+
+# --- Domain errors of the subscription periods (spec 010-subscription-periods) ---
+
+# None carries an address, a token or the body of another API (FR-038); the first one only repeats
+# the identifier that the person sent.
+ORGANIZATION_NOT_FOUND_MESSAGE = "No se encontró la organización con el identificador {organization_id}."
+ORGANIZATION_CHECK_UNAVAILABLE_MESSAGE = (
+    "No se pudo comprobar la organización por ahora. No se hizo ningún cambio; "
+    "inténtelo de nuevo más tarde."
+)
+# Compartido con las cargas de suscripción de clínica (FR-014): ambas solo la lanzan alrededor de
+# un `create_payment`, así que "no se registró ningún cobro nuevo" aplica a las dos.
 PAYMENTS_UNAVAILABLE_MESSAGE = (
-    "No se pudo comunicar con el servicio de pagos por ahora. Inténtelo de nuevo más tarde."
+    "No se pudo crear el pago por ahora. No se registró ningún cobro nuevo; "
+    "inténtelo de nuevo más tarde."
+)
+NOTHING_TO_CHARGE_MESSAGE = (
+    "La suscripción de la organización no tiene nada que cobrar: su importe vigente es 0.00."
+)
+ORGANIZATION_SUBSCRIPTION_NOT_FOUND_MESSAGE = (
+    "El plan de la organización no existe en el catálogo de suscripciones."
 )
 
 # --- Generic errors ---
@@ -193,6 +218,10 @@ _STATUS_REQUIRED_MESSAGE = "El estatus es obligatorio y debe ser un número ente
 DASHBOARD_LIMIT_INVALID_MESSAGE = (
     "El parámetro «limit» debe ser un número entero mayor o igual que 1."
 )
+
+# --- Validation messages of the subscription periods (spec 010, contracts/error-catalog.md) ---
+
+ORGANIZATION_ID_INVALID_MESSAGE = "El identificador de la organización debe ser un UUID."
 
 # --- Validation messages of the registry of components (spec 005, contracts/error-catalog.md) ---
 
@@ -301,6 +330,9 @@ VALIDATION_MESSAGES: dict[str, dict[tuple[str, str], str]] = {
         ("period", "invalid"): CLINIC_SUBSCRIPTION_PERIOD_INVALID_MESSAGE,
         ("clinic_subscription_id", "invalid"): _CLINIC_SUBSCRIPTION_ID_PATH_INVALID_MESSAGE,
         ("charge_id", "invalid"): _CHARGE_ID_PATH_INVALID_MESSAGE,
+    },
+    "subscription-periods": {
+        ("organization_id", "invalid"): ORGANIZATION_ID_INVALID_MESSAGE,
     },
     # The native errors of Pydantic; the formats raise their own message (see above).
     "monitored-components": {

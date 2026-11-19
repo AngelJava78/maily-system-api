@@ -1,0 +1,374 @@
+openapi: 3.1.0
+info:
+  title: MailySoft System API — Periodos de suscripción
+  version: 4.1.0
+  description: |
+    Contrato de las dos operaciones que controlan el periodo de prueba y el siguiente pago de cada
+    organización (spec 010-subscription-periods). Es **un fragmento** del contrato publicado de la API: la
+    aplicación lo genera en `/openapi.json` junto con las demás operaciones, cuyo contrato no cambia.
+
+    - Exigen un token de acceso y el permiso de la operación (`subscription_periods:read` para consultar y
+      `subscription_periods:write` para iniciar el pago), que decide el API de usuarios en cada petición,
+      **antes** de validar `organization_id`.
+    - La persona debe ser el **Dueño** de la organización: se comprueba leyéndola en Clínicas con su token.
+      Si no lo es (o no existe), 404 idéntico; si Clínicas no responde, 503.
+    - Las fechas van en UTC (ISO 8601 con `Z`); mostrarlas en la zona horaria de la clínica le toca a la
+      aplicación. Los importes son texto con dos decimales, en pesos mexicanos (`MXN`).
+    - Las respuestas 200 y 201 no se guardan en caché (`Cache-Control: no-store`).
+    - Esta API solo **informa y cobra**: no bloquea ni suspende el acceso al vencer.
+servers:
+  - url: http://localhost:8010
+    description: Entorno local (docker compose)
+security:
+  - BearerAuth: []
+tags:
+  - name: subscription-periods
+    description: Periodo de prueba, siguiente pago y cobro de cada organización.
+paths:
+  /api/v1/subscription-periods/{organization_id}:
+    get:
+      tags: [subscription-periods]
+      operationId: get_subscription_period
+      summary: Consultar el periodo de prueba y el siguiente pago de una organización
+      description: |
+        Devuelve en qué punto está la organización: si está en prueba (`trial`), al corriente (`current`),
+        vencida (`overdue`) o sin cobro (`no_charge`), cuándo termina la prueba, la fecha del siguiente
+        pago, los días que faltan (o de atraso), su plan, su periodo de cobro, el importe a pagar y si hay
+        un cobro en curso.
+
+        - La primera vez que se consulta una organización se crea su registro (una sola vez, también con
+          consultas simultáneas). El primer periodo empieza en el alta de la organización, pero nunca antes
+          de la fecha de corte del servicio; la prueba dura los `trial_days` de su plan **en ese momento** y
+          su fin no cambia después.
+        - `days_remaining` es un entero con signo, redondeado hacia arriba, relativo a `payment_due_at`:
+          positivo, faltan; `0` o negativo, ya venció (`-5` son cinco días completos de atraso). Con
+          `trial` y `current` vale 1 o más; con `overdue`, 0 o menos; con `no_charge`, `null`.
+        - Antes de responder, la API revisa en Pagos los cobros que ella inició y siguen sin resolverse y
+          aplica los aprobados (cada uno mueve `payment_due_at` exactamente una vez). Si Pagos no responde,
+          devuelve lo guardado y `payment_in_progress` en `null`.
+        - Sin periodo de gracia: es `overdue` desde que el reloj alcanza `payment_due_at`.
+
+        Permiso requerido: `subscription_periods:read`.
+      x-required-permission: subscription_periods:read
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      responses:
+        "200":
+          description: El estado del periodo de la organización.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubscriptionPeriodRead"
+              examples:
+                en_prueba:
+                  summary: En prueba (14 días, mensual de 499.00)
+                  value:
+                    state: trial
+                    trial_ends_at: "2026-12-04T15:30:00Z"
+                    payment_due_at: "2026-12-04T15:30:00Z"
+                    days_remaining: 9
+                    subscription: { id: 3, name: Plan Individual }
+                    billing_period: monthly
+                    amount: "499.00"
+                    currency: MXN
+                    payment_in_progress: false
+                vencida:
+                  summary: Vencida hace cinco días
+                  value:
+                    state: overdue
+                    trial_ends_at: "2026-12-04T15:30:00Z"
+                    payment_due_at: "2026-12-04T15:30:00Z"
+                    days_remaining: -5
+                    subscription: { id: 3, name: Plan Individual }
+                    billing_period: monthly
+                    amount: "499.00"
+                    currency: MXN
+                    payment_in_progress: false
+                sin_cobro:
+                  summary: Plan sin cobro (importe 0.00)
+                  value:
+                    state: no_charge
+                    trial_ends_at: null
+                    payment_due_at: null
+                    days_remaining: null
+                    subscription: { id: 1, name: Plan Gratuito }
+                    billing_period: monthly
+                    amount: "0.00"
+                    currency: MXN
+                    payment_in_progress: false
+                pagos_no_responde:
+                  summary: Pagos no respondió; no se pudo verificar un cobro en curso
+                  value:
+                    state: current
+                    trial_ends_at: "2026-12-04T15:30:00Z"
+                    payment_due_at: "2027-01-04T15:30:00Z"
+                    days_remaining: 31
+                    subscription: { id: 3, name: Plan Individual }
+                    billing_period: monthly
+                    amount: "499.00"
+                    currency: MXN
+                    payment_in_progress: null
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/OrganizationNotFound" }
+        "409": { $ref: "#/components/responses/SubscriptionNotFoundForOrganization" }
+        "422": { $ref: "#/components/responses/InvalidOrganizationId" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/subscription-periods/{organization_id}/payments:
+    post:
+      tags: [subscription-periods]
+      operationId: create_subscription_payment
+      summary: Iniciar el pago del siguiente periodo de una organización
+      description: |
+        Crea el cobro en Pagos —con la referencia `system-api:subscription` y el identificador de la
+        organización— y devuelve la dirección del checkout a la que la aplicación lleva a la persona.
+
+        - **No recibe importe**: lo calcula la API con el precio del catálogo del plan vigente de la
+          organización y su periodo de cobro. Cualquier cuerpo, importe, moneda o periodo que traiga la
+          petición se ignora.
+        - Se puede pagar durante la prueba, antes de la fecha del siguiente pago o ya vencida. Cuando el
+          pago se apruebe, el periodo pagado empieza donde terminaría el anterior (si llegó a tiempo) o en
+          la fecha de aprobación (si ya estaba vencida).
+        - **Idempotente por periodo**: iniciar el pago otra vez para el mismo periodo no crea un segundo
+          cobro y devuelve el mismo checkout mientras siga pendiente (200). Si el cobro anterior del
+          periodo se cerró sin pagarse, se crea uno nuevo (201). Si el importe vigente cambió (cambio de
+          plan), también se crea uno nuevo; el anterior sigue siendo válido si se paga.
+        - Antes de crear nada revisa los cobros pendientes: si alguno ya fue aprobado se aplica primero.
+        - Si el importe vigente es 0.00, responde 409 `nothing_to_charge` sin llamar a Pagos. Si Pagos no
+          responde, 503 `payments_unavailable` sin registrar ningún cobro.
+
+        Permiso requerido: `subscription_periods:write`.
+      x-required-permission: subscription_periods:write
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      responses:
+        "201":
+          description: Se creó un cobro nuevo.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubscriptionPaymentRead"
+              examples:
+                nuevo:
+                  value:
+                    checkout_url: https://www.mercadopago.com.mx/checkout/v1/redirect?pref_id=123456789-abc
+                    amount: "499.00"
+                    currency: MXN
+                    billing_period: monthly
+        "200":
+          description: Ya había un cobro pendiente para este periodo; se devuelve su checkout.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubscriptionPaymentRead"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/OrganizationNotFound" }
+        "409": { $ref: "#/components/responses/NothingToCharge" }
+        "422": { $ref: "#/components/responses/InvalidOrganizationId" }
+        "503": { $ref: "#/components/responses/UnavailableToPay" }
+        "500": { $ref: "#/components/responses/InternalError" }
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de acceso emitido por Auth0. Esta API no lo verifica: lo reenvía al API de usuarios.
+  headers:
+    CacheControl:
+      description: La respuesta no debe guardarse en caché.
+      schema: { type: string }
+      example: no-store
+  parameters:
+    OrganizationId:
+      name: organization_id
+      in: path
+      required: true
+      description: Identificador de la organización (el `organization_id` de «mis clínicas» de Clínicas).
+      schema: { type: string, format: uuid }
+  schemas:
+    PlanRead:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: integer, description: Identificador del plan en el catálogo de esta API. }
+        name: { type: string, description: Nombre del plan. }
+    SubscriptionPeriodRead:
+      type: object
+      description: El estado del periodo de una organización. Los nueve campos siempre están presentes.
+      required:
+        - state
+        - trial_ends_at
+        - payment_due_at
+        - days_remaining
+        - subscription
+        - billing_period
+        - amount
+        - currency
+        - payment_in_progress
+      properties:
+        state:
+          type: string
+          enum: [trial, current, overdue, no_charge]
+          description: En prueba, al corriente, vencida o sin cobro.
+        trial_ends_at:
+          type: [string, "null"]
+          format: date-time
+          description: Cuándo termina la prueba (UTC). `null` si el plan no tenía prueba.
+        payment_due_at:
+          type: [string, "null"]
+          format: date-time
+          description: Fecha del siguiente pago (UTC). `null` en `no_charge`.
+        days_remaining:
+          type: [integer, "null"]
+          description: Días que faltan para `payment_due_at`, redondeados hacia arriba; 0 o negativo si ya venció. `null` en `no_charge`.
+        subscription: { $ref: "#/components/schemas/PlanRead" }
+        billing_period: { type: string, enum: [monthly, annual] }
+        amount:
+          type: string
+          pattern: '^[0-9]+\.[0-9]{2}$'
+          description: Importe a pagar en pesos, con dos decimales.
+        currency: { type: string, enum: [MXN] }
+        payment_in_progress:
+          type: [boolean, "null"]
+          description: |
+            `true` si hay un cobro pendiente verificado en Pagos; `null` si hay cobros sin resolver que no se
+            pudieron verificar (Pagos no respondió); `false` si no hay ninguno.
+    SubscriptionPaymentRead:
+      type: object
+      required: [checkout_url, amount, currency, billing_period]
+      properties:
+        checkout_url: { type: string, description: Dirección del checkout de Pagos a la que se lleva a la persona. }
+        amount: { type: string, pattern: '^[0-9]+\.[0-9]{2}$' }
+        currency: { type: string, enum: [MXN] }
+        billing_period: { type: string, enum: [monthly, annual] }
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - unauthenticated
+            - token_expired
+            - invalid_token
+            - permission_denied
+            - authorization_unavailable
+            - validation_error
+            - internal_error
+            - organization_not_found
+            - organization_check_unavailable
+            - payments_unavailable
+            - nothing_to_charge
+            - organization_subscription_not_found
+        message: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: { type: string }
+              message: { type: string }
+  responses:
+    Unauthorized:
+      description: Sin token, vencido o no válido. No se hace ni se cambia nada. Trae `WWW-Authenticate`.
+      headers:
+        WWW-Authenticate: { schema: { type: string }, example: Bearer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            sin_token: { value: { code: unauthenticated, message: Debe iniciar sesión para usar esta operación. } }
+    Forbidden:
+      description: La persona no tiene el permiso de la operación.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            sin_permiso:
+              value:
+                code: permission_denied
+                message: "No tiene permiso para realizar esta operación. Permiso requerido: subscription_periods:read."
+    OrganizationNotFound:
+      description: La organización no existe o no es de la persona (no se distingue).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            no_encontrada:
+              value:
+                code: organization_not_found
+                message: No se encontró la organización con el identificador 0f4e2b9a-6d1c-4f7e-9a3b-5c8d7e6f1a2b.
+    SubscriptionNotFoundForOrganization:
+      description: El plan que informa Clínicas no existe en el catálogo.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            sin_plan:
+              value: { code: organization_subscription_not_found, message: El plan de la organización no existe en el catálogo de suscripciones. }
+    NothingToCharge:
+      description: |
+        No hay nada que cobrar (importe 0.00) o el plan de la organización no existe en el catálogo.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            sin_cobro:
+              value: { code: nothing_to_charge, message: "La suscripción de la organización no tiene nada que cobrar: su importe vigente es 0.00." }
+            sin_plan:
+              value: { code: organization_subscription_not_found, message: El plan de la organización no existe en el catálogo de suscripciones. }
+    InvalidOrganizationId:
+      description: El identificador de la organización no es un UUID. Solo se evalúa con el acceso concedido.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            formato:
+              value:
+                code: validation_error
+                message: Hay datos no válidos en la solicitud.
+                errors: [{ field: organization_id, message: El identificador de la organización debe ser un UUID. }]
+    Unavailable:
+      description: |
+        No se pudo verificar el permiso (Usuarios) o la organización (Clínicas). Nada se hizo ni se cambió.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            permiso:
+              value: { code: authorization_unavailable, message: No se pudo verificar su permiso por ahora. Inténtelo de nuevo más tarde. }
+            organizacion:
+              value: { code: organization_check_unavailable, message: No se pudo comprobar la organización por ahora. No se hizo ningún cambio; inténtelo de nuevo más tarde. }
+    UnavailableToPay:
+      description: |
+        Usuarios o Clínicas no respondieron, o Pagos no pudo crear el pago. No se registró ningún cobro nuevo.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            pagos:
+              value: { code: payments_unavailable, message: No se pudo crear el pago por ahora. No se registró ningún cobro nuevo; inténtelo de nuevo más tarde. }
+    InternalError:
+      description: Fallo inesperado, sin detalles técnicos.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            inesperado: { value: { code: internal_error, message: Ocurrió un error inesperado. Inténtelo de nuevo más tarde. } }

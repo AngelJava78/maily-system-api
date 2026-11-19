@@ -1,13 +1,13 @@
 """Business rules of charging a clinic subscription, with Clinics/Pagos/the Repository replaced by
 doubles."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
 import pytest
 
 from src.integrations.clinics_api import ClinicSubscriptionInfo
-from src.integrations.payments_api import PaymentView
+from src.integrations.payments_api import PaymentRecord
 from src.exceptions import (
     ClinicSubscriptionChargeAlreadyApprovedError,
     ClinicSubscriptionChargeConflictError,
@@ -67,7 +67,7 @@ async def test_charge_sends_the_exact_body_to_payments():
     )
     payment_id = uuid4()
     payments = FakePaymentsApi(
-        payment=PaymentView(id=payment_id, status="pending", checkout_url="https://x", amount=129900, currency="MXN")
+        payment=PaymentRecord(id=payment_id, status="pending", checkout_url="https://x", amount=129900, currency="MXN", resource_type="system-api:clinic-subscription", resource_id="test", updated_at=datetime(2026, 11, 10, tzinfo=UTC))
     )
 
     charge = await service(subscriptions=subscriptions, clinics=clinics, payments=payments).charge(
@@ -92,7 +92,7 @@ async def test_charge_of_an_annual_plan_uses_the_annual_price():
         clinic_subscription=ClinicSubscriptionInfo(tenant_id=TENANT, subscription_id=1, billing_cycle="annual")
     )
     payments = FakePaymentsApi(
-        payment=PaymentView(id=uuid4(), status="pending", checkout_url="https://x", amount=1299000, currency="MXN")
+        payment=PaymentRecord(id=uuid4(), status="pending", checkout_url="https://x", amount=1299000, currency="MXN", resource_type="system-api:clinic-subscription", resource_id="test", updated_at=datetime(2026, 11, 10, tzinfo=UTC))
     )
 
     await service(subscriptions=subscriptions, clinics=clinics, payments=payments).charge(
@@ -107,7 +107,7 @@ async def test_charge_is_idempotent_for_the_same_period():
     active_plan(subscriptions)
     payment_id = uuid4()
     payments = FakePaymentsApi(
-        payment=PaymentView(id=payment_id, status="pending", checkout_url="https://x", amount=129900, currency="MXN")
+        payment=PaymentRecord(id=payment_id, status="pending", checkout_url="https://x", amount=129900, currency="MXN", resource_type="system-api:clinic-subscription", resource_id="test", updated_at=datetime(2026, 11, 10, tzinfo=UTC))
     )
     svc = service(subscriptions=subscriptions, payments=payments)
 
@@ -186,7 +186,7 @@ async def test_charge_retries_a_period_that_is_not_yet_approved(status):
     )
     payment_id = uuid4()
     payments = FakePaymentsApi(
-        payment=PaymentView(id=payment_id, status="approved", checkout_url=None, amount=129900, currency="MXN")
+        payment=PaymentRecord(id=payment_id, status="approved", checkout_url=None, amount=129900, currency="MXN", resource_type="system-api:clinic-subscription", resource_id="test", updated_at=datetime(2026, 11, 10, tzinfo=UTC))
     )
 
     charge = await service(repository, subscriptions, payments=payments).charge(
@@ -262,7 +262,7 @@ async def test_get_charge_syncs_a_pending_charge_to_approved():
         clinic_subscription_id=CLINIC_SUBSCRIPTION_ID, period=PERIOD, payment_id=uuid4(), payment_status="pending"
     )
     payments = FakePaymentsApi(
-        payment=PaymentView(id=charge.payment_id, status="approved", checkout_url=None, amount=129900, currency="MXN")
+        payment=PaymentRecord(id=charge.payment_id, status="approved", checkout_url=None, amount=129900, currency="MXN", resource_type="system-api:clinic-subscription", resource_id="test", updated_at=datetime(2026, 11, 10, tzinfo=UTC))
     )
 
     result = await service(repository, payments=payments).get_charge(CLINIC_SUBSCRIPTION_ID, charge.id)
@@ -277,7 +277,7 @@ async def test_get_charge_syncs_a_pending_charge_to_rejected():
         clinic_subscription_id=CLINIC_SUBSCRIPTION_ID, period=PERIOD, payment_id=uuid4(), payment_status="pending"
     )
     payments = FakePaymentsApi(
-        payment=PaymentView(id=charge.payment_id, status="rejected", checkout_url=None, amount=129900, currency="MXN")
+        payment=PaymentRecord(id=charge.payment_id, status="rejected", checkout_url=None, amount=129900, currency="MXN", resource_type="system-api:clinic-subscription", resource_id="test", updated_at=datetime(2026, 11, 10, tzinfo=UTC))
     )
 
     result = await service(repository, payments=payments).get_charge(CLINIC_SUBSCRIPTION_ID, charge.id)

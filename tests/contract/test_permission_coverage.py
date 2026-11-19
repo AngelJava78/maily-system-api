@@ -17,8 +17,9 @@ from tests.health_support import insert_component
 from tests.helpers import TEST_TOKEN, Api
 
 # The permission matrix: contracts/permission-matrix.md of spec 001 (the six subscriptions), the
-# row of spec 003 (the dashboard), the rows of spec 005 (the health of the services) and the rows
-# of spec 006 (the clinic subscriptions and their charge).
+# row of spec 003 (the dashboard), the rows of spec 005 (the health of the services), the rows of
+# spec 010-cobro-real-suscripciones (the clinic subscriptions and their charge) and the two of
+# spec 010-subscription-periods (the subscription periods).
 EXPECTED_PERMISSIONS = {
     "list_subscriptions": "subscriptions:read",
     "get_subscription": "subscriptions:read",
@@ -36,6 +37,8 @@ EXPECTED_PERMISSIONS = {
     "list_clinic_subscription_charges": "clinic_subscriptions:read",
     "get_clinic_subscription_charge": "clinic_subscriptions:read",
     "charge_clinic_subscription": "clinic_subscriptions:charge",
+    "get_subscription_period": "subscription_periods:read",
+    "create_subscription_payment": "subscription_periods:write",
 }
 # charge_clinic_subscription is checked with GET /authorization/me, not /check (research R1): it
 # also needs the caller's own tenant_id to match the subscription's, which none of the stub tokens
@@ -62,8 +65,11 @@ COMPONENT_ID = "00000000-0000-4000-8000-000000000001"
 CLINIC_SUBSCRIPTIONS_URL = "/api/v1/clinic-subscriptions"
 CLINIC_SUBSCRIPTION_ID = "6b1b1e2a-7c9d-4e2a-9c3e-1a2b3c4d5e70"
 CLINIC_SUBSCRIPTION_TENANT_ID = "3f1b1e2a-7c9d-4e2a-9c3e-1a2b3c4d5e6f"
+PERIODS_URL = "/api/v1/subscription-periods"
+ORGANIZATION_ID = "0f4e2b9a-6d1c-4f7e-9a3b-5c8d7e6f1a2b"
 # operation_id -> (method, path, JSON body) against the subscription with id 1, the clinic
-# subscription charge of CLINIC_SUBSCRIPTION_ID with id 1, and the component COMPONENT_ID
+# subscription charge of CLINIC_SUBSCRIPTION_ID with id 1, the component COMPONENT_ID and the
+# organization ORGANIZATION_ID
 REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
     "list_subscriptions": ("GET", URL, None),
     "get_subscription": ("GET", f"{URL}/1", None),
@@ -102,6 +108,8 @@ REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
     ),
     "update_monitored_component": ("PATCH", f"{COMPONENTS_URL}/{COMPONENT_ID}", {"name": "Cambio"}),
     "delete_monitored_component": ("DELETE", f"{COMPONENTS_URL}/{COMPONENT_ID}", None),
+    "get_subscription_period": ("GET", f"{PERIODS_URL}/{ORGANIZATION_ID}", None),
+    "create_subscription_payment": ("POST", f"{PERIODS_URL}/{ORGANIZATION_ID}/payments", None),
 }
 
 
@@ -173,7 +181,14 @@ async def snapshot(api: Api) -> list[tuple]:
     clinic_subscription_charges = await api.fetch_all(
         "SELECT id, payment_status, updated_at FROM clinic_subscription_charges ORDER BY id"
     )
-    return subscriptions + components + clinic_subscription_charges
+    periods = await api.fetch_all(
+        "SELECT organization_id, started_at, trial_ends_at, paid_until, updated_at "
+        "FROM subscription_periods ORDER BY organization_id"
+    )
+    charges = await api.fetch_all(
+        "SELECT id, organization_id, payment_id, status, updated_at FROM subscription_charges ORDER BY id"
+    )
+    return subscriptions + components + clinic_subscription_charges + periods + charges
 
 
 @pytest.fixture
@@ -187,6 +202,8 @@ async def seeded(api: Api) -> Api:
         period=date(2026, 11, 10),
         payment_status="approved",
     )
+    # The organization of the subscription periods, on that plan and owned by the person of TEST_TOKEN.
+    await api.register_organization(ORGANIZATION_ID, subscription_id=1)
     return api
 
 

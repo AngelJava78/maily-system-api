@@ -68,6 +68,15 @@ services:
       USERS_API_TIMEOUT_SECONDS: ${USERS_API_TIMEOUT_SECONDS:-}
       CLINICS_API_BASE_URL: ${CLINICS_API_BASE_URL:-}
       CLINICS_API_TIMEOUT_SECONDS: ${CLINICS_API_TIMEOUT_SECONDS:-}
+      # mailySoft-pagos, para el cobro de suscripciones de clínica (spec 010-cobro-real-suscripciones).
+      PAGOS_API_BASE_URL: ${PAGOS_API_BASE_URL:-}
+      PAGOS_API_TIMEOUT_SECONDS: ${PAGOS_API_TIMEOUT_SECONDS:-}
+      PAGOS_API_SERVICE_TOKEN: ${PAGOS_API_SERVICE_TOKEN:-}
+      # Pagos (spec 010-subscription-periods): a esta dirección se reenvía el token de la persona. Obligatoria.
+      PAYMENTS_API_BASE_URL: ${PAYMENTS_API_BASE_URL:-}
+      PAYMENTS_API_TIMEOUT_SECONDS: ${PAYMENTS_API_TIMEOUT_SECONDS:-}
+      # Fecha de corte de los periodos de suscripción (spec 010): ISO 8601 con zona. Obligatoria.
+      BILLING_CUTOFF_AT: ${BILLING_CUTOFF_AT:-}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
       # Clínicas recientes del dashboard cuando no se envía `limit`: 3, 5 o 10 (vacía = 5).
       DASHBOARD_RECENT_CLINICS_LIMIT: ${DASHBOARD_RECENT_CLINICS_LIMIT:-}

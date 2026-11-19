@@ -3,9 +3,12 @@
 `Settings` holds the database; `IntegrationSettings` the addresses and time limits of the APIs this
 service depends on (FR-002, FR-009); `CorsSettings` the sites allowed to call the API from a browser
 (FR-025); `DashboardSettings` the default number of recent clinics of the dashboard (spec 003);
-`HealthSettings` and `BuildSettings` the health checks and the build identification (spec 005), and
-`DatabaseScheduleSettings` the schedule of the database (part of `HealthSettings`). The messages
-about a bad configuration name the variables, never their values.
+`HealthSettings` and `BuildSettings` the health checks and the build identification (spec 005),
+`DatabaseScheduleSettings` the schedule of the database (part of `HealthSettings`), and, for the
+subscription periods (spec 010), `PaymentsSettings` (the address and the time limit of the payments
+API, kept apart from `IntegrationSettings` because the one-off scripts do not need it) and
+`BillingSettings` (the cutoff date). The messages about a bad configuration name the variables, never
+their values.
 """
 
 import ipaddress
@@ -55,6 +58,16 @@ _WEEKDAYS = {
 _CLOCK_TIME = re.compile(r"([01][0-9]|2[0-3]):([0-5][0-9])")
 
 
+def _normalized_address(value: str) -> str:
+    """The base address of another API: http(s) with a host, without a trailing slash."""
+    value = value.strip()
+    parts = urlsplit(value)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        # The message never includes the value: it could carry credentials.
+        raise ValueError("The address must start with http:// or https:// and name a host")
+    return value.rstrip("/")
+
+
 class Settings(BaseSettings):
     """Database configuration."""
 
@@ -84,12 +97,58 @@ class IntegrationSettings(BaseSettings):
     @field_validator("users_api_base_url", "clinics_api_base_url", "pagos_api_base_url")
     @classmethod
     def _normalize_address(cls, value: str) -> str:
-        value = value.strip()
-        parts = urlsplit(value)
-        if parts.scheme not in ("http", "https") or not parts.hostname:
-            # The message never includes the value: it could carry credentials.
-            raise ValueError("The address must start with http:// or https:// and name a host")
-        return value.rstrip("/")
+        return _normalized_address(value)
+
+
+class PaymentsSettings(BaseSettings):
+    """Address and total time limit of the payments API (spec 010, FR-040).
+
+    It is not part of `IntegrationSettings`: `src/scripts/backfill_subscription_types.py` reads that one
+    and has no use for the payments API, so a new mandatory variable there would break it.
+    """
+
+    payments_api_base_url: str
+    payments_api_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+
+    # An empty variable (docker-compose passes empty values when `.env` has none) counts as unset.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
+
+    @field_validator("payments_api_base_url")
+    @classmethod
+    def _normalize_address(cls, value: str) -> str:
+        return _normalized_address(value)
+
+
+class BillingSettings(BaseSettings):
+    """The cutoff date of the subscription periods (spec 010, FR-008, FR-039).
+
+    No first period starts before it, so the organizations that already exist when the feature is
+    deployed do not fall due all at once. It is mandatory: an ISO 8601 date and time WITH its zone,
+    kept in UTC.
+    """
+
+    billing_cutoff_at: datetime
+
+    # An empty variable (docker-compose passes empty values when `.env` has none) counts as unset.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
+
+    @field_validator("billing_cutoff_at", mode="before")
+    @classmethod
+    def _iso_8601_with_a_zone(cls, value: object) -> datetime:
+        # The messages never include the value, like the other settings.
+        invalid = "The cutoff is an ISO 8601 date and time with its zone"
+        if isinstance(value, datetime):
+            moment = value
+        elif isinstance(value, str):
+            try:
+                moment = datetime.fromisoformat(value.strip())
+            except ValueError:
+                raise ValueError(invalid) from None
+        else:
+            raise ValueError(invalid)
+        if moment.utcoffset() is None:
+            raise ValueError(invalid)
+        return moment.astimezone(UTC)
 
 
 class CorsSettings(BaseSettings):
@@ -431,6 +490,17 @@ def get_integration_settings() -> IntegrationSettings:
 
 
 @lru_cache
+def get_payments_settings() -> PaymentsSettings:
+    return PaymentsSettings()
+
+
+@lru_cache
+def get_billing_settings() -> BillingSettings:
+    # Read once: changing the variable needs a restart of the service (FR-039).
+    return BillingSettings()
+
+
+@lru_cache
 def get_cors_settings() -> CorsSettings:
     return CorsSettings()
 
@@ -486,22 +556,32 @@ def _is_local_or_internal(host: str) -> bool:
     return host in _LOCAL_HOSTS or "." not in host
 
 
-def insecure_url_warnings(settings: IntegrationSettings) -> list[str]:
-    """One warning per address that uses plain http outside a local or Docker network (FR-024).
+def _insecure_address_warning(variable: str, address: str) -> str | None:
+    """The warning for an address that uses plain http outside a local or Docker network, if any.
 
-    The texts name the variable and never the address, so no credentials can leak into the log.
+    The text names the variable and never the address, so no credentials can leak into the log.
     """
-    warnings = []
+    parts = urlsplit(address)
+    if parts.scheme == "http" and not _is_local_or_internal(parts.hostname or ""):
+        return (
+            f"{variable} uses plain http outside a local or Docker network: "
+            "the access token will travel unencrypted"
+        )
+    return None
+
+
+def insecure_url_warnings(settings: IntegrationSettings) -> list[str]:
+    """One warning per address that uses plain http outside a local or Docker network (FR-024)."""
     addresses = (
         ("USERS_API_BASE_URL", settings.users_api_base_url),
         ("CLINICS_API_BASE_URL", settings.clinics_api_base_url),
         ("PAGOS_API_BASE_URL", settings.pagos_api_base_url),
     )
-    for variable, address in addresses:
-        parts = urlsplit(address)
-        if parts.scheme == "http" and not _is_local_or_internal(parts.hostname or ""):
-            warnings.append(
-                f"{variable} uses plain http outside a local or Docker network: "
-                "the access token will travel unencrypted"
-            )
-    return warnings
+    warnings = (_insecure_address_warning(variable, address) for variable, address in addresses)
+    return [warning for warning in warnings if warning is not None]
+
+
+def payments_url_warnings(settings: PaymentsSettings) -> list[str]:
+    """The same warning for the address of the payments API (spec 010, FR-040)."""
+    warning = _insecure_address_warning("PAYMENTS_API_BASE_URL", settings.payments_api_base_url)
+    return [] if warning is None else [warning]

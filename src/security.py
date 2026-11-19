@@ -31,6 +31,10 @@ CLINIC_SUBSCRIPTIONS_CHARGE = "clinic_subscriptions:charge"
 # Permission of the dashboard operation (specs/003-platform-dashboard/contracts/permission-matrix.md).
 DASHBOARD_READ = "dashboard:read"
 
+# Permissions of the subscription periods (specs/010-subscription-periods/contracts/permission-matrix.md).
+SUBSCRIPTION_PERIODS_READ = "subscription_periods:read"
+SUBSCRIPTION_PERIODS_WRITE = "subscription_periods:write"
+
 # Permissions of the health operations (specs/005-health-monitoring/contracts/permission-matrix.md).
 HEALTH_READ = "health:read"
 HEALTH_WRITE = "health:write"

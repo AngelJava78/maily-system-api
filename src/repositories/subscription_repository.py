@@ -1,4 +1,5 @@
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -15,6 +16,17 @@ from src.repositories.transactions import execute_and_commit
 
 # Sentinel distinguishing "module_keys was not in changes" from an explicit `[]` (update()).
 _UNSET = object()
+
+
+@dataclass(frozen=True, slots=True)
+class PlanTerms:
+    """What an organization is billed on: the plan, its trial and its two prices (spec 010)."""
+
+    id: int
+    name: str
+    trial_days: int
+    monthly_price: Decimal
+    annual_price: Decimal
 
 
 class SubscriptionRepository:
@@ -186,6 +198,24 @@ class SubscriptionRepository:
         if await execute_and_commit(self._session, statement) is None:
             return None
         return await self._reload(subscription_id)
+
+    async def get_plan_terms(self, subscription_id: int) -> PlanTerms | None:
+        """The terms of any subscription, deleted or not, or `None` if it does not exist.
+
+        The status does not matter: an organization keeps paying the price of the plan that the
+        clinics API reports for it even if the plan no longer admits new clinics (spec 010, FR-034).
+        """
+        if subscription_id > INT4_MAX:
+            return None
+        statement = select(
+            Subscription.id,
+            Subscription.name,
+            Subscription.trial_days,
+            Subscription.monthly_price,
+            Subscription.annual_price,
+        ).where(Subscription.id == subscription_id)
+        row = (await self._session.execute(statement)).one_or_none()
+        return None if row is None else PlanTerms(*row)
 
     async def get_status_id(self, subscription_id: int) -> int | None:
         """The status of any subscription, deleted or not, or `None` if it does not exist."""

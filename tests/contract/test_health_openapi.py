@@ -331,10 +331,11 @@ def test_a_registered_component_is_published_without_its_deletion_date(schema):
     assert enum_of(read["properties"]["kind"]) == {"service", "frontend"}
 
 
-def test_the_error_codes_of_the_api_are_twenty_five(schema):
+def test_the_error_codes_of_the_api_are_twenty_nine(schema):
     codes = set(schema["components"]["schemas"]["ErrorCode"]["enum"])
 
-    # spec 010-cobro-real-suscripciones added 8 clinic-subscription/payments codes to the 17 that
-    # already existed after merging origin/main (see test_openapi_contract.py for the breakdown).
-    assert len(codes) == 25
+    # 17 with the health spec; spec 010-cobro-real-suscripciones added 8 clinic-subscription/payments
+    # codes and spec 010-subscription-periods added its 5 (see test_openapi_contract.py for the
+    # breakdown; one code, payments_unavailable, is shared by both).
+    assert len(codes) == 29
     assert {"monitored_component_not_found", "monitored_component_code_already_exists"} <= codes

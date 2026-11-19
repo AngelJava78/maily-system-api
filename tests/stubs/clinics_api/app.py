@@ -6,10 +6,12 @@ stack runs it with `uvicorn app:app --app-dir /stub`. The state lives in memory.
 carries the marker `SECRETO-INTERNO` so the tests can check that the details of another service never
 reach the clients of the subscriptions API.
 
-It imitates the two operations this service consumes: `GET /api/v1/clinics/subscription-counts`
-(spec 001) and `GET /api/v1/clinics/clinic-subscriptions/{id}` (spec 010, research R6) — Clinics
-does not exist as a real service yet, so this is the only place that contract lives until it does.
-Offers a test-only surface under `/__test__/`.
+It imitates the three operations the system API consumes: `GET /api/v1/clinics/subscription-counts`
+(spec 001), `GET /api/v1/clinics/clinic-subscriptions/{id}` (spec 010-cobro-real-suscripciones,
+research R6) and `GET /api/v1/organizations/{id}` (spec 010-subscription-periods, including
+`billing_period`, which the real API does not publish yet) — Clinics does not exist as a real
+service yet, so this is the only place those last two contracts live until it does. Offers a
+test-only surface under `/__test__/`.
 """
 
 import asyncio
@@ -34,15 +36,21 @@ FAULT_MODES = (
     "redirect",
     "slow",
     "not_found",
+    # Only for the organizations operation (spec 010-subscription-periods):
+    "missing_billing_period",
+    "invalid_billing_period",
+    "not_found_other_code",
 )
-FAULT_OPERATIONS = ("subscription_counts", "clinic_subscription")
+FAULT_OPERATIONS = ("counts", "clinic_subscription", "organizations")
 
 
 class FaultIn(BaseModel):
     mode: str
     count: int = 1
     delay_seconds: float = 30
-    operation: str = "subscription_counts"
+    # The operation that the fault applies to; `counts` (the first one of this stub) by default, so
+    # the faults of spec 001 behave exactly as before.
+    operation: str = "counts"
 
 
 class ClinicTokenIn(BaseModel):
@@ -55,6 +63,15 @@ class ClinicSubscriptionIn(BaseModel):
     tenant_id: str
     subscription_id: int
     billing_cycle: str
+
+
+class OrganizationIn(BaseModel):
+    id: str
+    subscription_id: int
+    billing_period: str = "monthly"
+    created_at: str
+    # Only the owner of the organization reads it; any other token gets a 404, like the real API.
+    owner_token: str
 
 
 class _RecordCalls:
@@ -85,16 +102,18 @@ def create_stub_app() -> FastAPI:
         "counts": {},
         "faults": [],
         "calls": [],
-        # spec 010: a token here only carries the organization Clinics would resolve it to; it is
-        # a separate registry from the users API stub (Clinics is a different service).
+        "organizations": {},
+        # spec 010-cobro-real-suscripciones: a token here only carries the organization Clinics
+        # would resolve it to; it is a separate registry from the users API stub (Clinics is a
+        # different service).
         "clinic_tokens": {},
         "clinic_subscriptions": {},
     }
     app.add_middleware(_RecordCalls, state=state)
 
-    def take_fault(operation: str) -> dict[str, Any] | None:
+    def take_fault(operation: str = "counts") -> dict[str, Any] | None:
         for fault in state["faults"]:
-            if fault["operation"] == operation and fault["remaining"] > 0:
+            if fault["remaining"] > 0 and fault["operation"] == operation:
                 fault["remaining"] -= 1
                 return fault
         return None
@@ -106,7 +125,7 @@ def create_stub_app() -> FastAPI:
     async def subscription_counts(request: Request):
         requested = [int(v) for v in request.query_params.getlist("subscription_id") if v.isdigit()]
         mode = None
-        fault = take_fault("subscription_counts")
+        fault = take_fault("counts")
         if fault is not None:
             mode = fault["mode"]
             if mode == "unavailable":
@@ -185,6 +204,54 @@ def create_stub_app() -> FastAPI:
             "billing_cycle": subscription["billing_cycle"],
         }
 
+    @app.get("/api/v1/organizations/{organization_id}")
+    async def get_organization(organization_id: str, request: Request):
+        fault = take_fault("organizations")
+        mode = fault["mode"] if fault is not None else None
+        if mode == "unavailable":
+            return error(503, "unavailable")
+        if mode == "unauthorized":
+            return error(401, "unauthorized")
+        if mode == "forbidden":
+            return error(403, "permission_denied")
+        if mode == "malformed":
+            return JSONResponse({"detail": MARKER})
+        if mode == "not_json":
+            return PlainTextResponse(MARKER, status_code=200)
+        if mode == "redirect":
+            return RedirectResponse("http://evil.test/steal", status_code=307)
+        if mode == "not_found_other_code":
+            return error(404, "route_not_found")
+        if mode == "slow":
+            await asyncio.sleep(fault["delay_seconds"])
+
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() != "bearer" or not token.strip():
+            return error(401, "unauthorized")
+
+        organization = state["organizations"].get(organization_id)
+        if organization is None or organization["owner_token"] != token.strip():
+            # Not the person's own, or it does not exist: the real API does not tell them apart.
+            return error(404, "not_found")
+
+        body: dict[str, Any] = {
+            "id": organization["id"],
+            "name": "Organización de prueba",  # an extra field that the consumer must ignore
+            "subscription_id": organization["subscription_id"],
+            "billing_period": organization["billing_period"],
+            "created_at": organization["created_at"],
+        }
+        if mode == "missing_billing_period":
+            del body["billing_period"]
+        elif mode == "invalid_billing_period":
+            body["billing_period"] = "weekly"
+        return body
+
+    @app.post("/__test__/organizations")
+    async def set_organization(body: OrganizationIn):
+        state["organizations"][body.id] = body.model_dump()
+        return {"id": body.id}
+
     @app.post("/__test__/counts")
     async def set_counts(body: dict[str, int]):
         state["counts"] = {int(key): value for key, value in body.items()}
@@ -227,6 +294,7 @@ def create_stub_app() -> FastAPI:
     @app.post("/__test__/reset")
     async def reset():
         state["counts"] = {}
+        state["organizations"].clear()
         state["faults"].clear()
         state["calls"].clear()
         state["clinic_tokens"].clear()

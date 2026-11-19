@@ -22,7 +22,7 @@ from src.integrations.errors import (
     UsersApiRejectedToken,
     UsersApiUnavailable,
 )
-from src.integrations.payments_api import PaymentView
+from src.integrations.payments_api import PaymentRecord
 from src.integrations.users_api import CallerAccess
 from src.models.clinic_subscription_charge import ClinicSubscriptionCharge
 from src.models.subscription import SUBSCRIPTION_NAME_INDEX, Subscription
@@ -331,7 +331,7 @@ class FakePaymentsApi:
         permission_denied: bool = False,
         idempotency_conflict: bool = False,
         unavailable: bool = False,
-        payment: PaymentView | None = None,
+        payment: PaymentRecord | None = None,
     ) -> None:
         self.rejected_code = rejected_code
         self.permission_denied = permission_denied
@@ -351,7 +351,7 @@ class FakePaymentsApi:
         resource_type: str,
         resource_id: str,
         description: str,
-    ) -> PaymentView:
+    ) -> PaymentRecord:
         self.create_calls.append(
             {
                 "token": token,
@@ -374,11 +374,11 @@ class FakePaymentsApi:
         assert self.payment is not None, "configure `payment` for a successful create_payment"
         return self.payment
 
-    async def get_payment(self, payment_id: Any) -> PaymentView:
+    async def get_payment_as_service(self, payment_id: Any) -> PaymentRecord:
         self.get_calls.append(payment_id)
         if self.unavailable:
             raise PaymentsApiUnavailable()
-        assert self.payment is not None, "configure `payment` for a successful get_payment"
+        assert self.payment is not None, "configure `payment` for a successful get_payment_as_service"
         return self.payment
 
 

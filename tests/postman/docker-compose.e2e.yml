@@ -1,6 +1,6 @@
 # Pila aislada para las pruebas de punta a punta: otro proyecto de Compose con su propia base de
-# datos desechable (sin puerto publicado), la API solo en 127.0.0.1 y las tres simulaciones (API de
-# usuarios, API de clínicas y componentes monitoreados) en lugar de los servicios reales.
+# datos desechable (sin puerto publicado), la API solo en 127.0.0.1 y las cuatro simulaciones (API de
+# usuarios, API de clínicas, componentes monitoreados y API de pagos) en lugar de los servicios reales.
 #
 # Levantar:  docker compose -p maily-system-e2e -f docker-compose.yml -f tests/postman/docker-compose.e2e.yml up -d --build --wait api
 #            (`--build`: sin él, Compose reutiliza las imágenes de una ejecución anterior y la API podría no llevar el código actual)
@@ -57,6 +57,22 @@ services:
       retries: 20
       start_period: 3s
 
+  # Simulación del API de pagos (spec 010): tests/stubs/payments_api/app.py. Crea pagos idempotentes y
+  # deja que la prueba cambie su estatus por `/__test__/`.
+  payments-api-stub:
+    build: .
+    command: ["uvicorn", "app:app", "--app-dir", "/stub", "--host", "0.0.0.0", "--port", "8080"]
+    volumes:
+      - ./tests/stubs/payments_api:/stub:ro
+    ports:
+      - "127.0.0.1:${E2E_PAYMENTS_STUB_PORT:-8015}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__test__/calls', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 3s
+
   api:
     depends_on:
       users-api-stub:
@@ -65,9 +81,15 @@ services:
         condition: service_healthy
       components-stub:
         condition: service_healthy
+      payments-api-stub:
+        condition: service_healthy
     environment:
       USERS_API_BASE_URL: http://users-api-stub:8080
       CLINICS_API_BASE_URL: http://clinics-api-stub:8080
+      PAYMENTS_API_BASE_URL: http://payments-api-stub:8080
+      # Muy en el pasado: la fecha de corte no interviene y manda la antigüedad que cada escenario fija
+      # en la simulación de Clínicas, así que no hace falta mover el reloj real.
+      BILLING_CUTOFF_AT: "2020-01-01T00:00:00Z"
       # Solo la simulación de componentes y un nombre que nunca resuelve (RFC 6761).
       HEALTH_ALLOWED_HOSTS: components-stub,missing-service.invalid
       HEALTH_CHECK_TIMEOUT_SECONDS: "2"

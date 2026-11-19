@@ -20,6 +20,10 @@ from src.messages import (
     MODULE_CHECK_UNAVAILABLE_MESSAGE,
     MONITORED_COMPONENT_CODE_ALREADY_EXISTS_MESSAGE,
     MONITORED_COMPONENT_NOT_FOUND_MESSAGE,
+    NOTHING_TO_CHARGE_MESSAGE,
+    ORGANIZATION_CHECK_UNAVAILABLE_MESSAGE,
+    ORGANIZATION_NOT_FOUND_MESSAGE,
+    ORGANIZATION_SUBSCRIPTION_NOT_FOUND_MESSAGE,
     PASSWORD_CHANGE_REQUIRED_MESSAGE,
     PAYMENT_NOT_AUTHORIZED_MESSAGE,
     PAYMENTS_UNAVAILABLE_MESSAGE,
@@ -283,6 +287,7 @@ class MonitoredComponentDataError(AppError):
 # --- Clinic subscription charges (spec 010-cobro-real-suscripciones) ---
 
 
+
 class ClinicSubscriptionNotFoundError(AppError):
     """Clinics reported that the clinic subscription does not exist, is cancelled, or belongs to
     another organization than the caller's (FR-026: never revealed which of the three it was)."""
@@ -368,11 +373,61 @@ class ClinicSubscriptionChargeConflictError(AppError):
         super().__init__(CLINIC_SUBSCRIPTION_CHARGE_CONFLICT_MESSAGE)
 
 
+# --- Subscription periods (spec 010-subscription-periods) ---
+
+
+class OrganizationNotFoundError(AppError):
+    """The clinics API answered that the organization does not exist or is not the person's own.
+
+    The two cases are not told apart: the answer never reveals whether the organization exists.
+    """
+
+    code = ErrorCode.ORGANIZATION_NOT_FOUND
+    status_code = 404
+
+    def __init__(self, organization_id: UUID) -> None:
+        super().__init__(ORGANIZATION_NOT_FOUND_MESSAGE.format(organization_id=organization_id))
+
+
+class OrganizationCheckUnavailableError(AppError):
+    """The organization could not be checked: the access fails closed and nothing is done."""
+
+    code = ErrorCode.ORGANIZATION_CHECK_UNAVAILABLE
+    status_code = 503
+
+    def __init__(self) -> None:
+        super().__init__(ORGANIZATION_CHECK_UNAVAILABLE_MESSAGE)
+
+
 class PaymentsUnavailableError(AppError):
-    """mailySoft-pagos did not answer as expected: nothing was charged (FR-014, fail closed)."""
+    """The payments API did not answer as expected: no new charge was registered (fail closed).
+
+    Shared by the clinic-subscription charges (FR-014) and the subscription-periods payments: both
+    only raise it around a `create_payment` call, so the same "nothing was charged" wording fits.
+    """
 
     code = ErrorCode.PAYMENTS_UNAVAILABLE
     status_code = 503
 
     def __init__(self) -> None:
         super().__init__(PAYMENTS_UNAVAILABLE_MESSAGE)
+
+
+class NothingToChargeError(AppError):
+    """The current amount of the organization is 0.00: there is nothing to charge."""
+
+    code = ErrorCode.NOTHING_TO_CHARGE
+    status_code = 409
+
+    def __init__(self) -> None:
+        super().__init__(NOTHING_TO_CHARGE_MESSAGE)
+
+
+class OrganizationSubscriptionNotFoundError(AppError):
+    """The plan that the clinics API reports for the organization is not in the catalog."""
+
+    code = ErrorCode.ORGANIZATION_SUBSCRIPTION_NOT_FOUND
+    status_code = 409
+
+    def __init__(self) -> None:
+        super().__init__(ORGANIZATION_SUBSCRIPTION_NOT_FOUND_MESSAGE)

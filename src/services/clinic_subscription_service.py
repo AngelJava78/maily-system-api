@@ -85,7 +85,7 @@ class ClinicSubscriptionService:
         if charge.payment_status != _PENDING:
             return charge
         try:
-            payment = await self._payments_api.get_payment(charge.payment_id)
+            payment = await self._payments_api.get_payment_as_service(charge.payment_id)
         except PaymentsApiUnavailable:
             logger.warning("Could not sync pending charge %s with the payments API", charge.id)
             return charge

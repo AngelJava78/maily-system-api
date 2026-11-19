@@ -72,7 +72,7 @@ BEARER = {"WWW-Authenticate": "Bearer"}
 BEARER_INVALID = {"WWW-Authenticate": 'Bearer error="invalid_token"'}
 
 
-def test_the_error_codes_are_exactly_the_seventeen_of_the_catalog():
+def test_the_error_codes_are_exactly_the_twenty_nine_of_the_catalog():
     assert {code.value for code in ErrorCode} == {
         "unauthenticated",
         "token_expired",
@@ -102,6 +102,11 @@ def test_the_error_codes_are_exactly_the_seventeen_of_the_catalog():
         "payment_not_authorized",
         "clinic_subscription_charge_conflict",
         "payments_unavailable",
+        # spec 010-subscription-periods
+        "organization_not_found",
+        "organization_check_unavailable",
+        "nothing_to_charge",
+        "organization_subscription_not_found",
     }
 
 

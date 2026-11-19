@@ -40,6 +40,12 @@ HEALTH_COLLECTION = POSTMAN / "collections" / "MailySoft-System-Salud.postman_co
 HEALTH_HELPER_PREFIXES = {"setup", "docs"}
 HEALTH_PATH_PREFIXES = ("/health/", "/info", "/api/v1/health", "/api/v1/monitored-components")
 
+# End-to-end collection of spec 010 (the subscription periods; run by Newman against the same isolated
+# stack, which also has the simulation of the payments API).
+PERIODS_COLLECTION = POSTMAN / "collections" / "MailySoft-System-Periodos.postman_collection.json"
+PERIODS_PREFIX = "/api/v1/subscription-periods"
+PERIODS_HELPER_PREFIXES = {"setup", "docs"}
+
 JWT_PATTERN = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.")
 BEARER_LITERAL_PATTERN = re.compile(r"Bearer [A-Za-z0-9._~+/=-]{8,}")
 # A value that looks like a key or a secret: 32 or more token characters and no spaces.

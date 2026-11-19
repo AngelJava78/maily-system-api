@@ -24,7 +24,11 @@ TEST_TOKEN = "test-token"
 # Direcciones ficticias de las simulaciones (el transporte ASGI ignora el host).
 USERS_BASE_URL = "http://users-api.test"
 CLINICS_BASE_URL = "http://clinics-api.test"
+# Both point at the same simulation (tests/stubs/payments_api): one base URL per feature, since
+# each builds its own `PaymentsApiClient` (spec 010-cobro-real-suscripciones vs
+# spec 010-subscription-periods); the ASGI transport ignores the host, so either name would do.
 PAGOS_BASE_URL = "http://pagos-api.test"
+PAYMENTS_BASE_URL = "http://payments-api.test"
 
 ALL_PERMISSIONS = (
     "subscriptions:read",
@@ -133,18 +137,18 @@ class Api:
         anonymous: httpx.AsyncClient,
         users_stub: httpx.AsyncClient,
         clinics_stub: httpx.AsyncClient,
-        payments_stub: httpx.AsyncClient,
         engine: AsyncEngine,
         timeouts: dict[str, float],
+        payments_stub: httpx.AsyncClient | None = None,
         pagos_service_token: dict[str, str | None] | None = None,
     ) -> None:
         self.client = client
         self.anonymous = anonymous
         self.users_stub = users_stub
         self.clinics_stub = clinics_stub
-        self.payments_stub = payments_stub
         self.engine = engine
         self.timeouts = timeouts
+        self.payments_stub = payments_stub
         self._pagos_service_token = pagos_service_token if pagos_service_token is not None else {}
 
     async def insert(self, **values: Any) -> int:
@@ -185,16 +189,6 @@ class Api:
             json={"token": token, "tenant_id": str(tenant_id) if tenant_id is not None else None},
         )
         assert response.status_code == 200
-
-    async def payments_fault(self, mode: str, count: int = 1, delay: float = 30, operation: str = "create") -> None:
-        response = await self.payments_stub.post(
-            "/__test__/faults",
-            json={"mode": mode, "count": count, "delay_seconds": delay, "operation": operation},
-        )
-        assert response.status_code == 200
-
-    async def payments_calls(self) -> list[dict[str, Any]]:
-        return (await self.payments_stub.get("/__test__/calls")).json()
 
     async def grant_payments(
         self, token: str = TEST_TOKEN, permissions: Iterable[str] = ("payments:write", "payments:read")
@@ -242,11 +236,45 @@ class Api:
         assert response.status_code == 200
 
     async def clinics_fault(
-        self, mode: str, count: int = 1, delay: float = 30, operation: str = "subscription_counts"
+        self, mode: str, count: int = 1, delay: float = 30, operation: str = "counts"
     ) -> None:
         response = await self.clinics_stub.post(
             "/__test__/faults",
             json={"mode": mode, "count": count, "delay_seconds": delay, "operation": operation},
+        )
+        assert response.status_code == 200
+
+    async def payments_fault(
+        self, mode: str, count: int = 1, delay: float = 30, operation: str = "any"
+    ) -> None:
+        assert self.payments_stub is not None
+        response = await self.payments_stub.post(
+            "/__test__/faults",
+            json={"mode": mode, "count": count, "delay_seconds": delay, "operation": operation},
+        )
+        assert response.status_code == 200
+
+    async def payments_calls(self) -> list[dict[str, Any]]:
+        assert self.payments_stub is not None
+        return (await self.payments_stub.get("/__test__/calls")).json()
+
+    async def register_organization(
+        self,
+        organization_id: str,
+        subscription_id: int,
+        billing_period: str = "monthly",
+        created_at: str = "2026-01-01T00:00:00Z",
+        owner_token: str = TEST_TOKEN,
+    ) -> None:
+        response = await self.clinics_stub.post(
+            "/__test__/organizations",
+            json={
+                "id": organization_id,
+                "subscription_id": subscription_id,
+                "billing_period": billing_period,
+                "created_at": created_at,
+                "owner_token": owner_token,
+            },
         )
         assert response.status_code == 200
 

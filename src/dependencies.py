@@ -22,10 +22,12 @@ from src.config import (
     BuildInfo,
     HealthConfig,
     build_info_from,
+    get_billing_settings,
     get_build_settings,
     get_dashboard_settings,
     get_health_settings,
     get_integration_settings,
+    get_payments_settings,
     health_config_from,
 )
 from src.database import get_session, get_session_factory
@@ -41,6 +43,7 @@ from src.repositories.clinic_subscription_charge_repository import (
 )
 from src.repositories.database_health_repository import DatabaseHealthRepository
 from src.repositories.monitored_component_repository import MonitoredComponentRepository
+from src.repositories.subscription_period_repository import SubscriptionPeriodRepository
 from src.repositories.subscription_repository import SubscriptionRepository
 from src.services.authorization_service import AuthorizationService
 from src.services.clinic_subscription_service import ClinicSubscriptionService
@@ -49,6 +52,7 @@ from src.services.dashboard_service import DashboardService
 from src.services.health_service import HealthService
 from src.services.health_state import HealthState
 from src.services.monitored_component_service import MonitoredComponentService
+from src.services.subscription_period_service import SubscriptionPeriodService
 from src.services.subscription_service import SubscriptionService
 
 RegistryReader = Callable[[], Awaitable[Sequence[MonitoredComponent]]]
@@ -87,6 +91,20 @@ async def get_clinics_api_client(
 async def get_payments_api_client(
     client: Annotated[httpx.AsyncClient, Depends(get_http_client)],
 ) -> PaymentsApiClient:
+    """Client of `mailySoft-pagos` used by the subscription periods (spec 010-subscription-periods):
+    forwards the caller's own token on every call, never a service account's."""
+    settings = get_payments_settings()
+    return PaymentsApiClient(
+        client, settings.payments_api_base_url, settings.payments_api_timeout_seconds
+    )
+
+
+async def get_clinic_payments_api_client(
+    client: Annotated[httpx.AsyncClient, Depends(get_http_client)],
+) -> PaymentsApiClient:
+    """Client of `mailySoft-pagos` used by the clinic subscription charges
+    (spec 010-cobro-real-suscripciones): adds the service account's token (research R8), used only
+    to sync a `pending` charge on read, never to create one."""
     settings = get_integration_settings()
     return PaymentsApiClient(
         client,
@@ -122,7 +140,7 @@ async def get_clinic_subscription_service(
     ],
     subscription_repository: Annotated[SubscriptionRepository, Depends(get_subscription_repository)],
     clinics_api: Annotated[ClinicsApiClient, Depends(get_clinics_api_client)],
-    payments_api: Annotated[PaymentsApiClient, Depends(get_payments_api_client)],
+    payments_api: Annotated[PaymentsApiClient, Depends(get_clinic_payments_api_client)],
 ) -> ClinicSubscriptionService:
     return ClinicSubscriptionService(repository, subscription_repository, clinics_api, payments_api)
 
@@ -237,3 +255,30 @@ async def get_monitored_component_service(
 ) -> MonitoredComponentService:
     """The registry: a change invalidates the cached result of the health of this application."""
     return MonitoredComponentService(repository, state, config)
+
+
+# --- Subscription periods (spec 010) ---
+
+
+async def get_subscription_period_repository(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SubscriptionPeriodRepository:
+    return SubscriptionPeriodRepository(session)
+
+
+async def get_subscription_period_service(
+    periods: Annotated[SubscriptionPeriodRepository, Depends(get_subscription_period_repository)],
+    subscriptions: Annotated[SubscriptionRepository, Depends(get_subscription_repository)],
+    clinics_api: Annotated[ClinicsApiClient, Depends(get_clinics_api_client)],
+    payments_api: Annotated[PaymentsApiClient, Depends(get_payments_api_client)],
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> SubscriptionPeriodService:
+    """The cutoff date is read once at start-up (FR-039); the clock is the one that the tests replace."""
+    return SubscriptionPeriodService(
+        periods,
+        subscriptions,
+        clinics_api,
+        payments_api,
+        clock,
+        get_billing_settings().billing_cutoff_at,
+    )

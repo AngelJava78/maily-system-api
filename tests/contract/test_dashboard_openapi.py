@@ -116,9 +116,10 @@ def test_no_error_code_was_added(schema):
     assert set(schema["components"]["schemas"]["ErrorCode"]["enum"]) == {c.value for c in ErrorCode}
     # spec 005 added 2 registry codes, spec 006-add-subscription-type added
     # subscription_type_not_found, spec 009 retired subscription_module_prerequisite_missing (net
-    # 17); spec 010-cobro-real-suscripciones added 8 clinic-subscription/payments codes. No
+    # 17); spec 010-cobro-real-suscripciones added 8 clinic-subscription/payments codes and
+    # spec 010-subscription-periods added 5 more (one, payments_unavailable, shared by both). No
     # dashboard impact either way.
-    assert len(ErrorCode) == 25
+    assert len(ErrorCode) == 29
 
 
 # The public health routes of spec 005 (Principle VIII exception): the only operations without security.
@@ -142,5 +143,6 @@ def test_every_operation_of_the_api_declares_security_and_permission(schema):
 def test_the_version_of_the_api_does_not_change_when_an_operation_is_added(schema):
     # The dashboard (spec 003) added an operation without bumping the version; spec 004, 006 and
     # 007 later bumped it on their own (breaking changes to the subscriptions schema), not because
-    # of this operation.
-    assert schema["info"]["version"] == "4.0.0"
+    # of this operation. Spec 010 (subscription periods) bumped it to 4.1.0: two new operations and
+    # five new error codes, compatible with everything that came before.
+    assert schema["info"]["version"] == "4.1.0"
