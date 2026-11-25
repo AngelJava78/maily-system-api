@@ -17,7 +17,7 @@ from src.config import (
     payments_url_warnings,
 )
 
-ENV_NAMES = ("PAYMENTS_API_BASE_URL", "PAYMENTS_API_TIMEOUT_SECONDS", "BILLING_CUTOFF_AT")
+ENV_NAMES = ("PAYMENTS_API_BASE_URL", "PAYMENTS_API_TIMEOUT_SECONDS", "PAYMENTS_RETURN_URL", "BILLING_CUTOFF_AT")
 
 
 @pytest.fixture(autouse=True)
@@ -214,3 +214,100 @@ def test_a_missing_cutoff_is_named_as_missing():
         BillingSettings(_env_file=None)
 
     assert "Falta la variable de entorno BILLING_CUTOFF_AT" in configuration_error_message(error.value)
+
+
+# --- the return address of the payments (spec 011, «Direcciones de referencia») ---
+
+RETURN_URL = "https://app.mailysoft.com/payment"
+
+
+def test_the_return_address_is_optional():  # row 1
+    assert payments().payments_return_url is None
+
+
+def test_an_empty_return_address_counts_as_not_defined(monkeypatch: pytest.MonkeyPatch):  # row 1, FR-002
+    monkeypatch.setenv("PAYMENTS_API_BASE_URL", "http://payments-api:8080")
+    monkeypatch.setenv("PAYMENTS_RETURN_URL", "")
+
+    assert PaymentsSettings(_env_file=None).payments_return_url is None
+
+
+def test_the_return_address_is_read_from_the_environment(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("PAYMENTS_API_BASE_URL", "http://payments-api:8080")
+    monkeypatch.setenv("PAYMENTS_RETURN_URL", RETURN_URL)
+
+    assert PaymentsSettings(_env_file=None).payments_return_url == RETURN_URL
+
+
+@pytest.mark.parametrize(
+    ("value", "kept"),
+    [
+        (RETURN_URL, RETURN_URL),  # row 2
+        (
+            "https://app.mailysoft.com:8443/payment?origen=pago",  # row 3: the port and the query are kept
+            "https://app.mailysoft.com:8443/payment?origen=pago",
+        ),
+        ("https://staging.mailysoft.com/payment/", "https://staging.mailysoft.com/payment/"),  # row 4
+        ("  https://app.mailysoft.com/payment  ", RETURN_URL),  # row 5: only the outer spaces go
+        ("HTTPS://App.MailySoft.com/payment", "HTTPS://App.MailySoft.com/payment"),  # never lowered
+        ("https://8.8.8.8/payment", "https://8.8.8.8/payment"),  # a public address
+    ],
+)
+def test_a_valid_return_address_is_kept_as_it_was_written(value, kept):  # FR-003, FR-005
+    assert payments(payments_return_url=value).payments_return_url == kept
+
+
+def test_a_return_address_of_exactly_2048_characters_is_valid():
+    value = "https://app.mailysoft.com/payment?x="
+    value += "a" * (2048 - len(value))
+
+    assert payments(payments_return_url=value).payments_return_url == value
+
+
+INVALID_RETURN_ADDRESSES = {
+    "http": "http://app.mailysoft.com/payment",  # row 6
+    "ftp": "ftp://app.mailysoft.com/payment",  # row 7
+    "relative": "/payment",  # row 8
+    "no-scheme": "app.mailysoft.com/payment",  # row 8
+    "no-host": "https:///payment",
+    "credentials": "https://usuario:clave@app.mailysoft.com/payment",  # row 9
+    "user-only": "https://usuario@app.mailysoft.com/payment",
+    "empty-user": "https://@app.mailysoft.com/payment",
+    "fragment": "https://app.mailysoft.com/payment#pago",  # row 10
+    "empty-fragment": "https://app.mailysoft.com/payment#",
+    "space": "https://app.mailysoft.com/pa yment",  # row 11
+    "control": "https://app.mailysoft.com/pay\tment",
+    "too-long": "https://app.mailysoft.com/payment?x=" + "a" * 2100,  # row 12
+    "localhost": "https://localhost:8080/payment",  # row 13
+    "sub-localhost": "https://app.localhost/payment",  # row 13
+    "loopback": "https://127.0.0.1/payment",  # row 14
+    "private-10": "https://10.0.0.5/payment",  # row 14
+    "private-192": "https://192.168.1.20/payment",  # row 14
+    "ipv6-loopback": "https://[::1]/payment",  # row 14
+    "link-local": "https://169.254.10.10/payment",
+    "unspecified": "https://0.0.0.0/payment",
+    "single-label": "https://frontend/payment",  # row 15
+    "bad-port": "https://app.mailysoft.com:99999/payment",  # row 16
+    "blank": "   ",
+}
+
+
+@pytest.mark.parametrize("value", INVALID_RETURN_ADDRESSES.values(), ids=INVALID_RETURN_ADDRESSES.keys())
+def test_an_invalid_return_address_is_refused(value):  # FR-003
+    with pytest.raises(ValidationError) as error:
+        payments(payments_return_url=value)
+
+    assert [e["loc"][0] for e in error.value.errors()] == ["payments_return_url"]
+
+
+@pytest.mark.parametrize("value", INVALID_RETURN_ADDRESSES.values(), ids=INVALID_RETURN_ADDRESSES.keys())
+def test_the_error_of_the_return_address_names_the_variable_and_never_its_value(value):  # FR-004
+    with pytest.raises(ValidationError) as error:
+        payments(payments_return_url=value)
+
+    message = configuration_error_message(error.value)
+
+    assert "PAYMENTS_RETURN_URL" in message
+    assert "PAYMENTS_API_BASE_URL" not in message
+    for fragment in ("mailysoft", "usuario", "clave", "localhost", "127.0.0.1", "192.168", "frontend", "payment"):
+        assert fragment not in message

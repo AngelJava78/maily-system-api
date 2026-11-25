@@ -191,6 +191,13 @@ informa y cobra: **no bloquea ni suspende el acceso** al vencer. Contrato en
   organización) y devuelve la dirección del checkout. **El importe lo calcula la API** con el catálogo: el
   cliente nunca lo envía. Iniciarlo dos veces para el mismo periodo no duplica el cobro (200 con el mismo
   checkout).
+- **Regreso automático** (spec [`011-payment-return-url`](specs/011-payment-return-url/spec.md)): con
+  `PAYMENTS_RETURN_URL` definida, cada cobro pide a Pagos que Mercado Pago regrese a la persona a esa
+  dirección (la pantalla `/payment` del frontend) cuando su pago se aprueba; sin ella, todo sigue como antes
+  y la persona vuelve por su cuenta. El origen de la dirección debe estar permitido en Pagos
+  (`CHECKOUT_RETURN_ALLOWED_ORIGINS`); si no, iniciar el pago responde 503. **El regreso no es prueba de
+  pago**: los parámetros que agrega Mercado Pago no se usan; el cobro se aplica solo cuando Pagos lo reporta
+  aprobado, al consultar.
 - **Degradación**: sin Usuarios o sin Clínicas, 503 (el acceso falla cerrado). Si Pagos no responde al
   consultar, devuelve lo guardado con `payment_in_progress: null`; al iniciar el pago, 503. Nunca se
   inventan fechas ni importes.
@@ -198,7 +205,8 @@ informa y cobra: **no bloquea ni suspende el acceso** al vencer. Contrato en
   las pruebas (usan simulaciones): [Usuarios](specs/010-subscription-periods/contracts/pedidos-usuarios.md)
   (los permisos y el `tenant_id` del Dueño), [Clínicas](specs/010-subscription-periods/contracts/pedidos-clinicas.md)
   (`billing_period` en la lectura de la organización) y [Pagos](specs/010-subscription-periods/contracts/pedidos-pagos.md)
-  (regreso del checkout y fecha de aprobación).
+  (fecha de aprobación; el regreso del checkout ya lo ofrece Pagos desde su feature 002 y aquí se usa con
+  `PAYMENTS_RETURN_URL`).
 
 > **Importante**: sin las direcciones del API de usuarios, del de clínicas y del de pagos, ni la fecha de
 > corte (`BILLING_CUTOFF_AT`), el servicio **no arranca**, y si el API de usuarios no responde, **todas** las
@@ -271,6 +279,7 @@ Copia `.env.example` a `.env` (no se versiona). Variables del servicio:
 | `PAGOS_API_TIMEOUT_SECONDS` | no | `5` | Ídem, para `mailySoft-pagos` (cobro de clínicas) |
 | `PAGOS_API_SERVICE_TOKEN` | no | — | Token de una cuenta de servicio con `payments:read`, usado solo para sincronizar un cobro `pending` al consultarlo; sin él, esa sincronización se omite (nunca impide arrancar) |
 | `PAYMENTS_API_TIMEOUT_SECONDS` | no | `5` | Ídem, para el API de pagos (periodos de suscripción) |
+| `PAYMENTS_RETURN_URL` | no | — | Dirección `https` de la pantalla de pago del frontend (`https://…/payment`) a la que Mercado Pago regresa a la persona cuando su pago se aprueba (spec 011). Vacía en el desarrollo local (Mercado Pago no acepta direcciones locales). Sin usuario ni contraseña, sin fragmento y nunca local ni de una red privada, o el servicio no arranca. Su origen debe estar en `CHECKOUT_RETURN_ALLOWED_ORIGINS` de Pagos. Un cambio requiere reiniciar |
 | `CORS_ALLOWED_ORIGINS` | no | vacía | Sitios web del Front que pueden llamar desde el navegador (lista separada por comas); vacía = ninguno. El origen del Front que consulta y paga las suscripciones va aquí: no hay otra variable de CORS |
 | `DASHBOARD_RECENT_CLINICS_LIMIT` | no | `5` | Clínicas recientes del dashboard cuando no se envía `limit`: solo `3`, `5` o `10` (cualquier otro valor impide arrancar). Un cambio requiere reiniciar |
 | `HEALTH_CHECK_TIMEOUT_SECONDS` | no | `3` | Tiempo máximo de cada llamada a un componente monitoreado (entero de 1 a 10) |

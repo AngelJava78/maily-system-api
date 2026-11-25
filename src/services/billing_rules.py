@@ -11,6 +11,7 @@ amounts are `Decimal` in Mexican pesos, never `float` (Principle VI).
 
 import calendar
 import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
@@ -130,6 +131,7 @@ def idempotency_key(
     amount_minor: int,
     attempt: int,
     description: str,
+    return_url: str | None = None,
 ) -> str:
     """The `Idempotency-Key` of a charge: deterministic, 65 characters (research R6).
 
@@ -139,9 +141,16 @@ def idempotency_key(
     payment. The description is part of the key because the payments API refuses (409) the same key with
     another body: a plan renamed between a lost answer and its retry gets another key, and so another
     payment (the first one was never registered nor offered), instead of staying stuck on that refusal.
+
+    The return address (spec 011, research R5) is part of that body too, so it is part of the key, but
+    only when there is one: without it the text is exactly the one of spec 010 and so is every key. With
+    it, the text is a JSON array of that text and the address, which can never be mistaken for a text
+    without an address (it starts with the date) nor for another pair, whatever the description holds.
     """
     conditions = (
         f"{settles_due_at.astimezone(UTC).isoformat()}|{billing_period}|{amount_minor}|{attempt}|{description}"
     )
+    if return_url is not None:
+        conditions = json.dumps([conditions, return_url])
     digest = hashlib.sha256(conditions.encode()).hexdigest()[:24]
     return f"sub-{organization_id}-{digest}"

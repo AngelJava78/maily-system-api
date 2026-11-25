@@ -1,6 +1,7 @@
 """Simulation of mailySoft-pagos, shared by two features (research R8):
 - `specs/010-cobro-real-suscripciones/contracts/e2e-stubs.md` (clinic subscription charges).
-- `specs/010-subscription-periods/contracts/e2e-collection.md` (subscription periods).
+- `specs/010-subscription-periods/contracts/e2e-collection.md` (subscription periods), with the optional
+  return address of `specs/011-payment-return-url/contracts/payments-api-integration.md`.
 
 Self-contained: it imports nothing from `src/` and uses no relative imports (same rule as
 `tests/stubs/users_api/app.py` and `tests/stubs/clinics_api/app.py`). State lives in memory and is
@@ -42,11 +43,35 @@ FAULT_MODES = (
     "slow",
     "unknown_status",
     "no_checkout",
+    "return_not_allowed",
 )
 FAULT_OPERATIONS = ("create", "get", "any")
 
 RESOURCE_TYPE = re.compile(r"^[a-z0-9-]+:[a-z0-9_-]+$")
 CURRENCY = re.compile(r"^[A-Z]{3}$")
+# The return addresses of a payment (spec 011): `success` is required, the other two are optional.
+REDIRECT_URL_FIELDS = ("success", "pending", "failure")
+REDIRECT_URL_MAX_LENGTH = 2048
+
+
+def _valid_redirect_urls(value: Any) -> bool:
+    """The `redirect_urls` that Pagos accepts: an object with `success` and nothing unknown, every address
+    an `https://` text of at most 2048 characters (its origin list is not simulated: a test uses the fault
+    `return_not_allowed` for that refusal)."""
+
+    def valid_address(address: Any) -> bool:
+        return (
+            isinstance(address, str)
+            and address.lower().startswith("https://")  # the scheme is not case-sensitive
+            and len(address) <= REDIRECT_URL_MAX_LENGTH
+        )
+
+    return (
+        isinstance(value, dict)
+        and set(value) <= set(REDIRECT_URL_FIELDS)
+        and valid_address(value.get("success"))
+        and all(value.get(name) is None or valid_address(value[name]) for name in ("pending", "failure"))
+    )
 
 
 class TokenIn(BaseModel):
@@ -189,6 +214,21 @@ def create_stub_app() -> FastAPI:
             return PlainTextResponse(MARKER, status_code=200)
         if mode == "redirect":
             return RedirectResponse("http://evil.test/steal", status_code=307)
+        if mode == "return_not_allowed":
+            # What Pagos answers when the origin of the return address is not in its allowed list.
+            return JSONResponse(
+                {
+                    "code": "validation_error",
+                    "message": f"{MARKER} detalle interno",
+                    "errors": [
+                        {
+                            "field": "body.redirect_urls.success",
+                            "message": "El origen de la dirección de regreso no está permitido.",
+                        }
+                    ],
+                },
+                status_code=422,
+            )
         if mode == "slow":
             await asyncio.sleep(fault["delay_seconds"])
         return None
@@ -220,6 +260,7 @@ def create_stub_app() -> FastAPI:
             and 1 <= len(body["resource_id"]) <= 200
             and (body.get("description") is None or len(str(body["description"])) <= 500)
             and (body.get("metadata") is None or isinstance(body["metadata"], dict))
+            and (body.get("redirect_urls") is None or _valid_redirect_urls(body["redirect_urls"]))
         )
         if not valid:
             return error(422, "validation_error")
@@ -246,6 +287,9 @@ def create_stub_app() -> FastAPI:
             "created_at": _now(),
             "updated_at": _now(),
         }
+        if "redirect_urls" in body:
+            # Kept only when the body carried the key, so a test tells «absent» from «null» (spec 011).
+            payment["redirect_urls"] = body["redirect_urls"]
         state["payments"][payment["id"]] = payment
         state["keys"][key] = {"fingerprint": fingerprint, "id": payment["id"]}
         return JSONResponse(read(payment, mode), status_code=201)
@@ -309,7 +353,12 @@ def create_stub_app() -> FastAPI:
 
     @app.get("/__test__/payments")
     async def list_payments():
-        return [read(payment) for payment in state["payments"].values()]
+        # The `PaymentRead` of each payment plus, only for the tests, the return addresses it was created
+        # with: Pagos never answers them, but a test checks what this service sent (spec 011).
+        return [
+            {**read(payment), **({"redirect_urls": payment["redirect_urls"]} if "redirect_urls" in payment else {})}
+            for payment in state["payments"].values()
+        ]
 
     @app.post("/__test__/faults")
     async def add_fault(body: FaultIn):

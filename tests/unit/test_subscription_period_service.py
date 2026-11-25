@@ -1200,3 +1200,94 @@ async def test_a_lost_answer_is_recovered_with_the_same_payment_when_nothing_cha
     assert len(world.payments.created()) == 1  # the same key gave back the payment that already existed
     [charge] = world.periods.charges_of()
     assert charge.payment_id == world.payments.created()[0]
+
+
+# ====================== spec 011: the return address of the payments ======================
+
+RETURN_URL = "https://app.mailysoft.com/payment"
+DESCRIPTION = "Suscripción Plan Individual — mensual"
+
+
+def restarted(world, return_url: str | None):
+    """The same doubles behind a new Service: the service restarted with another configuration."""
+    from src.services.subscription_period_service import SubscriptionPeriodService
+
+    return SubscriptionPeriodService(
+        periods=world.periods,
+        subscriptions=world.plans,
+        clinics_api=world.organizations,
+        payments_api=world.payments,
+        clock=world.clock,
+        cutoff=at(CUTOFF_BEFORE),
+        return_url=return_url,
+    )
+
+
+async def test_with_a_return_address_the_payment_asks_pagos_to_return_there():  # FR-006, FR-008
+    world = new_world(now=OVERDUE_NOW, return_url=RETURN_URL)
+
+    start = await world.service.start_payment(TOKEN, ORG_ID)
+
+    assert start.created is True
+    [call] = world.payments.create_calls
+    assert call["return_url"] == RETURN_URL
+    assert call["idempotency_key"] == idempotency_key(
+        ORG_ID, at(TRIAL_END), "monthly", 49900, 1, DESCRIPTION, RETURN_URL
+    )
+    assert call["idempotency_key"] != idempotency_key(ORG_ID, at(TRIAL_END), "monthly", 49900, 1, DESCRIPTION)
+    [charge] = world.periods.charges_of()
+    assert charge.payment_id == world.payments.created()[0]
+
+
+async def test_with_a_return_address_starting_twice_gives_the_same_checkout():
+    world = new_world(now=OVERDUE_NOW, return_url=RETURN_URL)
+    first = await world.service.start_payment(TOKEN, ORG_ID)
+
+    second = await world.service.start_payment(TOKEN, ORG_ID)
+
+    assert (first.created, second.created) == (True, False)
+    assert second.checkout_url == first.checkout_url
+    assert len(world.payments.create_calls) == 1  # the pending charge is read, never created again
+
+
+async def test_with_a_return_address_a_lost_answer_is_recovered_with_the_same_payment():
+    world = new_world(now=OVERDUE_NOW, return_url=RETURN_URL)
+    world.payments.lose_answer = True
+    with pytest.raises(PaymentsUnavailableError):
+        await world.service.start_payment(TOKEN, ORG_ID)
+
+    start = await world.service.start_payment(TOKEN, ORG_ID)
+
+    assert start.created is True
+    assert len(world.payments.created()) == 1
+    [charge] = world.periods.charges_of()
+    assert charge.payment_id == world.payments.created()[0]
+
+
+@pytest.mark.parametrize("after", ["https://staging.mailysoft.com/payment", None], ids=["another", "removed"])
+async def test_a_return_address_changed_after_a_lost_answer_does_not_leave_the_payment_stuck(after):
+    # Pagos refuses the same key with another body (409) and the address is part of the body, so a key that
+    # did not change with it would fail for ever (research R5 of spec 011).
+    world = new_world(now=OVERDUE_NOW, return_url=RETURN_URL)
+    world.payments.lose_answer = True
+    with pytest.raises(PaymentsUnavailableError):
+        await world.service.start_payment(TOKEN, ORG_ID)
+    assert world.periods.charges_of() == []  # it was never registered nor offered
+
+    start = await restarted(world, after).start_payment(TOKEN, ORG_ID)
+
+    assert start.created is True
+    assert len(world.payments.created()) == 2  # another key, another payment: the first one is an orphan
+    [charge] = world.periods.charges_of()
+    assert charge.payment_id == world.payments.created()[-1]
+    assert world.payments.create_calls[-1]["return_url"] == after
+
+
+async def test_without_a_return_address_the_payment_is_created_as_before():  # FR-007, FR-008 (story 2)
+    world = new_world(now=OVERDUE_NOW)
+
+    await world.service.start_payment(TOKEN, ORG_ID)
+
+    [call] = world.payments.create_calls
+    assert call["return_url"] is None
+    assert call["idempotency_key"] == idempotency_key(ORG_ID, at(TRIAL_END), "monthly", 49900, 1, DESCRIPTION)

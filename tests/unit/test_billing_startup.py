@@ -34,6 +34,7 @@ ENV_NAMES = (
     "PAGOS_API_BASE_URL",
     "PAYMENTS_API_BASE_URL",
     "PAYMENTS_API_TIMEOUT_SECONDS",
+    "PAYMENTS_RETURN_URL",  # optional (spec 011)
     "BILLING_CUTOFF_AT",
     "CORS_ALLOWED_ORIGINS",
 )
@@ -241,3 +242,76 @@ def test_the_origin_of_the_front_goes_in_the_existing_variable_and_no_new_one_ex
     assert "CORS_ALLOWED_ORIGINS" in text
     assert text.count("CORS_") == text.count("CORS_ALLOWED_ORIGINS")  # the only CORS variable
     assert set(CorsSettings.model_fields) == {"cors_allowed_origins"}
+
+
+# --- the return address of the payments (spec 011, story 3) ---
+
+
+async def test_with_a_valid_return_address_the_service_starts(monkeypatch):
+    define(monkeypatch, PAYMENTS_RETURN_URL="https://app.mailysoft.com/payment")
+
+    await start()
+
+    assert get_payments_settings().payments_return_url == "https://app.mailysoft.com/payment"
+
+
+@pytest.mark.parametrize("value", [None, ""], ids=["absent", "empty"])
+async def test_without_a_return_address_the_service_starts(monkeypatch, value):
+    define(monkeypatch, PAYMENTS_RETURN_URL=value)
+
+    await start()
+
+    assert get_payments_settings().payments_return_url is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://usuario:clave@pagos-secreto.example.com/payment",
+        "http://pagos-secreto.example.com/payment",
+        "https://localhost/pagos-secreto",
+        "https://pagos-secreto.example.com/payment#pago",
+    ],
+    ids=["credentials", "http", "local", "fragment"],
+)
+async def test_an_invalid_return_address_stops_the_start_naming_the_variable_and_not_its_value(
+    monkeypatch, caplog, value
+):
+    define(monkeypatch, PAYMENTS_RETURN_URL=value)
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(RuntimeError) as error:
+        await start()
+
+    assert "PAYMENTS_RETURN_URL" in str(error.value)
+    assert "PAYMENTS_RETURN_URL" in caplog.text
+    for text in (str(error.value), caplog.text):
+        assert "secreto" not in text and "usuario" not in text and "clave" not in text
+
+
+async def test_an_invalid_return_address_and_a_missing_cutoff_are_named_in_one_message(monkeypatch):
+    message = await refusal(
+        monkeypatch, PAYMENTS_RETURN_URL="http://app.mailysoft.com/payment", BILLING_CUTOFF_AT=None
+    )
+
+    assert "PAYMENTS_RETURN_URL" in message and "BILLING_CUTOFF_AT" in message
+    assert "mailysoft" not in message
+
+
+def test_a_change_of_the_return_address_while_the_service_runs_takes_effect_after_a_restart(monkeypatch):
+    define(monkeypatch, PAYMENTS_RETURN_URL="https://app.mailysoft.com/payment")
+    first = get_payments_settings().payments_return_url
+
+    monkeypatch.setenv("PAYMENTS_RETURN_URL", "https://staging.mailysoft.com/payment")  # the operator edits it
+
+    assert get_payments_settings().payments_return_url == first  # the service keeps what it read
+    get_payments_settings.cache_clear()  # a restart
+    assert get_payments_settings().payments_return_url == "https://staging.mailysoft.com/payment"
+
+
+def test_the_example_explains_the_return_address():
+    text = ENV_EXAMPLE.read_text(encoding="utf-8")
+    block = text[text.index("# --- Periodos de suscripción") :].split("# --- Salud de servicios", 1)[0]
+
+    assert "PAYMENTS_RETURN_URL" in block
+    for fragment in ("Opcional", "https", "/payment", "vacía en el desarrollo local", "CHECKOUT_RETURN_ALLOWED_ORIGINS"):
+        assert fragment in block, fragment
