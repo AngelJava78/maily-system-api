@@ -429,6 +429,16 @@ class FakePeriodRepository:
         period.paid_until = period_ends_at
         return ApplyOutcome.APPLIED
 
+    async def list_charges(
+        self, organization_id: uuid.UUID, *, page: int, page_size: int
+    ) -> tuple[list[SubscriptionCharge], int]:
+        self.calls["list_charges"] += 1
+        charges = self.charges_of(organization_id)
+        charges.reverse()  # most recent first, as the real Repository orders them
+        total = len(charges)
+        start = (page - 1) * page_size
+        return charges[start : start + page_size], total
+
     # --- helpers for the tests ---
 
     def charges_of(self, organization_id: uuid.UUID = ORG_ID) -> list[SubscriptionCharge]:
@@ -524,6 +534,9 @@ class BillingApi:
 
     async def start_payment(self, organization_id: uuid.UUID | str = ORG_ID, **kwargs: Any) -> httpx.Response:
         return await self.client.post(f"{PERIODS_URL}/{organization_id}/payments", **kwargs)
+
+    async def list_charges(self, organization_id: uuid.UUID | str = ORG_ID, **kwargs: Any) -> httpx.Response:
+        return await self.client.get(f"{PERIODS_URL}/{organization_id}/charges", **kwargs)
 
     # --- preparing scenarios ---
 

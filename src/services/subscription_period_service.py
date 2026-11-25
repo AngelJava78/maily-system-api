@@ -117,6 +117,20 @@ class SubscriptionPeriodService:
         context = await self._prepare(token, organization_id)
         return self._view(context)
 
+    # --- spec 012: the history of charges ---
+
+    async def list_charges(
+        self, token: str, organization_id: UUID, *, page: int, page_size: int
+    ) -> tuple[list[SubscriptionCharge], int]:
+        """A page of the charge history of an organization of which the person is the owner.
+
+        Only the ownership check is done (the same as `get_status`): this is a read-only history, so
+        it does not create the period record nor reconcile with the payments API — a charge can show
+        as `pending` here even when the full period read would have resolved it by now.
+        """
+        await self._read_organization(token, organization_id)
+        return await self._periods.list_charges(organization_id, page=page, page_size=page_size)
+
     # --- story 2: starting the payment ---
 
     async def start_payment(self, token: str, organization_id: UUID) -> PaymentStart:

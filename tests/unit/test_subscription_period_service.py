@@ -1291,3 +1291,80 @@ async def test_without_a_return_address_the_payment_is_created_as_before():  # F
     [call] = world.payments.create_calls
     assert call["return_url"] is None
     assert call["idempotency_key"] == idempotency_key(ORG_ID, at(TRIAL_END), "monthly", 49900, 1, DESCRIPTION)
+
+
+# ====================== spec 012: the history of charges ======================
+
+
+async def test_an_organization_without_charges_has_an_empty_history():
+    world = new_world()
+
+    charges, total = await world.service.list_charges(TOKEN, ORG_ID, page=1, page_size=10)
+
+    assert charges == [] and total == 0
+
+
+async def test_the_history_lists_the_charges_of_the_organization_newest_first():
+    world = new_world(now=OVERDUE_NOW)
+    await world.service.start_payment(TOKEN, ORG_ID)  # charge 1
+    world.plans.plans[1] = make_plan(monthly_price="799.00")
+    await world.service.start_payment(TOKEN, ORG_ID)  # charge 2, another attempt
+    oldest, newest = world.periods.charges_of()
+
+    charges, total = await world.service.list_charges(TOKEN, ORG_ID, page=1, page_size=10)
+
+    assert total == 2
+    assert [c.id for c in charges] == [newest.id, oldest.id]
+
+
+async def test_the_history_is_paginated():
+    world = new_world(now=OVERDUE_NOW)
+    await world.service.start_payment(TOKEN, ORG_ID)
+    world.plans.plans[1] = make_plan(monthly_price="799.00")
+    await world.service.start_payment(TOKEN, ORG_ID)
+
+    first_page, total = await world.service.list_charges(TOKEN, ORG_ID, page=1, page_size=1)
+    second_page, _ = await world.service.list_charges(TOKEN, ORG_ID, page=2, page_size=1)
+
+    assert total == 2
+    assert len(first_page) == len(second_page) == 1
+    assert first_page[0].id != second_page[0].id
+
+
+async def test_the_history_never_resolves_a_pending_charge_by_itself():
+    # Unlike get_status/start_payment, reading the history does not reconcile with the payments API:
+    # a charge that is already approved there can still show as pending until the period is read.
+    world = new_world(now=OVERDUE_NOW)
+    payment_id, _ = await start_and_get_ids(world)
+    world.payments.set_status(payment_id, "approved", updated_at=OVERDUE_NOW)
+
+    charges, _ = await world.service.list_charges(TOKEN, ORG_ID, page=1, page_size=10)
+
+    assert charges[0].status == ChargeStatus.PENDING
+    assert world.payments.get_calls == []  # the payments API was never asked
+
+
+async def test_the_history_only_lists_charges_of_its_own_organization():
+    world = new_world(now=OVERDUE_NOW)
+    await world.service.start_payment(TOKEN, ORG_ID)
+    other = make_organization(organization_id=OTHER_ORG_ID, created_at=CREATED)
+    world.organizations.organization = other
+    await world.service.start_payment(TOKEN, OTHER_ORG_ID)
+    world.organizations.organization = make_organization(created_at=CREATED)  # back to ORG_ID, the owner
+
+    charges, total = await world.service.list_charges(TOKEN, ORG_ID, page=1, page_size=10)
+
+    assert total == 1
+    assert charges[0].organization_id == ORG_ID
+
+
+async def test_the_history_checks_the_organization_first():
+    world = new_world(now=OVERDUE_NOW)
+
+    with pytest.raises(OrganizationNotFoundError):
+        await world.service.list_charges(TOKEN, OTHER_ORG_ID, page=1, page_size=10)
+    world.organizations.fail = True
+    with pytest.raises(OrganizationCheckUnavailableError):
+        await world.service.list_charges(TOKEN, ORG_ID, page=1, page_size=10)
+
+    assert world.payments.create_calls == []  # nothing else was attempted

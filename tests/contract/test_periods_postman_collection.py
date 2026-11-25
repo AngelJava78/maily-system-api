@@ -52,8 +52,8 @@ FOLDERS = [
     "6. Contrato",
     "7. Limpieza",
 ]
-REQUESTS_PER_FOLDER = [7, 11, 8, 26, 11, 14, 2, 6]
-OPERATIONS = {"get_subscription_period", "create_subscription_payment"}
+REQUESTS_PER_FOLDER = [7, 12, 8, 27, 11, 14, 2, 6]
+OPERATIONS = {"get_subscription_period", "create_subscription_payment", "list_subscription_charges"}
 
 
 @pytest.fixture
@@ -222,7 +222,7 @@ def test_g1_the_collection_is_a_v2_1_json_document(collection):
     assert check_format(collection) == []
 
 
-def test_g2_the_requests_cover_exactly_the_two_operations_of_the_periods(collection):
+def test_g2_the_requests_cover_exactly_the_three_operations_of_the_periods(collection):
     assert operation_ids_of_the_api(PERIODS_PREFIX) == OPERATIONS
     assert check_operations(collection, operation_ids_of_the_api(PERIODS_PREFIX)) == []
 

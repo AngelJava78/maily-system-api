@@ -95,6 +95,33 @@ class SubscriptionPeriodRepository:
             self._session.expunge(charge)
         return charges
 
+    async def list_charges(
+        self, organization_id: UUID, *, page: int, page_size: int
+    ) -> tuple[list[SubscriptionCharge], int]:
+        """A page of the charge history of the organization, most recent first (spec 012).
+
+        Unlike `list_pending`, this is a plain read with no business meaning attached: it does not
+        trigger a reconciliation with the payments API (the full period read already does that
+        whenever the person visits the payment screen), so a charge can legitimately still show as
+        `pending` here.
+        """
+        condition = SubscriptionCharge.organization_id == organization_id
+        total = (
+            await self._session.scalars(select(func.count()).select_from(SubscriptionCharge).where(condition))
+        ).one()
+        statement = (
+            select(SubscriptionCharge)
+            .where(condition)
+            .order_by(SubscriptionCharge.created_at.desc(), SubscriptionCharge.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .execution_options(populate_existing=True)
+        )
+        charges = list((await self._session.scalars(statement)).all())
+        for charge in charges:
+            self._session.expunge(charge)
+        return charges, total
+
     async def find_pending(
         self,
         organization_id: UUID,

@@ -569,6 +569,44 @@
           ]
         },
         {
+          "name": "list_subscription_charges: sin cobros, antes de pagar",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/charges",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "charges"
+              ]
+            },
+            "description": "El historial de cobros de una organización que todavía no ha pagado: una página vacía, sin consultar a Pagos (spec 012)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"las cinco claves de la página\", function () { pm.expect(Object.keys(body).sort()).to.eql([\"items\", \"page\", \"page_size\", \"total\", \"total_pages\"]); });",
+                  "pm.test(\"sin cobros todavía\", function () { pm.expect(body.items).to.eql([]); pm.expect(body.total).to.eql(0); pm.expect(body.total_pages).to.eql(0); });",
+                  "pm.test(\"la página por omisión es la primera, de 10\", function () { pm.expect(body.page).to.eql(1); pm.expect(body.page_size).to.eql(10); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "get_subscription_period: la misma consulta devuelve las mismas fechas",
           "request": {
             "method": "GET",
@@ -1673,6 +1711,57 @@
                   "pm.test(\"cobro en curso: false\", function () { pm.expect(body.payment_in_progress).to.eql(false); });",
                   "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });",
                   "pm.test(\"la fecha de pago es la misma\", function () { pm.expect(body.payment_due_at).to.eql(pm.collectionVariables.get(\"paymentDueAt\")); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list_subscription_charges: el cobro aplicado aparece, el más reciente primero",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/charges?page=1&page_size=5",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "charges"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "5"
+                }
+              ]
+            },
+            "description": "Tras aprobarse el cobro, el historial lo muestra aplicado, con el periodo que cubrió (spec 012)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"estado 200\", function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test(\"un cobro, el total es uno\", function () { pm.expect(body.items.length).to.eql(1); pm.expect(body.total).to.eql(1); pm.expect(body.total_pages).to.eql(1); });",
+                  "const charge = body.items[0];",
+                  "pm.test(\"aplicado, sin razón de cierre\", function () { pm.expect(charge.status).to.eql(\"applied\"); pm.expect(charge.closed_reason).to.eql(null); });",
+                  "pm.test(\"importe, moneda y periodo de cobro\", function () { pm.expect(charge.amount).to.eql(\"499.00\"); pm.expect(charge.currency).to.eql(\"MXN\"); pm.expect(charge.billing_period).to.eql(\"monthly\"); });",
+                  "pm.test(\"el periodo que cubrió termina en la fecha de pago vigente\", function () { pm.expect(charge.period_ends_at).to.eql(pm.collectionVariables.get(\"paymentDueAt\")); pm.expect(Date.parse(charge.period_starts_at)).to.be.below(Date.parse(charge.period_ends_at)); });",
+                  "pm.test(\"nunca el identificador del pago ni el intento\", function () { pm.expect(charge).to.not.have.property(\"payment_id\"); pm.expect(charge).to.not.have.property(\"attempt\"); });",
+                  "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });"
                 ]
               }
             }

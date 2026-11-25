@@ -18,8 +18,9 @@ from tests.helpers import TEST_TOKEN, Api
 
 # The permission matrix: contracts/permission-matrix.md of spec 001 (the six subscriptions), the
 # row of spec 003 (the dashboard), the rows of spec 005 (the health of the services), the rows of
-# spec 010-cobro-real-suscripciones (the clinic subscriptions and their charge) and the two of
-# spec 010-subscription-periods (the subscription periods).
+# spec 010-cobro-real-suscripciones (the clinic subscriptions and their charge), the two of
+# spec 010-subscription-periods (the subscription periods) and the one of spec 012 (their history of
+# charges, same permission as reading the period).
 EXPECTED_PERMISSIONS = {
     "list_subscriptions": "subscriptions:read",
     "get_subscription": "subscriptions:read",
@@ -39,6 +40,7 @@ EXPECTED_PERMISSIONS = {
     "charge_clinic_subscription": "clinic_subscriptions:charge",
     "get_subscription_period": "subscription_periods:read",
     "create_subscription_payment": "subscription_periods:write",
+    "list_subscription_charges": "subscription_periods:read",
 }
 # charge_clinic_subscription is checked with GET /authorization/me, not /check (research R1): it
 # also needs the caller's own tenant_id to match the subscription's, which none of the stub tokens
@@ -110,6 +112,7 @@ REQUESTS: dict[str, tuple[str, str, dict[str, Any] | None]] = {
     "delete_monitored_component": ("DELETE", f"{COMPONENTS_URL}/{COMPONENT_ID}", None),
     "get_subscription_period": ("GET", f"{PERIODS_URL}/{ORGANIZATION_ID}", None),
     "create_subscription_payment": ("POST", f"{PERIODS_URL}/{ORGANIZATION_ID}/payments", None),
+    "list_subscription_charges": ("GET", f"{PERIODS_URL}/{ORGANIZATION_ID}/charges", None),
 }
 
 
