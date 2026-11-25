@@ -161,6 +161,7 @@ class FakePaymentsApi:
         resource_id: str,
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
+        return_url: str | None = None,
     ) -> PaymentRecord:
         self.create_calls.append(
             {
@@ -172,11 +173,13 @@ class FakePaymentsApi:
                 "resource_id": resource_id,
                 "description": description,
                 "metadata": metadata,
+                "return_url": return_url,
             }
         )
         if self.fail_create:
             raise PaymentsApiUnavailable()
-        fingerprint = repr((amount, currency, resource_type, resource_id, description, metadata))
+        # The return address is part of the body, so of the fingerprint too, as in Pagos (spec 011).
+        fingerprint = repr((amount, currency, resource_type, resource_id, description, metadata, return_url))
         known = None if self.ignore_idempotency else self.keys.get(idempotency_key)
         if known is not None:
             if known[0] != fingerprint:
@@ -456,8 +459,12 @@ def make_world(
     organization: OrganizationRecord | None = None,
     plan: PlanTerms | None = None,
     cutoff: str = "2020-01-01T00:00:00Z",
+    return_url: str | None = None,
 ) -> World:
-    """A Service with doubles: the organization of `make_organization()` on the plan of `make_plan()`."""
+    """A Service with doubles: the organization of `make_organization()` on the plan of `make_plan()`.
+
+    `return_url` is the configured return address of the payments (spec 011); by default there is none.
+    """
     from src.services.subscription_period_service import SubscriptionPeriodService
 
     organizations = FakeOrganizationsApi(organization or make_organization())
@@ -472,6 +479,7 @@ def make_world(
         payments_api=payments,
         clock=clock,
         cutoff=at(cutoff),
+        return_url=return_url,
     )
     return World(service, organizations, payments, periods, plans, clock)
 

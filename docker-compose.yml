@@ -75,6 +75,9 @@ services:
       # Pagos (spec 010-subscription-periods): a esta dirección se reenvía el token de la persona. Obligatoria.
       PAYMENTS_API_BASE_URL: ${PAYMENTS_API_BASE_URL:-}
       PAYMENTS_API_TIMEOUT_SECONDS: ${PAYMENTS_API_TIMEOUT_SECONDS:-}
+      # Pantalla de pago del frontend a la que Mercado Pago regresa a la persona (spec 011). Opcional:
+      # vacía en el desarrollo local; https y nunca local.
+      PAYMENTS_RETURN_URL: ${PAYMENTS_RETURN_URL:-}
       # Fecha de corte de los periodos de suscripción (spec 010): ISO 8601 con zona. Obligatoria.
       BILLING_CUTOFF_AT: ${BILLING_CUTOFF_AT:-}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}

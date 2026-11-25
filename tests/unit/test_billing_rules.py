@@ -424,3 +424,37 @@ def test_the_key_uses_the_instant_not_the_zone_it_arrives_in():
 
 def test_two_attempts_of_the_same_period_have_different_keys():
     assert len({key(attempt=attempt) for attempt in range(1, 20)}) == 19
+
+
+# --- the return address in the key (spec 011, FR-008) ---
+
+# The key that the code of spec 010 gave for the conditions of `key()`, computed on 2026-11-25 before spec 011
+# touched `idempotency_key`: without a return address the key must never change (SC-002).
+SPEC_010_KEY = "sub-0f4e2b9a-6d1c-4f7e-9a3b-5c8d7e6f1a2b-bb0e695d1931407f10e6ec5a"
+
+
+def test_without_a_return_address_the_key_is_the_one_of_spec_010():
+    assert key() == SPEC_010_KEY
+    assert key(return_url=None) == SPEC_010_KEY
+
+
+def test_with_a_return_address_the_key_is_another_one_with_the_same_shape():
+    result = key(return_url="https://app.mailysoft.com/payment")
+
+    assert result != SPEC_010_KEY
+    assert result == key(return_url="https://app.mailysoft.com/payment")  # deterministic
+    assert result.startswith(f"sub-{ORGANIZATION}-")
+    assert len(result) == 65 and result.isascii()
+
+
+def test_two_return_addresses_give_two_keys():
+    assert key(return_url="https://app.mailysoft.com/payment") != key(
+        return_url="https://app.mailysoft.com/payment/"
+    )
+
+
+def test_the_return_address_is_never_confused_with_the_description():
+    # Both texts would be `…|Suscripción Plan Individual — mensual|https://x.example` with a plain separator.
+    assert key(description="Suscripción Plan Individual — mensual|https://x.example") != key(
+        return_url="https://x.example"
+    )

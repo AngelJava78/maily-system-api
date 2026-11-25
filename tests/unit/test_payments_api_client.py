@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 import pytest
 
-from src.integrations.errors import PaymentsApiUnavailable
+from src.integrations.errors import PaymentsApiIdempotencyConflict, PaymentsApiUnavailable
 from src.integrations.payments_api import PAYMENT_PROVIDER, PaymentRecord, PaymentsApiClient
 from tests.helpers import PAYMENTS_BASE_URL
 
@@ -400,3 +400,101 @@ async def test_the_error_never_carries_the_body_of_the_other_api(payments_stub, 
 
     assert "SECRETO-INTERNO" not in str(error.value)
     assert TOKEN not in str(error.value)
+
+
+# --- the return address (spec 011; contract: specs/011-payment-return-url/contracts/payments-api-integration.md) ---
+
+RETURN_URL = "https://app.mailysoft.com/payment"
+
+
+async def exact_body(**overrides: Any) -> dict:
+    """The JSON body that `create_payment(TOKEN, **CREATE_ARGUMENTS, **overrides)` sends."""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(201, json=VALID_BODY)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await PaymentsApiClient(http, PAYMENTS_BASE_URL, 5.0).create_payment(TOKEN, **{**CREATE_ARGUMENTS, **overrides})
+    [body] = seen
+    return body
+
+
+async def test_with_a_return_address_the_body_asks_pagos_to_return_there():  # FR-006
+    body = await exact_body(return_url=RETURN_URL)
+
+    assert body.pop("redirect_urls") == {"success": RETURN_URL}  # only `success`: Pagos repeats it for the rest
+    assert body == await exact_body()  # everything else is the body of before
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "https://app.mailysoft.com:8443/payment?origen=pago",
+        "https://staging.mailysoft.com/payment/",
+        "HTTPS://App.MailySoft.com/payment",
+    ],
+)
+async def test_the_return_address_travels_exactly_as_it_was_given(address):  # FR-005
+    assert (await exact_body(return_url=address))["redirect_urls"] == {"success": address}
+
+
+async def test_the_payments_api_keeps_the_return_address_of_the_payment(payments_stub, payments_api_client):
+    await create(payments_api_client, return_url=RETURN_URL)
+
+    [payment] = await stored(payments_stub)
+    assert payment["redirect_urls"] == {"success": RETURN_URL}
+
+
+async def test_the_same_key_with_the_same_return_address_gives_the_same_payment(payments_stub, payments_api_client):
+    first = await create(payments_api_client, return_url=RETURN_URL)
+    second = await create(payments_api_client, return_url=RETURN_URL)
+
+    assert first.id == second.id
+    assert len(await stored(payments_stub)) == 1
+
+
+@pytest.mark.parametrize("other", [None, "https://otra.mailysoft.com/payment"], ids=["without", "another"])
+async def test_the_same_key_with_another_return_address_is_a_conflict_never_the_old_payment(payments_api_client, other):
+    await create(payments_api_client, return_url=RETURN_URL)
+
+    with pytest.raises(PaymentsApiIdempotencyConflict):
+        await create(payments_api_client, return_url=other)
+
+
+async def test_without_a_return_address_the_body_does_not_have_the_field(payments_stub, payments_api_client):  # FR-007
+    assert "redirect_urls" not in await exact_body()
+    assert "redirect_urls" not in await exact_body(return_url=None)
+
+    await create(payments_api_client)
+    [payment] = await stored(payments_stub)
+    assert "redirect_urls" not in payment
+
+
+async def test_a_refusal_of_a_payment_with_a_return_address_is_logged_without_the_address(caplog):  # FR-010
+    async with client_answering(422, json={"code": "validation_error", "message": "SECRETO-INTERNO"}) as client:
+        with caplog.at_level(logging.DEBUG, logger="src"), pytest.raises(PaymentsApiUnavailable):
+            await create(client, return_url=RETURN_URL)
+
+    assert "return address" in caplog.text
+    assert RETURN_URL not in caplog.text and "mailysoft" not in caplog.text
+    assert "SECRETO-INTERNO" not in caplog.text
+
+
+async def test_a_refusal_of_a_payment_without_a_return_address_is_logged_as_before(caplog):
+    async with client_answering(422, json={"code": "validation_error"}) as client:
+        with caplog.at_level(logging.DEBUG, logger="src"), pytest.raises(PaymentsApiUnavailable):
+            await create(client)
+
+    assert "unexpected status 422" in caplog.text
+    assert "return address" not in caplog.text
+
+
+async def test_the_refusal_of_pagos_to_the_return_address_is_unavailable(payments_stub, payments_api_client):
+    await add_fault(payments_stub, "return_not_allowed", "create")
+
+    with pytest.raises(PaymentsApiUnavailable):
+        await create(payments_api_client, return_url=RETURN_URL)
+
+    assert await stored(payments_stub) == []

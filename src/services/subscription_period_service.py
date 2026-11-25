@@ -98,13 +98,17 @@ class SubscriptionPeriodService:
         payments_api: PaymentsApiClient,
         clock: Clock,
         cutoff: datetime,
+        return_url: str | None = None,
     ) -> None:
+        """`return_url` is the configured return address of the payments (spec 011, `PAYMENTS_RETURN_URL`):
+        `None` when it is not configured, and then the charges are created exactly as before."""
         self._periods = periods
         self._subscriptions = subscriptions
         self._clinics = clinics_api
         self._payments = payments_api
         self._clock = clock
         self._cutoff = cutoff
+        self._return_url = return_url
 
     # --- story 1: the consultation ---
 
@@ -122,6 +126,9 @@ class SubscriptionPeriodService:
         person never sends it. Asking twice for the same period (the same payment date it settles, billing
         period and amount) gives the same pending charge and checkout; after a charge that was closed
         without being applied, or with another amount, a new charge is created (FR-022 to FR-024).
+
+        With a return address configured (spec 011), the payment carries it and it is part of the key of
+        the charge (FR-006, FR-008); without one, the payment and its key are exactly the ones of before.
         """
         context = await self._prepare(token, organization_id)
         if context.amount == 0:
@@ -139,7 +146,9 @@ class SubscriptionPeriodService:
         amount_minor = billing_rules.to_minor_units(amount)
         attempt = await self._periods.count_resolved_with_terms(organization_id, due, billing_period, amount) + 1
         description = f"Suscripción {context.plan.name} — {_PERIOD_LABELS[billing_period]}"
-        key = billing_rules.idempotency_key(organization_id, due, billing_period, amount_minor, attempt, description)
+        key = billing_rules.idempotency_key(
+            organization_id, due, billing_period, amount_minor, attempt, description, self._return_url
+        )
         try:
             payment = await self._payments.create_payment(
                 token,
@@ -153,6 +162,7 @@ class SubscriptionPeriodService:
                     "billing_period": billing_period,
                     "settles_due_at": due.isoformat().replace("+00:00", "Z"),
                 },
+                return_url=self._return_url,
             )
         except PaymentsApiUnavailable:
             raise PaymentsUnavailableError() from None

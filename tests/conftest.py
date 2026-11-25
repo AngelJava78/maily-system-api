@@ -67,11 +67,17 @@ def billing_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     do not know about this feature. The cutoff is far in the past, so it never interferes. The tests of
     the configuration itself remove them again. The configurations are cached, so they are cleared
     before and after.
+
+    The optional return address of the payments (spec 011) is removed and the payments configuration does
+    not read `.env` (its two variables are defined here), so a developer's `.env` never sends a return
+    address in a test that does not expect one; the tests of that address define it themselves.
     """
-    from src.config import get_billing_settings, get_payments_settings
+    from src.config import PaymentsSettings, get_billing_settings, get_payments_settings
 
     monkeypatch.setenv("PAYMENTS_API_BASE_URL", "http://payments-api:8080")
     monkeypatch.setenv("BILLING_CUTOFF_AT", "2020-01-01T00:00:00Z")
+    monkeypatch.delenv("PAYMENTS_RETURN_URL", raising=False)
+    monkeypatch.setitem(PaymentsSettings.model_config, "env_file", None)
     for cached in (get_payments_settings, get_billing_settings):
         cached.cache_clear()
     yield

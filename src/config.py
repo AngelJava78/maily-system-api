@@ -6,9 +6,9 @@ service depends on (FR-002, FR-009); `CorsSettings` the sites allowed to call th
 `HealthSettings` and `BuildSettings` the health checks and the build identification (spec 005),
 `DatabaseScheduleSettings` the schedule of the database (part of `HealthSettings`), and, for the
 subscription periods (spec 010), `PaymentsSettings` (the address and the time limit of the payments
-API, kept apart from `IntegrationSettings` because the one-off scripts do not need it) and
-`BillingSettings` (the cutoff date). The messages about a bad configuration name the variables, never
-their values.
+API, kept apart from `IntegrationSettings` because the one-off scripts do not need it, and the optional
+address where Mercado Pago returns the person after paying, spec 011) and `BillingSettings` (the cutoff
+date). The messages about a bad configuration name the variables, never their values.
 """
 
 import ipaddress
@@ -68,6 +68,69 @@ def _normalized_address(value: str) -> str:
     return value.rstrip("/")
 
 
+# The longest return address that the payments API accepts (spec 011; Pagos' `RETURN_URL_MAX_LENGTH`).
+RETURN_ADDRESS_MAX_LENGTH = 2048
+
+
+def _is_local_or_private_host(host: str) -> bool:
+    """A host of this machine or of a private network, without resolving any name (spec 011, research R2).
+
+    The same rule as the payments API (`_is_local_or_private_host` of mailySoft-pagos' `src/payments.py`):
+    `localhost` and its subdomains, the IP addresses that are loopback, private, link-local, unspecified,
+    reserved or multicast, and the names without a dot (an intranet name or a container).
+    """
+    name = host.lower().rstrip(".")
+    if name == "localhost" or name.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return "." not in name
+    return (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_unspecified
+        or address.is_reserved
+        or address.is_multicast
+    )
+
+
+def _return_address(value: str) -> str:
+    """The address where Mercado Pago returns the person (spec 011, FR-003, FR-005), as it was written.
+
+    Only the outer spaces are removed: the path, the query, the port and the case belong to the frontend.
+    The rules are the ones that the payments API applies to a return address except its own list of
+    allowed origins, so an address that passes here can be refused there only because of that list.
+    """
+    value = value.strip()
+    # The message never includes the value: the query of an address could carry data.
+    problem = ValueError(
+        "The return address must be an absolute https address of a public host, without credentials or fragment"
+    )
+    if (
+        not value
+        or any(character.isspace() or not character.isprintable() for character in value)
+        or len(value) > RETURN_ADDRESS_MAX_LENGTH
+        or "#" in value
+    ):
+        raise problem
+    try:
+        parts = urlsplit(value)
+        _ = parts.port  # an invalid or out-of-range port raises here
+    except ValueError:
+        raise problem from None
+    if (
+        parts.scheme != "https"
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or _is_local_or_private_host(parts.hostname)
+    ):
+        raise problem
+    return value
+
+
 class Settings(BaseSettings):
     """Database configuration."""
 
@@ -101,14 +164,20 @@ class IntegrationSettings(BaseSettings):
 
 
 class PaymentsSettings(BaseSettings):
-    """Address and total time limit of the payments API (spec 010, FR-040).
+    """Address and total time limit of the payments API (spec 010, FR-040), and the return address.
 
     It is not part of `IntegrationSettings`: `src/scripts/backfill_subscription_types.py` reads that one
     and has no use for the payments API, so a new mandatory variable there would break it.
+
+    `payments_return_url` (`PAYMENTS_RETURN_URL`, optional; spec 011) is the address of the payment page
+    of the frontend: when it is set, every payment of a subscription period asks Pagos to return the person
+    there once the payment is approved. Unset (local development: Mercado Pago refuses local addresses),
+    nothing is sent and everything works as before.
     """
 
     payments_api_base_url: str
     payments_api_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    payments_return_url: str | None = None
 
     # An empty variable (docker-compose passes empty values when `.env` has none) counts as unset.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
@@ -117,6 +186,11 @@ class PaymentsSettings(BaseSettings):
     @classmethod
     def _normalize_address(cls, value: str) -> str:
         return _normalized_address(value)
+
+    @field_validator("payments_return_url")
+    @classmethod
+    def _check_return_address(cls, value: str | None) -> str | None:
+        return None if value is None else _return_address(value)
 
 
 class BillingSettings(BaseSettings):

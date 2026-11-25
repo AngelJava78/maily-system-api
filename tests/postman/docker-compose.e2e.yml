@@ -90,6 +90,9 @@ services:
       # Muy en el pasado: la fecha de corte no interviene y manda la antigüedad que cada escenario fija
       # en la simulación de Clínicas, así que no hace falta mover el reloj real.
       BILLING_CUTOFF_AT: "2020-01-01T00:00:00Z"
+      # Sin dirección de regreso de los pagos, como en el desarrollo local (spec 011): vacía a propósito,
+      # para no heredar la del `.env` de quien corre la pila.
+      PAYMENTS_RETURN_URL: ""
       # Solo la simulación de componentes y un nombre que nunca resuelve (RFC 6761).
       HEALTH_ALLOWED_HOSTS: components-stub,missing-service.invalid
       HEALTH_CHECK_TIMEOUT_SECONDS: "2"

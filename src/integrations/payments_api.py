@@ -8,6 +8,9 @@ Shared by two features with different needs (research R8, spec 010-subscription-
 - `specs/010-subscription-periods/contracts/payments-api-integration.md`: the payments are data of
   another system — their status and checkout address are asked for on every use and never stored.
   `get_payment` forwards the caller's own token and never talks to Auth0.
+- `specs/011-payment-return-url/contracts/payments-api-integration.md`: a payment may carry the address
+  where Mercado Pago returns the person once it is approved (`redirect_urls.success`); without one, the
+  body is exactly the one of before.
 
 Anything that is not exactly the expected answer is "unavailable" and never a guessed status; the
 caller decides how to degrade. Each operation is one call with a total time limit, no redirection
@@ -86,11 +89,16 @@ class PaymentsApiClient:
         resource_id: str,
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
+        return_url: str | None = None,
     ) -> PaymentRecord:
         """Create a payment (or get the one that this `idempotency_key` already created).
 
         `token` is the caller's own token, forwarded untouched so Pagos resolves `tenant_id` with
         its own `GET /api/v1/authorization/me` (Pagos' Principle X); it is never sent in the body.
+
+        `return_url` (spec 011) is sent as `redirect_urls.success`, exactly as given: Pagos uses it for
+        the three results and asks Mercado Pago to return the person there once the payment is
+        approved. Without it, the body has no `redirect_urls` at all, as before.
 
         Raises the specific `PaymentsApiRejectedToken` (401), `PaymentsApiPermissionDenied` (403) or
         `PaymentsApiIdempotencyConflict` (409, the same key with another body — never taken for the
@@ -108,6 +116,8 @@ class PaymentsApiClient:
             body["description"] = description
         if metadata is not None:
             body["metadata"] = metadata
+        if return_url is not None:
+            body["redirect_urls"] = {"success": return_url}
 
         try:
             async with asyncio.timeout(self._timeout):
@@ -133,7 +143,14 @@ class PaymentsApiClient:
         if status == 409:
             raise PaymentsApiIdempotencyConflict
         if status not in (200, 201):
-            if 400 <= status < 500:
+            if status == 422 and return_url is not None:
+                # Most likely the origin of the return address is not allowed by the payments API (its
+                # `CHECKOUT_RETURN_ALLOWED_ORIGINS`), or that API predates it. Never the address itself.
+                logger.error(
+                    "Payments API refused (status 422) a payment that carried a return address: "
+                    "check that the origin of the return address is allowed by the payments API"
+                )
+            elif 400 <= status < 500:
                 logger.error("Payments API answered an unexpected status %s", status)
             else:
                 logger.warning("Payments API answered status %s", status)

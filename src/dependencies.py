@@ -273,7 +273,8 @@ async def get_subscription_period_service(
     payments_api: Annotated[PaymentsApiClient, Depends(get_payments_api_client)],
     clock: Annotated[Clock, Depends(get_clock)],
 ) -> SubscriptionPeriodService:
-    """The cutoff date is read once at start-up (FR-039); the clock is the one that the tests replace."""
+    """The cutoff date (FR-039) and the return address of the payments (spec 011, FR-001) are read once at
+    start-up; the clock is the one that the tests replace."""
     return SubscriptionPeriodService(
         periods,
         subscriptions,
@@ -281,4 +282,5 @@ async def get_subscription_period_service(
         payments_api,
         clock,
         get_billing_settings().billing_cutoff_at,
+        return_url=get_payments_settings().payments_return_url,
     )
