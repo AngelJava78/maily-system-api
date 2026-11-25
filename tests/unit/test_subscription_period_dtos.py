@@ -1,12 +1,22 @@
-"""The response DTOs of the subscription periods (spec 010, data-model.md section 6; FR-011, FR-015)."""
+"""The response DTOs of the subscription periods (spec 010, data-model.md section 6; FR-011, FR-015).
 
+The charge history DTOs (spec 012) are at the bottom of this file.
+"""
+
+import uuid
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
 
-from src.dtos.subscription_period import PlanRead, SubscriptionPaymentRead, SubscriptionPeriodRead
+from src.dtos.subscription_period import (
+    PlanRead,
+    SubscriptionChargeRead,
+    SubscriptionChargesPageRead,
+    SubscriptionPaymentRead,
+    SubscriptionPeriodRead,
+)
 
 KEYS = {
     "state",
@@ -178,15 +188,150 @@ def test_the_payment_start_has_its_four_fields():
     }
 
 
+ALL_DTOS = (
+    SubscriptionPeriodRead,
+    SubscriptionPaymentRead,
+    PlanRead,
+    SubscriptionChargeRead,
+    SubscriptionChargesPageRead,
+)
+
+
 @pytest.mark.parametrize(
-    "forbidden", ["token", "payment_id", "authorization", "organization_id", "base_url", "tenant_id"]
+    "forbidden", ["token", "payment_id", "authorization", "organization_id", "base_url", "tenant_id", "attempt"]
 )
 def test_no_dto_has_a_field_for_a_token_a_payment_identifier_or_an_address(forbidden):
-    for dto in (SubscriptionPeriodRead, SubscriptionPaymentRead, PlanRead):
+    for dto in ALL_DTOS:
         assert forbidden not in dto.model_fields
 
 
 def test_the_descriptions_of_the_fields_are_in_spanish_and_exist():
-    for dto in (SubscriptionPeriodRead, SubscriptionPaymentRead, PlanRead):
+    for dto in ALL_DTOS:
         for name, field in dto.model_fields.items():
             assert field.description, f"{dto.__name__}.{name} has no description"
+
+
+# =============================== spec 012: the history of charges ===============================
+
+CHARGE_KEYS = {
+    "id",
+    "status",
+    "closed_reason",
+    "amount",
+    "currency",
+    "billing_period",
+    "period_starts_at",
+    "period_ends_at",
+    "created_at",
+}
+CHARGE_ID = uuid.UUID("6b1b1e2a-7c9d-4e2a-9c3e-1a2b3c4d5e70")
+CREATED_AT = datetime(2026, 10, 19, 11, 58, 3, tzinfo=UTC)
+PERIOD_START = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
+PERIOD_END = datetime(2026, 11, 19, 12, 0, tzinfo=UTC)
+
+
+def charge(**changes) -> SubscriptionChargeRead:
+    values = {
+        "id": CHARGE_ID,
+        "status": "applied",
+        "closed_reason": None,
+        "amount": Decimal("499.00"),
+        "currency": "MXN",
+        "billing_period": "monthly",
+        "period_starts_at": PERIOD_START,
+        "period_ends_at": PERIOD_END,
+        "created_at": CREATED_AT,
+        **changes,
+    }
+    return SubscriptionChargeRead(**values)
+
+
+def test_an_applied_charge_has_its_nine_keys_and_both_period_dates():
+    body = charge().model_dump(mode="json")
+
+    assert set(body) == CHARGE_KEYS
+    assert body["closed_reason"] is None
+    assert body["period_starts_at"] == "2026-10-19T12:00:00Z"
+    assert body["period_ends_at"] == "2026-11-19T12:00:00Z"
+    assert body["created_at"] == "2026-10-19T11:58:03Z"
+
+
+def test_a_pending_charge_has_no_period_dates_and_no_closed_reason():
+    body = charge(status="pending", closed_reason=None, period_starts_at=None, period_ends_at=None).model_dump(
+        mode="json"
+    )
+
+    assert (body["status"], body["closed_reason"]) == ("pending", None)
+    assert body["period_starts_at"] is None and body["period_ends_at"] is None
+
+
+@pytest.mark.parametrize("reason", ["rejected", "cancelled", "inconsistent", "refunded"])
+def test_a_closed_charge_has_its_reason_and_no_period_dates(reason):
+    body = charge(
+        status="closed", closed_reason=reason, period_starts_at=None, period_ends_at=None
+    ).model_dump(mode="json")
+
+    assert (body["status"], body["closed_reason"]) == ("closed", reason)
+    assert body["period_starts_at"] is None and body["period_ends_at"] is None
+
+
+@pytest.mark.parametrize("value", ["approved", "PENDING", "", None])
+def test_another_charge_status_is_refused(value):
+    with pytest.raises(ValidationError):
+        charge(status=value)
+
+
+@pytest.mark.parametrize("value", ["expired", "REJECTED", ""])
+def test_another_closed_reason_is_refused(value):
+    with pytest.raises(ValidationError):
+        charge(status="closed", closed_reason=value, period_starts_at=None, period_ends_at=None)
+
+
+def test_the_amount_of_a_charge_is_published_as_text_with_two_decimals():
+    assert charge(amount=Decimal("1234567.8")).model_dump(mode="json")["amount"] == "1234567.80"
+
+
+def test_a_charge_date_without_a_zone_is_refused():
+    with pytest.raises(ValidationError):
+        charge(created_at=datetime(2026, 10, 19, 11, 58, 3))
+
+
+def test_a_charge_date_in_another_zone_is_published_in_utc():
+    local = datetime(2026, 10, 19, 5, 58, 3, tzinfo=timezone(timedelta(hours=-6)))
+
+    assert charge(created_at=local).model_dump(mode="json")["created_at"] == "2026-10-19T11:58:03Z"
+
+
+def test_the_id_of_a_charge_is_published_as_text():
+    assert charge().model_dump(mode="json")["id"] == str(CHARGE_ID)
+
+
+def page(**changes) -> SubscriptionChargesPageRead:
+    values = {"items": [charge()], "total": 1, "page": 1, "page_size": 10, "total_pages": 1, **changes}
+    return SubscriptionChargesPageRead(**values)
+
+
+def test_a_page_has_its_five_keys():
+    body = page().model_dump(mode="json")
+
+    assert set(body) == {"items", "total", "page", "page_size", "total_pages"}
+    assert len(body["items"]) == 1
+
+
+def test_an_empty_page_publishes_an_empty_list_never_null():
+    body = page(items=[], total=0, total_pages=0).model_dump(mode="json")
+
+    assert body["items"] == []
+    assert (body["total"], body["total_pages"]) == (0, 0)
+
+
+@pytest.mark.parametrize(("field", "value"), [("total", -1), ("page", 0), ("page_size", 0), ("total_pages", -1)])
+def test_the_pagination_numbers_cannot_be_negative_or_zero_where_it_does_not_apply(field, value):
+    with pytest.raises(ValidationError):
+        page(**{field: value})
+
+
+def test_the_published_schema_of_the_page_lists_its_five_fields_as_required():
+    schema = SubscriptionChargesPageRead.model_json_schema(mode="serialization")
+
+    assert set(schema["required"]) == {"items", "total", "page", "page_size", "total_pages"}

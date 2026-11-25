@@ -683,6 +683,108 @@ async def test_story_5_a_plan_that_changes_to_a_free_one_has_nothing_to_charge_a
     assert (back["state"], back["payment_due_at"]) == ("overdue", TRIAL_END)  # the fixed date, now past
 
 
+# ====================== spec 012: the history of charges ======================
+
+CHARGE_KEYS = {
+    "id", "status", "closed_reason", "amount", "currency", "billing_period",
+    "period_starts_at", "period_ends_at", "created_at",
+}
+
+
+async def test_an_organization_without_charges_has_an_empty_history(billing_api: BillingApi, plan_id: int):
+    response = await billing_api.list_charges()
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "total": 0, "page": 1, "page_size": 10, "total_pages": 0}
+    assert response.headers["cache-control"] == "no-store"
+
+
+async def test_a_pending_charge_appears_with_both_period_dates_null(billing_api: BillingApi, plan_id: int):
+    billing_api.clock.set(at("2026-12-10T09:00:00Z"))
+    await billing_api.start_payment()
+
+    body = (await billing_api.list_charges()).json()
+
+    assert body["total"] == 1
+    [charge] = body["items"]
+    assert set(charge) == CHARGE_KEYS
+    assert (charge["status"], charge["closed_reason"]) == ("pending", None)
+    assert charge["period_starts_at"] is None and charge["period_ends_at"] is None
+    assert (charge["amount"], charge["currency"], charge["billing_period"]) == ("499.00", "MXN", "monthly")
+
+
+async def test_an_applied_charge_shows_the_period_it_covered(billing_api: BillingApi, plan_id: int):
+    billing_api.clock.set(at("2026-12-01T10:00:00Z"))
+    await start_and_approve(billing_api, "2026-12-01T10:00:00Z")
+    await billing_api.get_period()  # the period read is what applies the charge
+
+    body = (await billing_api.list_charges()).json()
+
+    [charge] = body["items"]
+    assert charge["status"] == "applied"
+    assert (charge["period_starts_at"], charge["period_ends_at"]) == (TRIAL_END, "2027-01-04T15:30:00Z")
+
+
+@pytest.mark.parametrize(("status", "reason"), [("rejected", "rejected"), ("cancelled", "cancelled")])
+async def test_a_closed_charge_shows_its_reason_and_no_period_dates(
+    billing_api: BillingApi, plan_id: int, status, reason
+):
+    billing_api.clock.set(at("2026-12-10T09:00:00Z"))
+    await billing_api.start_payment()
+    payment_id = (await billing_api.payments())[-1]["id"]
+    await billing_api.set_payment_status(payment_id, status)
+    await billing_api.get_period()  # the period read is what reconciles and closes the charge
+
+    body = (await billing_api.list_charges()).json()
+
+    [charge] = body["items"]
+    assert (charge["status"], charge["closed_reason"]) == ("closed", reason)
+    assert charge["period_starts_at"] is None and charge["period_ends_at"] is None
+
+
+async def test_the_history_does_not_reconcile_an_approved_charge_by_itself(billing_api: BillingApi, plan_id: int):
+    billing_api.clock.set(at("2026-12-10T09:00:00Z"))
+    await start_and_approve(billing_api, "2026-12-10T09:30:00Z")
+
+    body = (await billing_api.list_charges()).json()
+
+    assert body["items"][0]["status"] == "pending"  # the period was never read: nothing applied it
+    calls = [c for c in await billing_api.payments_calls() if c["method"] == "GET"]
+    assert calls == []  # Pagos was never asked by this read
+
+
+async def test_the_history_is_newest_first_and_paginated(billing_api: BillingApi, plan_id: int):
+    billing_api.clock.set(at("2026-12-10T09:00:00Z"))
+    first = await billing_api.start_payment()  # charge 1 (rejected right after, below)
+    payment_id = (await billing_api.payments())[-1]["id"]
+    await billing_api.set_payment_status(payment_id, "rejected")
+    second = await billing_api.start_payment()  # a new attempt: charge 2, still pending
+
+    assert (first.status_code, second.status_code) == (201, 201)
+    first_page = (await billing_api.list_charges(params={"page": "1", "page_size": "1"})).json()
+    second_page = (await billing_api.list_charges(params={"page": "2", "page_size": "1"})).json()
+
+    assert (first_page["total"], first_page["total_pages"]) == (2, 2)
+    assert first_page["items"][0]["status"] == "pending"  # the newer attempt comes first
+    assert second_page["items"][0]["status"] == "closed"
+
+
+async def test_the_history_rejects_a_page_size_outside_its_range(billing_api: BillingApi, plan_id: int):
+    response = await billing_api.list_charges(params={"page_size": "0"})
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+
+
+async def test_only_the_owner_sees_the_history(billing_api: BillingApi, plan_id: int):
+    await billing_api.set_permissions([])
+
+    response = await billing_api.list_charges()
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "permission_denied"
+
+
 async def test_story_5_with_two_rates_only_the_free_one_has_nothing_to_charge(billing_api: BillingApi):
     plan = await billing_api.add_plan(monthly_price="0.00", annual_price="4990.00")
     await billing_api.register_organization(plan, billing_period="monthly", created_at=CREATED)

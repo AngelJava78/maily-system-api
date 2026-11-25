@@ -6,13 +6,20 @@ it knows no other API, Repository or ORM type (Principle I). Both operations are
 checks, with the clinics API, that the person is the owner of the organization.
 """
 
-from typing import Annotated
+import math
+from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path, Response
+from fastapi import APIRouter, Depends, Path, Query, Response
 
 from src.dependencies import get_subscription_period_service
-from src.dtos.subscription_period import PlanRead, SubscriptionPaymentRead, SubscriptionPeriodRead
+from src.dtos.subscription_period import (
+    PlanRead,
+    SubscriptionChargeRead,
+    SubscriptionChargesPageRead,
+    SubscriptionPaymentRead,
+    SubscriptionPeriodRead,
+)
 from src.routers.openapi_docs import AUTHORIZATION_UNAVAILABLE, error_response, protected
 from src.security import SUBSCRIPTION_PERIODS_READ, SUBSCRIPTION_PERIODS_WRITE, get_bearer_token
 from src.services.subscription_period_service import (
@@ -38,6 +45,11 @@ OrganizationIdPath = Annotated[
     ),
 ]
 ORGANIZATION_EXAMPLE_ID = "0f4e2b9a-6d1c-4f7e-9a3b-5c8d7e6f1a2b"
+DEFAULT_PAGE_SIZE = 10
+PageQuery = Annotated[int, Query(ge=1, description="Página (1 es la primera).")]
+PageSizeQuery = Annotated[
+    int, Query(ge=1, le=100, description="Cuántos cobros como máximo trae una página.")
+]
 
 
 def _to_period_read(view: PeriodView) -> SubscriptionPeriodRead:
@@ -60,6 +72,32 @@ def _to_payment_read(start: PaymentStart) -> SubscriptionPaymentRead:
         amount=start.amount,
         currency="MXN",
         billing_period=start.billing_period,  # type: ignore[arg-type]
+    )
+
+
+def _to_charge_read(charge: Any) -> SubscriptionChargeRead:
+    return SubscriptionChargeRead(
+        id=charge.id,
+        status=charge.status,  # type: ignore[arg-type]
+        closed_reason=charge.closed_reason,  # type: ignore[arg-type]
+        amount=charge.amount,
+        currency="MXN",
+        billing_period=charge.billing_period,  # type: ignore[arg-type]
+        period_starts_at=charge.period_starts_at,
+        period_ends_at=charge.period_ends_at,
+        created_at=charge.created_at,
+    )
+
+
+def _to_charges_page_read(
+    charges: list[Any], total: int, page: int, page_size: int
+) -> SubscriptionChargesPageRead:
+    return SubscriptionChargesPageRead(
+        items=[_to_charge_read(charge) for charge in charges],
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=math.ceil(total / page_size) if total else 0,
     )
 
 
@@ -122,6 +160,43 @@ PERIOD_RESPONSE = {
                         days_remaining=31,
                         payment_in_progress=None,
                     ),
+                },
+            }
+        }
+    },
+}
+
+CHARGE_EXAMPLE = {
+    "id": "6b1b1e2a-7c9d-4e2a-9c3e-1a2b3c4d5e70",
+    "status": "applied",
+    "closed_reason": None,
+    "amount": "499.00",
+    "currency": "MXN",
+    "billing_period": "monthly",
+    "period_starts_at": "2026-10-19T12:00:00Z",
+    "period_ends_at": "2026-11-19T12:00:00Z",
+    "created_at": "2026-10-19T11:58:03Z",
+}
+CHARGES_RESPONSE = {
+    "model": SubscriptionChargesPageRead,
+    "description": "Una página del historial de cobros de la organización, el más reciente primero.",
+    "headers": _CACHE_CONTROL_HEADER,
+    "content": {
+        "application/json": {
+            "examples": {
+                "con_cobros": {
+                    "summary": "Una página con un cobro aplicado",
+                    "value": {
+                        "items": [CHARGE_EXAMPLE],
+                        "total": 1,
+                        "page": 1,
+                        "page_size": 10,
+                        "total_pages": 1,
+                    },
+                },
+                "sin_cobros": {
+                    "summary": "Una organización sin ningún cobro",
+                    "value": {"items": [], "total": 0, "page": 1, "page_size": 10, "total_pages": 0},
                 },
             }
         }
@@ -274,6 +349,23 @@ organización— y devuelve la dirección del checkout a la que la aplicación l
 Permiso requerido: `subscription_periods:write`.
 """
 
+GET_CHARGES_DESCRIPTION = """\
+Devuelve el historial de cobros de la organización: pagados (`applied`), pendientes (`pending`) y
+cerrados sin pagarse (`closed`, con su `closed_reason`), del más reciente al más antiguo.
+
+- `period_starts_at`/`period_ends_at` solo están presentes cuando `status` es `applied` (el periodo que
+  ese pago cubrió); `closed_reason` solo cuando `status` es `closed`. En cualquier otro caso valen `null`.
+- No incluye el identificador del pago en Pagos ni los datos internos de la reconciliación: solo lo que
+  la persona necesita ver.
+- Esta lectura no sincroniza nada con Pagos (a diferencia de consultar el periodo): un cobro `pending`
+  puede seguir mostrándose así aunque ya esté decidido; la siguiente consulta del periodo lo resuelve.
+- La persona debe ser el Dueño de la organización (mismo control que consultar el periodo). La
+  paginación va en el cuerpo de la respuesta, no en un encabezado.
+- La respuesta no se guarda en caché (`Cache-Control: no-store`).
+
+Permiso requerido: `subscription_periods:read`.
+"""
+
 
 @router.get(
     "/{organization_id}",
@@ -334,3 +426,33 @@ async def create_subscription_payment(
     response.status_code = 201 if start.created else 200
     response.headers["Cache-Control"] = "no-store"
     return _to_payment_read(start)
+
+
+@router.get(
+    "/{organization_id}/charges",
+    response_model=SubscriptionChargesPageRead,
+    operation_id="list_subscription_charges",
+    summary="Consultar el historial de cobros de una organización (paginado)",
+    description=GET_CHARGES_DESCRIPTION,
+    **protected(
+        SUBSCRIPTION_PERIODS_READ,
+        responses={
+            200: CHARGES_RESPONSE,
+            404: ORGANIZATION_NOT_FOUND,
+            422: INVALID_ORGANIZATION_ID,
+            500: INTERNAL_ERROR,
+            503: UNAVAILABLE,
+        },
+    ),
+)
+async def list_subscription_charges(
+    organization_id: OrganizationIdPath,
+    response: Response,
+    service: ServiceDep,
+    token: BearerTokenDep,
+    page: PageQuery = 1,
+    page_size: PageSizeQuery = DEFAULT_PAGE_SIZE,
+) -> SubscriptionChargesPageRead:
+    charges, total = await service.list_charges(token, organization_id, page=page, page_size=page_size)
+    response.headers["Cache-Control"] = "no-store"
+    return _to_charges_page_read(charges, total, page, page_size)

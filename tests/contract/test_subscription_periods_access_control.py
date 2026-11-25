@@ -3,7 +3,8 @@
 Principle VIII: every request asks the users API for the exact permission of its operation, with the token
 as it came, before anything else; the person must be the owner of the organization, which only the
 clinics API can say; and every refusal leaves the tables as they were and never reaches the payments API.
-Both operations go through the same cases, so the two are protected in the same way.
+All three operations go through the same cases, so they are protected in the same way (the charges
+history, spec 012, reuses the read permission and the ownership check of consulting the period).
 """
 
 import uuid
@@ -23,9 +24,9 @@ from tests.helpers import CLINICS_BASE_URL, PAYMENTS_BASE_URL, USERS_BASE_URL, g
 CREATED = "2026-11-20T15:30:00Z"
 # Inside every error of the simulations: it must never reach the person.
 INTERNAL_MARKER = "SECRETO-INTERNO"
-OPERATIONS = ["consult", "pay"]
+OPERATIONS = ["consult", "pay", "charges"]
 READ, WRITE = PERMISSIONS
-PERMISSION_OF = {"consult": READ, "pay": WRITE}
+PERMISSION_OF = {"consult": READ, "pay": WRITE, "charges": READ}
 INVALID_ID = "no-es-un-uuid"
 INVALID_ID_ERRORS = [
     {"field": "organization_id", "message": "El identificador de la organización debe ser un UUID."}
@@ -45,6 +46,8 @@ async def call(api: BillingApi, operation: str, organization_id=ORG_ID, *, anony
     url = f"{PERIODS_URL}/{organization_id}"
     if operation == "consult":
         return await client.get(url, **kwargs)
+    if operation == "charges":
+        return await client.get(f"{url}/charges", **kwargs)
     return await client.post(f"{url}/payments", **kwargs)
 
 

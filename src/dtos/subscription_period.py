@@ -10,6 +10,7 @@ belongs to another API (FR-042).
 from datetime import UTC
 from decimal import Decimal
 from typing import Literal
+from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_serializer, field_validator
 
@@ -133,3 +134,87 @@ class SubscriptionPaymentRead(BaseModel):
     @field_serializer("amount")
     def _amount_with_two_decimals(self, value: Decimal) -> str:
         return _two_decimals(value)
+
+
+# --- spec 012: the history of charges ---
+
+ChargeStatusName = Literal["pending", "applied", "closed"]
+ClosedReasonName = Literal["rejected", "cancelled", "inconsistent", "refunded"]
+
+
+class SubscriptionChargeRead(BaseModel):
+    """One charge of the history of an organization (spec 012): never its `payment_id`, `attempt`
+    nor `resolved_at` (internal to the reconciliation, not something the person needs to see)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "description": (
+                "Un cobro del historial: pagado, pendiente o cerrado. `closed_reason` está presente "
+                "solo cuando `status` es `closed`; `period_starts_at` y `period_ends_at`, solo cuando "
+                "es `applied`; en cualquier otro caso valen `null`."
+            )
+        }
+    )
+
+    id: UUID = Field(description="Identificador del cobro.", examples=["6b1b1e2a-7c9d-4e2a-9c3e-1a2b3c4d5e70"])
+    status: ChargeStatusName = Field(
+        description="`pending` (sin resolver), `applied` (aplicado) o `closed` (cerrado sin aplicarse).",
+        examples=["applied"],
+    )
+    closed_reason: ClosedReasonName | None = Field(
+        description=(
+            "Por qué se cerró sin aplicarse: `rejected`, `cancelled`, `inconsistent` o `refunded`. "
+            "`null` salvo cuando `status` es `closed`."
+        ),
+        examples=[None],
+    )
+    amount: Decimal = Field(
+        description="Importe del cobro, en pesos mexicanos, como texto con dos decimales.",
+        examples=["499.00"],
+    )
+    currency: Literal["MXN"] = Field(description="Moneda del importe: siempre `MXN`.", examples=["MXN"])
+    billing_period: BillingPeriodName = Field(
+        description="Periodo de cobro con el que se generó: `monthly` o `annual`.", examples=["monthly"]
+    )
+    period_starts_at: AwareDatetime | None = Field(
+        description=(
+            "Inicio del periodo que cubrió el pago, en ISO 8601 con zona horaria UTC. `null` salvo "
+            "cuando `status` es `applied`."
+        ),
+        examples=["2026-10-19T12:00:00Z"],
+    )
+    period_ends_at: AwareDatetime | None = Field(
+        description=(
+            "Fin del periodo que cubrió el pago, en ISO 8601 con zona horaria UTC. `null` salvo "
+            "cuando `status` es `applied`."
+        ),
+        examples=["2026-11-19T12:00:00Z"],
+    )
+    created_at: AwareDatetime = Field(
+        description="Cuándo se creó el cobro, en ISO 8601 con zona horaria UTC.",
+        examples=["2026-10-19T11:58:03Z"],
+    )
+
+    @field_validator("period_starts_at", "period_ends_at", "created_at")
+    @classmethod
+    def _in_utc(cls, value: AwareDatetime | None) -> AwareDatetime | None:
+        return None if value is None else value.astimezone(UTC)
+
+    @field_serializer("amount")
+    def _amount_with_two_decimals(self, value: Decimal) -> str:
+        return _two_decimals(value)
+
+
+class SubscriptionChargesPageRead(BaseModel):
+    """A page of the history of charges (spec 012): the total goes in the body, not a header, because
+    the frontend that consumes this operation cannot read response headers (pedido, research R2)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={"description": "Una página del historial de cobros de la organización."}
+    )
+
+    items: list[SubscriptionChargeRead] = Field(description="Los cobros de esta página, del más reciente al más antiguo.")
+    total: int = Field(description="Cuántos cobros tiene la organización en total.", examples=[1], ge=0)
+    page: int = Field(description="Número de página que se pidió (1 es la primera).", examples=[1], ge=1)
+    page_size: int = Field(description="Cuántos cobros hay como máximo en una página.", examples=[10], ge=1)
+    total_pages: int = Field(description="Cuántas páginas hay en total.", examples=[1], ge=0)

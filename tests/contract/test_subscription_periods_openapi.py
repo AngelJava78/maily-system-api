@@ -12,6 +12,20 @@ from src.messages import ErrorCode
 
 CONSULT_PATH = "/api/v1/subscription-periods/{organization_id}"
 PAY_PATH = "/api/v1/subscription-periods/{organization_id}/payments"
+CHARGES_PATH = "/api/v1/subscription-periods/{organization_id}/charges"
+CHARGE_FIELDS = {
+    "id",
+    "status",
+    "closed_reason",
+    "amount",
+    "currency",
+    "billing_period",
+    "period_starts_at",
+    "period_ends_at",
+    "created_at",
+}
+CHARGE_NULLABLE_FIELDS = {"closed_reason", "period_starts_at", "period_ends_at"}
+PAGE_FIELDS = {"items", "total", "page", "page_size", "total_pages"}
 PERIOD_FIELDS = {
     "state",
     "trial_ends_at",
@@ -48,6 +62,11 @@ def consult(schema: dict) -> dict:
 @pytest.fixture(scope="module")
 def pay(schema: dict) -> dict:
     return schema["paths"][PAY_PATH]["post"]
+
+
+@pytest.fixture(scope="module")
+def charges(schema: dict) -> dict:
+    return schema["paths"][CHARGES_PATH]["get"]
 
 
 def ref_of(response: dict) -> str:
@@ -217,6 +236,71 @@ def test_the_error_codes_of_the_schema_include_the_five_new_ones(schema: dict):
 
 
 # --- the whole API ---
+
+
+# --- spec 012: the history of charges ---
+
+
+def test_the_charges_operation_is_published_with_its_identifier_and_permission(schema: dict, charges: dict):
+    assert schema["paths"][CHARGES_PATH]["get"]["operationId"] == "list_subscription_charges"
+    assert charges["tags"] == ["subscription-periods"]
+    assert charges["security"] == [{"BearerAuth": []}]
+    assert charges["x-required-permission"] == "subscription_periods:read"
+    assert "Permiso requerido: `subscription_periods:read`" in charges["description"]
+
+
+def test_the_charges_operation_takes_no_body_and_is_paginated_by_query(charges: dict):
+    assert "requestBody" not in charges
+    by_name = {p["name"]: p for p in charges["parameters"]}
+    assert set(by_name) == {"organization_id", "page", "page_size"}
+    assert by_name["organization_id"]["in"] == "path"
+    assert (by_name["page"]["in"], by_name["page"]["schema"]["minimum"]) == ("query", 1)
+    assert (by_name["page_size"]["in"], by_name["page_size"]["schema"]["minimum"]) == ("query", 1)
+    assert by_name["page_size"]["schema"]["maximum"] == 100
+
+
+def test_the_charges_operation_documents_its_answers(charges: dict):
+    assert set(charges["responses"]) == {"200", "401", "403", "404", "422", "500", "503"}
+    assert ref_of(charges["responses"]["200"]) == "SubscriptionChargesPageRead"
+
+
+def test_the_charges_answer_is_not_cached(charges: dict):
+    assert "Cache-Control" in charges["responses"]["200"]["headers"]
+
+
+def test_the_charge_schema_publishes_its_nine_fields_with_the_right_ones_nullable(schema: dict):
+    charge_schema = schema["components"]["schemas"]["SubscriptionChargeRead"]
+
+    assert set(charge_schema["required"]) == set(charge_schema["properties"]) == CHARGE_FIELDS
+    properties = charge_schema["properties"]
+    assert properties["status"]["enum"] == ["pending", "applied", "closed"]
+    assert properties["closed_reason"]["anyOf"][0]["enum"] == ["rejected", "cancelled", "inconsistent", "refunded"]
+    assert properties["amount"]["type"] == "string"
+    for name in CHARGE_NULLABLE_FIELDS:
+        assert {"type": "null"} in properties[name]["anyOf"], name
+    for name in CHARGE_FIELDS - CHARGE_NULLABLE_FIELDS:
+        assert "anyOf" not in properties[name], name
+
+
+def test_the_charges_page_schema_publishes_its_five_fields(schema: dict):
+    page_schema = schema["components"]["schemas"]["SubscriptionChargesPageRead"]
+
+    assert set(page_schema["required"]) == set(page_schema["properties"]) == PAGE_FIELDS
+    assert page_schema["properties"]["items"]["items"]["$ref"].endswith("SubscriptionChargeRead")
+
+
+def test_nothing_in_the_charge_schema_exposes_the_payment_identifier_or_the_attempt(schema: dict):
+    for name in ("SubscriptionChargeRead", "SubscriptionChargesPageRead"):
+        properties = set(schema["components"]["schemas"][name]["properties"])
+        assert not properties & {"payment_id", "attempt", "resolved_at", "organization_id", "token"}, name
+
+
+def test_every_field_of_the_charge_schemas_is_described_in_spanish(schema: dict):
+    for name in ("SubscriptionChargeRead", "SubscriptionChargesPageRead"):
+        schema_ = schema["components"]["schemas"][name]
+        assert schema_["description"], name
+        for field, definition in schema_["properties"].items():
+            assert definition.get("description"), f"{name}.{field}"
 
 
 def test_every_operation_declares_its_security_and_permission_except_the_public_ones(schema: dict):
