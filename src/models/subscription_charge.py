@@ -48,7 +48,7 @@ class SubscriptionCharge(Base):
 
     It only keeps what this service itself requested (amount, currency, period) and its own result:
     the status of the payment and its checkout address belong to the payments API and are asked for on
-    every use (Principle IX). It must match migration 0008.
+    every use (Principle IX). It must match migration 0008, widened by migration 0010 (the `plan` column).
     """
 
     __tablename__ = "subscription_charges"
@@ -115,6 +115,10 @@ class SubscriptionCharge(Base):
     currency: Mapped[str] = mapped_column(String(3))
     # The length of the period that it will cover: 'monthly' or 'annual'.
     billing_period: Mapped[str] = mapped_column(String(10))
+    # Spec 013: the name of the plan the organization was on when this charge was created, snapshotted
+    # (never a live join to the catalog, same reasoning as `amount`/`billing_period`). `NULL` for every
+    # charge created before migration 0010 added this column: it is never backfilled.
+    plan: Mapped[str | None] = mapped_column(String(100))
     # The payment date that this charge settles: the one that was current when it was started.
     settles_due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     # 1 + the charges that already had the same conditions (research R6).

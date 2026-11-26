@@ -20,11 +20,12 @@ CHARGE_FIELDS = {
     "amount",
     "currency",
     "billing_period",
+    "plan",
     "period_starts_at",
     "period_ends_at",
     "created_at",
 }
-CHARGE_NULLABLE_FIELDS = {"closed_reason", "period_starts_at", "period_ends_at"}
+CHARGE_NULLABLE_FIELDS = {"closed_reason", "plan", "period_starts_at", "period_ends_at"}
 PAGE_FIELDS = {"items", "total", "page", "page_size", "total_pages"}
 PERIOD_FIELDS = {
     "state",
@@ -252,11 +253,13 @@ def test_the_charges_operation_is_published_with_its_identifier_and_permission(s
 def test_the_charges_operation_takes_no_body_and_is_paginated_by_query(charges: dict):
     assert "requestBody" not in charges
     by_name = {p["name"]: p for p in charges["parameters"]}
-    assert set(by_name) == {"organization_id", "page", "page_size"}
+    assert set(by_name) == {"organization_id", "page", "page_size", "status"}
     assert by_name["organization_id"]["in"] == "path"
     assert (by_name["page"]["in"], by_name["page"]["schema"]["minimum"]) == ("query", 1)
     assert (by_name["page_size"]["in"], by_name["page_size"]["schema"]["minimum"]) == ("query", 1)
     assert by_name["page_size"]["schema"]["maximum"] == 100
+    assert by_name["status"]["in"] == "query"
+    assert by_name["status"]["required"] is False
 
 
 def test_the_charges_operation_documents_its_answers(charges: dict):
@@ -268,7 +271,7 @@ def test_the_charges_answer_is_not_cached(charges: dict):
     assert "Cache-Control" in charges["responses"]["200"]["headers"]
 
 
-def test_the_charge_schema_publishes_its_nine_fields_with_the_right_ones_nullable(schema: dict):
+def test_the_charge_schema_publishes_its_ten_fields_with_the_right_ones_nullable(schema: dict):
     charge_schema = schema["components"]["schemas"]["SubscriptionChargeRead"]
 
     assert set(charge_schema["required"]) == set(charge_schema["properties"]) == CHARGE_FIELDS

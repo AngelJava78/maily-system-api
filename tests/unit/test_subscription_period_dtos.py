@@ -220,6 +220,7 @@ CHARGE_KEYS = {
     "amount",
     "currency",
     "billing_period",
+    "plan",
     "period_starts_at",
     "period_ends_at",
     "created_at",
@@ -238,6 +239,7 @@ def charge(**changes) -> SubscriptionChargeRead:
         "amount": Decimal("499.00"),
         "currency": "MXN",
         "billing_period": "monthly",
+        "plan": "Titán",
         "period_starts_at": PERIOD_START,
         "period_ends_at": PERIOD_END,
         "created_at": CREATED_AT,
@@ -246,7 +248,7 @@ def charge(**changes) -> SubscriptionChargeRead:
     return SubscriptionChargeRead(**values)
 
 
-def test_an_applied_charge_has_its_nine_keys_and_both_period_dates():
+def test_an_applied_charge_has_its_ten_keys_and_both_period_dates():
     body = charge().model_dump(mode="json")
 
     assert set(body) == CHARGE_KEYS
@@ -304,6 +306,10 @@ def test_a_charge_date_in_another_zone_is_published_in_utc():
 
 def test_the_id_of_a_charge_is_published_as_text():
     assert charge().model_dump(mode="json")["id"] == str(CHARGE_ID)
+
+
+def test_the_plan_of_a_charge_created_before_this_field_existed_is_null():
+    assert charge(plan=None).model_dump(mode="json")["plan"] is None
 
 
 def page(**changes) -> SubscriptionChargesPageRead:

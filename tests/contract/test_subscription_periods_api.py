@@ -686,7 +686,7 @@ async def test_story_5_a_plan_that_changes_to_a_free_one_has_nothing_to_charge_a
 # ====================== spec 012: the history of charges ======================
 
 CHARGE_KEYS = {
-    "id", "status", "closed_reason", "amount", "currency", "billing_period",
+    "id", "status", "closed_reason", "amount", "currency", "billing_period", "plan",
     "period_starts_at", "period_ends_at", "created_at",
 }
 
@@ -711,6 +711,7 @@ async def test_a_pending_charge_appears_with_both_period_dates_null(billing_api:
     assert (charge["status"], charge["closed_reason"]) == ("pending", None)
     assert charge["period_starts_at"] is None and charge["period_ends_at"] is None
     assert (charge["amount"], charge["currency"], charge["billing_period"]) == ("499.00", "MXN", "monthly")
+    assert charge["plan"] == "Plan Individual"
 
 
 async def test_an_applied_charge_shows_the_period_it_covered(billing_api: BillingApi, plan_id: int):
@@ -767,6 +768,30 @@ async def test_the_history_is_newest_first_and_paginated(billing_api: BillingApi
     assert (first_page["total"], first_page["total_pages"]) == (2, 2)
     assert first_page["items"][0]["status"] == "pending"  # the newer attempt comes first
     assert second_page["items"][0]["status"] == "closed"
+
+
+async def test_the_history_can_be_filtered_by_status(billing_api: BillingApi, plan_id: int):
+    billing_api.clock.set(at("2026-12-10T09:00:00Z"))
+    await billing_api.start_payment()  # charge 1, rejected right after, below
+    payment_id = (await billing_api.payments())[-1]["id"]
+    await billing_api.set_payment_status(payment_id, "rejected")
+    await billing_api.start_payment()  # charge 2: a new attempt, stays pending
+    await billing_api.get_period()  # reconciles: charge 1 closes as rejected
+
+    pending = (await billing_api.list_charges(params={"status": "pending"})).json()
+    closed = (await billing_api.list_charges(params={"status": "closed"})).json()
+    applied = (await billing_api.list_charges(params={"status": "applied"})).json()
+
+    assert (pending["total"], pending["items"][0]["status"]) == (1, "pending")
+    assert (closed["total"], closed["items"][0]["status"]) == (1, "closed")
+    assert applied == {"items": [], "total": 0, "page": 1, "page_size": 10, "total_pages": 0}
+
+
+async def test_the_history_rejects_an_unknown_status(billing_api: BillingApi, plan_id: int):
+    response = await billing_api.list_charges(params={"status": "approved"})
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
 
 
 async def test_the_history_rejects_a_page_size_outside_its_range(billing_api: BillingApi, plan_id: int):
