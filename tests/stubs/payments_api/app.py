@@ -93,6 +93,9 @@ class StatusIn(BaseModel):
     currency: str | None = None
     # ISO 8601 with a zone; by default «now». Lets a test say when the payment was approved.
     updated_at: str | None = None
+    # Spec 014: Mercado Pago's own vocabulary, forwarded verbatim (never translated by this stub).
+    payment_method_id: str | None = None
+    payment_type_id: str | None = None
 
 
 class ForeignPaymentIn(BaseModel):
@@ -179,6 +182,8 @@ def create_stub_app() -> FastAPI:
             "metadata": payment.get("metadata"),
             "refunded_amount": 0,
             "checkout_url": checkout,
+            "payment_method_id": payment.get("payment_method_id"),
+            "payment_type_id": payment.get("payment_type_id"),
             "idempotency_key": payment["idempotency_key"],
             "created_at": payment["created_at"],
             "updated_at": payment["updated_at"],
@@ -327,6 +332,10 @@ def create_stub_app() -> FastAPI:
             payment["amount"] = body.amount
         if body.currency is not None:
             payment["currency"] = body.currency
+        if body.payment_method_id is not None:
+            payment["payment_method_id"] = body.payment_method_id
+        if body.payment_type_id is not None:
+            payment["payment_type_id"] = body.payment_type_id
         payment["updated_at"] = body.updated_at or _now()
         return read(payment)
 

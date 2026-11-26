@@ -140,6 +140,7 @@ class SubscriptionPaymentRead(BaseModel):
 
 ChargeStatusName = Literal["pending", "applied", "closed"]
 ClosedReasonName = Literal["rejected", "cancelled", "inconsistent", "refunded"]
+ChargePaymentMethodName = Literal["card", "oxxo", "transfer"]
 
 
 class SubscriptionChargeRead(BaseModel):
@@ -183,6 +184,21 @@ class SubscriptionChargeRead(BaseModel):
             "de que este campo existiera."
         ),
         examples=["Titán"],
+    )
+    concept: str | None = Field(
+        description=(
+            "Concepto amigable del cobro, como una foto (spec 014): el mismo texto que se le manda a "
+            "Pagos. `null` en los cobros creados antes de que este campo existiera."
+        ),
+        examples=["Suscripción Titán — mensual"],
+    )
+    payment_method: ChargePaymentMethodName | None = Field(
+        description=(
+            "Con qué se pagó: `card` (tarjeta), `oxxo` (efectivo) o `transfer` (transferencia o "
+            "depósito bancario, SPEI). `null` mientras el cobro sigue `pending`, si Pagos no lo "
+            "reportó, o en los cobros resueltos antes de que este campo existiera (spec 014)."
+        ),
+        examples=["card"],
     )
     period_starts_at: AwareDatetime | None = Field(
         description=(

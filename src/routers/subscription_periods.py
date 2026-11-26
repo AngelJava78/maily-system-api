@@ -89,6 +89,8 @@ def _to_charge_read(charge: Any) -> SubscriptionChargeRead:
         currency="MXN",
         billing_period=charge.billing_period,  # type: ignore[arg-type]
         plan=charge.plan,
+        concept=charge.concept,
+        payment_method=charge.payment_method,  # type: ignore[arg-type]
         period_starts_at=charge.period_starts_at,
         period_ends_at=charge.period_ends_at,
         created_at=charge.created_at,
@@ -180,6 +182,8 @@ CHARGE_EXAMPLE = {
     "currency": "MXN",
     "billing_period": "monthly",
     "plan": "Plan Individual",
+    "concept": "Suscripción Plan Individual — mensual",
+    "payment_method": "card",
     "period_starts_at": "2026-10-19T12:00:00Z",
     "period_ends_at": "2026-11-19T12:00:00Z",
     "created_at": "2026-10-19T11:58:03Z",
@@ -366,6 +370,11 @@ cerrados sin pagarse (`closed`, con su `closed_reason`), del más reciente al m�
   posterior de nombre del plan no lo reescribe. `null` en los cobros creados antes de este campo.
 - `status` (parámetro opcional, spec 013) filtra el listado del lado del servidor; `total`/`total_pages`
   reflejan el total ya filtrado, no el de toda la organización.
+- `concept` (spec 014) es el concepto amigable del cobro, como una foto; `null` en los cobros creados
+  antes de este campo.
+- `payment_method` (spec 014) es `card`, `oxxo` o `transfer`, solo cuando el cobro se resolvió y Pagos
+  reportó un método reconocido; `null` mientras sigue `pending`, si Pagos no lo reportó, o en los cobros
+  resueltos antes de este campo.
 - No incluye el identificador del pago en Pagos ni los datos internos de la reconciliación: solo lo que
   la persona necesita ver.
 - Esta lectura no sincroniza nada con Pagos (a diferencia de consultar el periodo): un cobro `pending`

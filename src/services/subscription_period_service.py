@@ -41,6 +41,17 @@ MAX_APPLY_ATTEMPTS = 3
 
 _PERIOD_LABELS = {"monthly": "mensual", "annual": "anual"}
 
+# Spec 014: this service's own three payment-method categories, mapped from whatever Pagos reports as
+# `payment_type_id` (Mercado Pago's own vocabulary, never published as-is). A type this map does not
+# recognise leaves `payment_method` as `None` rather than guessing.
+_PAYMENT_METHOD_BY_TYPE = {
+    "credit_card": "card",
+    "debit_card": "card",
+    "prepaid_card": "card",
+    "ticket": "oxxo",
+    "bank_transfer": "transfer",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class PeriodView:
@@ -201,6 +212,7 @@ class SubscriptionPeriodService:
                 settles_due_at=due,
                 attempt=attempt,
                 plan=context.plan.name,
+                concept=description,
             )
         except UniqueViolationError:
             # A simultaneous request registered a charge for this period first. Normally it is the very
@@ -338,13 +350,13 @@ class SubscriptionPeriodService:
                     charge.id,
                     charge.organization_id,
                 )
-                await self._close(charge, ClosedReason.INCONSISTENT)
+                await self._close(charge, ClosedReason.INCONSISTENT, payment)
         elif status == "rejected":
-            await self._close(charge, ClosedReason.REJECTED)
+            await self._close(charge, ClosedReason.REJECTED, payment)
         elif status == "cancelled":
-            await self._close(charge, ClosedReason.CANCELLED)
+            await self._close(charge, ClosedReason.CANCELLED, payment)
         else:  # partially_refunded, refunded: Pagos no longer reports it as approved (decision D3)
-            await self._close(charge, ClosedReason.REFUNDED)
+            await self._close(charge, ClosedReason.REFUNDED, payment)
         return False
 
     @staticmethod
@@ -358,8 +370,19 @@ class SubscriptionPeriodService:
             and payment.resource_id == str(charge.organization_id)
         )
 
-    async def _close(self, charge: SubscriptionCharge, reason: ClosedReason) -> None:
-        await self._periods.close_charge(charge.id, reason, self._clock.now())
+    async def _close(
+        self, charge: SubscriptionCharge, reason: ClosedReason, payment: PaymentRecord
+    ) -> None:
+        await self._periods.close_charge(
+            charge.id, reason, self._clock.now(), payment_method=self._payment_method_of(payment)
+        )
+
+    @staticmethod
+    def _payment_method_of(payment: PaymentRecord) -> str | None:
+        """This service's own category for `payment.payment_type_id` (spec 014), or `None` when Pagos
+        did not report it or it does not map to a recognised category."""
+        type_id = payment.payment_type_id
+        return None if type_id is None else _PAYMENT_METHOD_BY_TYPE.get(type_id)
 
     async def _apply(self, charge: SubscriptionCharge, payment: PaymentRecord) -> bool:
         """Move the payment date by the period that the approved payment covers, exactly once (FR-032).
@@ -384,6 +407,7 @@ class SubscriptionPeriodService:
                 period_starts_at=start,
                 period_ends_at=end,
                 resolved_at=self._clock.now(),
+                payment_method=self._payment_method_of(payment),
             )
             if outcome is not ApplyOutcome.STALE:
                 return True

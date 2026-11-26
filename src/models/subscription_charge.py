@@ -43,12 +43,22 @@ class ClosedReason(StrEnum):
     REFUNDED = "refunded"
 
 
+class PaymentMethod(StrEnum):
+    """How a resolved charge was paid (spec 014): this service's own three categories, mapped from
+    whatever Mercado Pago reports (via Pagos), never Mercado Pago's own vocabulary."""
+
+    CARD = "card"
+    OXXO = "oxxo"
+    TRANSFER = "transfer"
+
+
 class SubscriptionCharge(Base):
     """A payment that this service asked the payments API to create (spec 010, FR-021).
 
     It only keeps what this service itself requested (amount, currency, period) and its own result:
     the status of the payment and its checkout address belong to the payments API and are asked for on
-    every use (Principle IX). It must match migration 0008, widened by migration 0010 (the `plan` column).
+    every use (Principle IX). It must match migration 0008, widened by migration 0010 (the `plan`
+    column) and migration 0011 (`concept`, `payment_method`).
     """
 
     __tablename__ = "subscription_charges"
@@ -73,6 +83,10 @@ class SubscriptionCharge(Base):
             "closed_reason IS NULL OR closed_reason IN "
             "('rejected', 'cancelled', 'inconsistent', 'refunded')",
             name="closed_reason_check",
+        ),
+        CheckConstraint(
+            "payment_method IS NULL OR payment_method IN ('card', 'oxxo', 'transfer')",
+            name="payment_method_check",
         ),
         # The status decides which columns carry a value.
         CheckConstraint(
@@ -119,6 +133,13 @@ class SubscriptionCharge(Base):
     # (never a live join to the catalog, same reasoning as `amount`/`billing_period`). `NULL` for every
     # charge created before migration 0010 added this column: it is never backfilled.
     plan: Mapped[str | None] = mapped_column(String(100))
+    # Spec 014: a human-friendly one-line summary of what the charge was for, snapshotted at creation
+    # (the same text sent to Pagos as its own `description`). `NULL` for every charge created before
+    # migration 0011 added this column.
+    concept: Mapped[str | None] = mapped_column(String(500))
+    # Spec 014: how a resolved charge was paid, set only when it resolves (applied or closed) from what
+    # Pagos reports; `NULL` while still pending, and for every charge resolved before this column existed.
+    payment_method: Mapped[str | None] = mapped_column(String(10))
     # The payment date that this charge settles: the one that was current when it was started.
     settles_due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     # 1 + the charges that already had the same conditions (research R6).

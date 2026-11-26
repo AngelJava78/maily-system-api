@@ -1603,10 +1603,10 @@
                 "status"
               ]
             },
-            "description": "Cambia el cobro a aprobado en la simulación de Pagos, como lo haría Mercado Pago.",
+            "description": "Cambia el cobro a aprobado en la simulación de Pagos, con el método que reportó (spec 014), como lo haría Mercado Pago.",
             "body": {
               "mode": "raw",
-              "raw": "{\"status\": \"approved\"}"
+              "raw": "{\"status\": \"approved\", \"payment_type_id\": \"credit_card\"}"
             },
             "auth": {
               "type": "noauth"
@@ -1761,6 +1761,8 @@
                   "pm.test(\"importe, moneda y periodo de cobro\", function () { pm.expect(charge.amount).to.eql(\"499.00\"); pm.expect(charge.currency).to.eql(\"MXN\"); pm.expect(charge.billing_period).to.eql(\"monthly\"); });",
                   "pm.test(\"el periodo que cubrió termina en la fecha de pago vigente\", function () { pm.expect(charge.period_ends_at).to.eql(pm.collectionVariables.get(\"paymentDueAt\")); pm.expect(Date.parse(charge.period_starts_at)).to.be.below(Date.parse(charge.period_ends_at)); });",
                   "pm.test(\"trae el plan vigente al momento del cobro (spec 013)\", function () { pm.expect(charge.plan).to.eql(pm.collectionVariables.get(\"trialPlanName\")); });",
+                  "pm.test(\"trae el concepto amigable (spec 014)\", function () { pm.expect(charge.concept).to.be.a(\"string\").and.not.empty; });",
+                  "pm.test(\"trae la forma de pago que reportó Pagos (spec 014)\", function () { pm.expect(charge.payment_method).to.eql(\"card\"); });",
                   "pm.test(\"nunca el identificador del pago ni el intento\", function () { pm.expect(charge).to.not.have.property(\"payment_id\"); pm.expect(charge).to.not.have.property(\"attempt\"); });",
                   "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });"
                 ]

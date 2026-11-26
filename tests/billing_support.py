@@ -95,6 +95,8 @@ def make_payment(
     resource_type: str = RESOURCE_TYPE,
     resource_id: str | None = None,
     updated_at: datetime | str = "2026-12-01T10:00:00Z",
+    payment_method_id: str | None = None,
+    payment_type_id: str | None = None,
 ) -> PaymentRecord:
     return PaymentRecord(
         id=payment_id,
@@ -105,6 +107,8 @@ def make_payment(
         resource_id=resource_id if resource_id is not None else str(ORG_ID),
         checkout_url=f"https://checkout.example.test/pay/{payment_id}" if status == "pending" else None,
         updated_at=at(updated_at) if isinstance(updated_at, str) else updated_at,
+        payment_method_id=payment_method_id,
+        payment_type_id=payment_type_id,
     )
 
 
@@ -228,6 +232,8 @@ class FakePaymentsApi:
         currency: str | None = None,
         resource_id: str | None = None,
         updated_at: datetime | str | None = None,
+        payment_method_id: str | None = None,
+        payment_type_id: str | None = None,
     ) -> None:
         payment = self.payments[payment_id]
         moment = at(updated_at) if isinstance(updated_at, str) else updated_at
@@ -239,6 +245,8 @@ class FakePaymentsApi:
             resource_type=payment.resource_type,
             resource_id=payment.resource_id if resource_id is None else resource_id,
             updated_at=moment or payment.updated_at,
+            payment_method_id=payment_method_id if payment_method_id is not None else payment.payment_method_id,
+            payment_type_id=payment_type_id if payment_type_id is not None else payment.payment_type_id,
         )
 
     def add_foreign_payment(self, *, status: str = "approved", amount: int = 49900) -> uuid.UUID:
@@ -355,6 +363,7 @@ class FakePeriodRepository:
         attempt: int,
         currency: str = "MXN",
         plan: str | None = None,
+        concept: str | None = None,
     ) -> SubscriptionCharge:
         self.calls["add_charge"] += 1
         if organization_id not in self.periods:
@@ -384,6 +393,8 @@ class FakePeriodRepository:
             settles_due_at=settles_due_at,
             attempt=attempt,
             plan=plan,
+            concept=concept,
+            payment_method=None,
             status=ChargeStatus.PENDING,
             closed_reason=None,
             period_starts_at=None,
@@ -395,7 +406,14 @@ class FakePeriodRepository:
         self.charges[charge.id] = charge
         return charge
 
-    async def close_charge(self, charge_id: uuid.UUID, reason: str, resolved_at: datetime) -> bool:
+    async def close_charge(
+        self,
+        charge_id: uuid.UUID,
+        reason: str,
+        resolved_at: datetime,
+        *,
+        payment_method: str | None = None,
+    ) -> bool:
         self.calls["close_charge"] += 1
         charge = self.charges.get(charge_id)
         if charge is None or charge.status != ChargeStatus.PENDING:
@@ -403,6 +421,7 @@ class FakePeriodRepository:
         charge.status = ChargeStatus.CLOSED
         charge.closed_reason = str(reason)
         charge.resolved_at = resolved_at
+        charge.payment_method = payment_method
         return True
 
     async def apply_charge(
@@ -414,6 +433,7 @@ class FakePeriodRepository:
         period_starts_at: datetime,
         period_ends_at: datetime,
         resolved_at: datetime,
+        payment_method: str | None = None,
     ) -> ApplyOutcome:
         self.calls["apply_charge"] += 1
         if self.before_apply:
@@ -428,6 +448,7 @@ class FakePeriodRepository:
         charge.period_starts_at = period_starts_at
         charge.period_ends_at = period_ends_at
         charge.resolved_at = resolved_at
+        charge.payment_method = payment_method
         period.paid_until = period_ends_at
         return ApplyOutcome.APPLIED
 
@@ -580,6 +601,8 @@ class BillingApi:
         amount: int | None = None,
         currency: str | None = None,
         updated_at: datetime | str | None = None,
+        payment_method_id: str | None = None,
+        payment_type_id: str | None = None,
     ) -> None:
         body: dict[str, Any] = {"status": status}
         if amount is not None:
@@ -588,6 +611,10 @@ class BillingApi:
             body["currency"] = currency
         if updated_at is not None:
             body["updated_at"] = updated_at if isinstance(updated_at, str) else iso(updated_at)
+        if payment_method_id is not None:
+            body["payment_method_id"] = payment_method_id
+        if payment_type_id is not None:
+            body["payment_type_id"] = payment_type_id
         response = await self.payments_stub.post(f"/__test__/payments/{payment_id}/status", json=body)
         assert response.status_code == 200, response.text
 

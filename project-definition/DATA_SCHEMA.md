@@ -60,6 +60,7 @@ PostgreSQL les pone el automático (`<tabla>_pkey`, `<tabla>_<columna>_key`, `<t
 | `subscription_charges_pending_terms_key` | Índice único parcial (`WHERE status = 'pending'`): a lo sumo un cobro sin resolver por periodo e importe, cualquiera que sea el intento -- [spec 010-subscription-periods] |
 | `subscription_charges_amount_check`, `subscription_charges_currency_check`, `subscription_charges_billing_period_check`, `subscription_charges_attempt_check`, `subscription_charges_status_check`, `subscription_charges_closed_reason_check` | El importe es mayor que 0; la moneda es `MXN`; el periodo es `monthly` o `annual`; el intento es 1 o más; el estado es `pending`, `applied` o `closed`; el motivo de cierre es `rejected`, `cancelled`, `inconsistent` o `refunded` -- [spec 010-subscription-periods] |
 | `subscription_charges_resolution_check` | El estado fija qué columnas llevan valor: `pending` no tiene motivo, periodo cubierto ni fecha de resolución; `applied` tiene periodo cubierto y fecha; `closed` tiene motivo y fecha pero no periodo -- [spec 010-subscription-periods] |
+| `payment_method_check` | `payment_method` es `null`, `card`, `oxxo` o `transfer` -- [spec 014-charges-payment-method-concept] |
 
 Los índices con nombre explícito son `subscriptions_name_not_deleted_key` (el servicio lo usa para
 traducir un nombre repetido a un 409) y `monitored_components_code_not_deleted_key` (traduce un código de
@@ -339,6 +340,8 @@ CREATE TABLE subscription_charges (
 	currency varchar(3) NOT NULL,
 	billing_period varchar(10) NOT NULL, -- [spec 010 FR-029] duración del periodo que cubrirá
 	plan varchar(100), -- [spec 013-charges-plan-and-status-filter] foto del nombre del plan al crear el cobro; null en los anteriores a esta columna
+	concept varchar(500), -- [spec 014-charges-payment-method-concept] foto del concepto amigable (el mismo texto que se le manda a Pagos); null en los anteriores a esta columna
+	payment_method varchar(10), -- [spec 014-charges-payment-method-concept] `card`/`oxxo`/`transfer`; solo cuando el cobro se resuelve y Pagos reportó un método reconocido
 	settles_due_at timestamptz NOT NULL, -- [spec 010 FR-022] la fecha de pago que salda
 	attempt integer NOT NULL, -- [spec 010 FR-022, FR-023] 1 + intentos previos ya terminados con las mismas condiciones
 	status varchar(10) NOT NULL DEFAULT 'pending',

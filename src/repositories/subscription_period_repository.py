@@ -195,6 +195,7 @@ class SubscriptionPeriodRepository:
         attempt: int,
         currency: str = "MXN",
         plan: str | None = None,
+        concept: str | None = None,
     ) -> SubscriptionCharge:
         """Register a payment that the payments API created, as a pending charge, and commit.
 
@@ -204,6 +205,8 @@ class SubscriptionPeriodRepository:
 
         `plan` (spec 013) is a snapshot of the plan's name at this instant, stored as-is; `None` only
         when the caller does not know it (there is no such case in production, but tests may omit it).
+        `concept` (spec 014) is the same snapshot idea, for the human-friendly text already sent to
+        Pagos as its `description`.
         """
         statement = (
             insert(SubscriptionCharge)
@@ -216,6 +219,7 @@ class SubscriptionPeriodRepository:
                 settles_due_at=settles_due_at,
                 attempt=attempt,
                 plan=plan,
+                concept=concept,
             )
             .returning(SubscriptionCharge.id)
         )
@@ -229,11 +233,21 @@ class SubscriptionPeriodRepository:
         )
         return (await self._session.scalars(statement_reload)).one()
 
-    async def close_charge(self, charge_id: UUID, reason: str, resolved_at: datetime) -> bool:
+    async def close_charge(
+        self,
+        charge_id: UUID,
+        reason: str,
+        resolved_at: datetime,
+        *,
+        payment_method: str | None = None,
+    ) -> bool:
         """Close an unresolved charge without applying it and commit.
 
         Returns `False` when the charge is no longer pending (nothing changes): with simultaneous
         requests only one closes it.
+
+        `payment_method` (spec 014) is set from what Pagos reported for the payment, when known
+        (e.g. a rejected card still carries its method); `None` when it never got that far.
         """
         statement = (
             update(SubscriptionCharge)
@@ -241,7 +255,12 @@ class SubscriptionPeriodRepository:
                 SubscriptionCharge.id == charge_id,
                 SubscriptionCharge.status == ChargeStatus.PENDING,
             )
-            .values(status=ChargeStatus.CLOSED, closed_reason=reason, resolved_at=resolved_at)
+            .values(
+                status=ChargeStatus.CLOSED,
+                closed_reason=reason,
+                resolved_at=resolved_at,
+                payment_method=payment_method,
+            )
             .returning(SubscriptionCharge.id)
         )
         return await execute_and_commit(self._session, statement) is not None
@@ -255,6 +274,7 @@ class SubscriptionPeriodRepository:
         period_starts_at: datetime,
         period_ends_at: datetime,
         resolved_at: datetime,
+        payment_method: str | None = None,
     ) -> ApplyOutcome:
         """Apply a charge: mark it applied and move `paid_until`, in one transaction (research R5).
 
@@ -265,6 +285,8 @@ class SubscriptionPeriodRepository:
         2. Move `paid_until` to the end of the period, only if it still is what the caller read
            (compare-and-swap): the caller computed the period from that date. Otherwise `STALE`, and the
            claim of step 1 is undone too: the caller reads again and computes again.
+
+        `payment_method` (spec 014) is set from what Pagos reported for the approved payment.
         """
         claim = (
             update(SubscriptionCharge)
@@ -278,6 +300,7 @@ class SubscriptionPeriodRepository:
                 period_starts_at=period_starts_at,
                 period_ends_at=period_ends_at,
                 resolved_at=resolved_at,
+                payment_method=payment_method,
             )
             .returning(SubscriptionCharge.id)
         )

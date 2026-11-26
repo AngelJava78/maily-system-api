@@ -1391,6 +1391,57 @@ async def test_the_history_can_be_filtered_by_status():
     assert closed_total == 1 and [c.payment_id for c in closed_only] == [second_payment_id]
 
 
+async def test_the_history_snapshots_the_concept_at_the_time_of_the_charge():
+    # Spec 014: the same human-friendly text already sent to Pagos as `description`.
+    world = new_world(now=OVERDUE_NOW)
+    await world.service.start_payment(TOKEN, ORG_ID)
+
+    charges, _ = await world.service.list_charges(TOKEN, ORG_ID, page=1, page_size=10)
+
+    assert charges[0].concept == "Suscripción Plan Individual — mensual"
+
+
+@pytest.mark.parametrize(
+    ("payment_type_id", "expected"),
+    [
+        ("credit_card", "card"),
+        ("debit_card", "card"),
+        ("prepaid_card", "card"),
+        ("ticket", "oxxo"),
+        ("bank_transfer", "transfer"),
+        ("digital_wallet", None),  # a real Mercado Pago type this service does not map
+        (None, None),  # Pagos did not report one
+    ],
+)
+async def test_an_applied_charge_records_the_payment_method_pagos_reported(payment_type_id, expected):
+    # Spec 014: this service's own three categories, never Mercado Pago's own vocabulary.
+    world = new_world(now=OVERDUE_NOW)
+    payment_id, _ = await start_and_get_ids(world)
+    world.payments.set_status(
+        payment_id, "approved", updated_at="2026-12-10T09:30:00Z", payment_type_id=payment_type_id
+    )
+
+    await world.service.get_status(TOKEN, ORG_ID)
+
+    [charge] = world.periods.charges_of()
+    assert charge.status == ChargeStatus.APPLIED
+    assert charge.payment_method == expected
+
+
+@pytest.mark.parametrize("status", ["rejected", "cancelled"])
+async def test_a_closed_charge_also_records_the_payment_method_when_pagos_reported_one(status):
+    # A rejected card still carries its method: it is worth keeping even though the charge closes.
+    world = new_world(now=OVERDUE_NOW)
+    payment_id, _ = await start_and_get_ids(world)
+    world.payments.set_status(payment_id, status, payment_type_id="credit_card")
+
+    await world.service.get_status(TOKEN, ORG_ID)
+
+    [charge] = world.periods.charges_of()
+    assert charge.status == ChargeStatus.CLOSED
+    assert charge.payment_method == "card"
+
+
 async def test_the_history_checks_the_organization_first():
     world = new_world(now=OVERDUE_NOW)
 
