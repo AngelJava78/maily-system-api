@@ -39,6 +39,8 @@ CHARGE_COLUMNS = {
     "currency",
     "billing_period",
     "plan",
+    "concept",
+    "payment_method",
     "settles_due_at",
     "attempt",
     "status",

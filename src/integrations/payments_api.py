@@ -62,6 +62,11 @@ class PaymentRecord:
     resource_id: str
     checkout_url: str | None
     updated_at: datetime
+    # Spec 014: Mercado Pago's own vocabulary, forwarded verbatim by Pagos; `None` until the payment
+    # resolves with a method, and always `None` from an API that predates these fields. This service
+    # maps them to its own `card`/`oxxo`/`transfer` categories, never publishes them as-is.
+    payment_method_id: str | None = None
+    payment_type_id: str | None = None
 
 
 class PaymentsApiClient:
@@ -227,6 +232,8 @@ class PaymentsApiClient:
         resource_type = data.get("resource_type")
         resource_id = data.get("resource_id")
         checkout_url = data.get("checkout_url")
+        payment_method_id = data.get("payment_method_id")
+        payment_type_id = data.get("payment_type_id")
         updated_at_text = data.get("updated_at")
         try:
             payment_id = UUID(identifier) if isinstance(identifier, str) else None
@@ -247,6 +254,8 @@ class PaymentsApiClient:
             and isinstance(resource_type, str)
             and isinstance(resource_id, str)
             and (checkout_url is None or isinstance(checkout_url, str))
+            and (payment_method_id is None or isinstance(payment_method_id, str))
+            and (payment_type_id is None or isinstance(payment_type_id, str))
             and updated_at is not None
             and updated_at.utcoffset() is not None
         )
@@ -262,4 +271,6 @@ class PaymentsApiClient:
             resource_id=resource_id,
             checkout_url=checkout_url,
             updated_at=updated_at.astimezone(UTC),
+            payment_method_id=payment_method_id,
+            payment_type_id=payment_type_id,
         )

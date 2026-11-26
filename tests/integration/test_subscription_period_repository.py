@@ -193,6 +193,77 @@ async def test_a_charge_registered_without_a_plan_keeps_it_null(engine: AsyncEng
     assert charge.plan is None
 
 
+async def test_a_charge_is_registered_with_its_concept_snapshot(engine: AsyncEngine):
+    await create_period(engine)
+
+    charge = await add_charge(engine, concept="Suscripción Plan Individual — mensual")
+
+    assert charge.concept == "Suscripción Plan Individual — mensual"
+    assert charge.payment_method is None  # not known yet: the charge is still pending
+
+
+async def test_a_charge_registered_without_a_concept_keeps_it_null(engine: AsyncEngine):
+    await create_period(engine)
+
+    charge = await add_charge(engine)
+
+    assert charge.concept is None
+
+
+async def test_applying_a_charge_records_the_payment_method(engine: AsyncEngine):
+    await create_period(engine)
+    charge = await add_charge(engine)
+
+    async with repository(engine) as repo:
+        outcome = await repo.apply_charge(
+            charge_id=charge.id,
+            organization_id=ORGANIZATION,
+            expected_paid_until=None,
+            period_starts_at=TRIAL_END,
+            period_ends_at=TRIAL_END + timedelta(days=31),
+            resolved_at=NOW + timedelta(days=1),
+            payment_method="card",
+        )
+    assert outcome is ApplyOutcome.APPLIED
+    [row] = await fetch_all(
+        engine, "SELECT payment_method FROM subscription_charges WHERE id = :id", id=charge.id
+    )
+    assert row[0] == "card"
+
+
+async def test_closing_a_charge_records_the_payment_method_when_given(engine: AsyncEngine):
+    await create_period(engine)
+    charge = await add_charge(engine)
+
+    async with repository(engine) as repo:
+        assert await repo.close_charge(charge.id, ClosedReason.REJECTED, NOW, payment_method="oxxo") is True
+    [row] = await fetch_all(
+        engine, "SELECT payment_method FROM subscription_charges WHERE id = :id", id=charge.id
+    )
+    assert row[0] == "oxxo"
+
+
+async def test_the_history_includes_concept_and_payment_method(engine: AsyncEngine):
+    await create_period(engine)
+    charge = await add_charge(engine, concept="Suscripción Plan Individual — mensual")
+
+    async with repository(engine) as repo:
+        await repo.apply_charge(
+            charge_id=charge.id,
+            organization_id=ORGANIZATION,
+            expected_paid_until=None,
+            period_starts_at=TRIAL_END,
+            period_ends_at=TRIAL_END + timedelta(days=31),
+            resolved_at=NOW + timedelta(days=1),
+            payment_method="transfer",
+        )
+        charges, total = await repo.list_charges(ORGANIZATION, page=1, page_size=10)
+
+    assert total == 1
+    assert charges[0].concept == "Suscripción Plan Individual — mensual"
+    assert charges[0].payment_method == "transfer"
+
+
 async def test_the_same_payment_cannot_be_registered_twice(engine: AsyncEngine):
     await create_period(engine)
     payment = uuid.uuid4()

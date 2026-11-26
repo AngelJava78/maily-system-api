@@ -21,11 +21,20 @@ CHARGE_FIELDS = {
     "currency",
     "billing_period",
     "plan",
+    "concept",
+    "payment_method",
     "period_starts_at",
     "period_ends_at",
     "created_at",
 }
-CHARGE_NULLABLE_FIELDS = {"closed_reason", "plan", "period_starts_at", "period_ends_at"}
+CHARGE_NULLABLE_FIELDS = {
+    "closed_reason",
+    "plan",
+    "concept",
+    "payment_method",
+    "period_starts_at",
+    "period_ends_at",
+}
 PAGE_FIELDS = {"items", "total", "page", "page_size", "total_pages"}
 PERIOD_FIELDS = {
     "state",
@@ -271,13 +280,14 @@ def test_the_charges_answer_is_not_cached(charges: dict):
     assert "Cache-Control" in charges["responses"]["200"]["headers"]
 
 
-def test_the_charge_schema_publishes_its_ten_fields_with_the_right_ones_nullable(schema: dict):
+def test_the_charge_schema_publishes_its_twelve_fields_with_the_right_ones_nullable(schema: dict):
     charge_schema = schema["components"]["schemas"]["SubscriptionChargeRead"]
 
     assert set(charge_schema["required"]) == set(charge_schema["properties"]) == CHARGE_FIELDS
     properties = charge_schema["properties"]
     assert properties["status"]["enum"] == ["pending", "applied", "closed"]
     assert properties["closed_reason"]["anyOf"][0]["enum"] == ["rejected", "cancelled", "inconsistent", "refunded"]
+    assert properties["payment_method"]["anyOf"][0]["enum"] == ["card", "oxxo", "transfer"]
     assert properties["amount"]["type"] == "string"
     for name in CHARGE_NULLABLE_FIELDS:
         assert {"type": "null"} in properties[name]["anyOf"], name

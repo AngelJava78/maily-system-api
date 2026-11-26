@@ -221,6 +221,8 @@ CHARGE_KEYS = {
     "currency",
     "billing_period",
     "plan",
+    "concept",
+    "payment_method",
     "period_starts_at",
     "period_ends_at",
     "created_at",
@@ -240,6 +242,8 @@ def charge(**changes) -> SubscriptionChargeRead:
         "currency": "MXN",
         "billing_period": "monthly",
         "plan": "Titán",
+        "concept": "Suscripción Titán — mensual",
+        "payment_method": "card",
         "period_starts_at": PERIOD_START,
         "period_ends_at": PERIOD_END,
         "created_at": CREATED_AT,
@@ -248,7 +252,7 @@ def charge(**changes) -> SubscriptionChargeRead:
     return SubscriptionChargeRead(**values)
 
 
-def test_an_applied_charge_has_its_ten_keys_and_both_period_dates():
+def test_an_applied_charge_has_its_twelve_keys_and_both_period_dates():
     body = charge().model_dump(mode="json")
 
     assert set(body) == CHARGE_KEYS
@@ -310,6 +314,24 @@ def test_the_id_of_a_charge_is_published_as_text():
 
 def test_the_plan_of_a_charge_created_before_this_field_existed_is_null():
     assert charge(plan=None).model_dump(mode="json")["plan"] is None
+
+
+def test_the_concept_of_a_charge_created_before_this_field_existed_is_null():
+    assert charge(concept=None).model_dump(mode="json")["concept"] is None
+
+
+def test_the_payment_method_of_a_pending_or_unmapped_charge_is_null():
+    assert charge(payment_method=None).model_dump(mode="json")["payment_method"] is None
+
+
+@pytest.mark.parametrize("value", ["oxxo", "transfer"])
+def test_the_payment_method_accepts_its_other_two_values(value):
+    assert charge(payment_method=value).model_dump(mode="json")["payment_method"] == value
+
+
+def test_another_payment_method_is_refused():
+    with pytest.raises(ValidationError):
+        charge(payment_method="cash")
 
 
 def page(**changes) -> SubscriptionChargesPageRead:

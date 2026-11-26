@@ -687,7 +687,7 @@ async def test_story_5_a_plan_that_changes_to_a_free_one_has_nothing_to_charge_a
 
 CHARGE_KEYS = {
     "id", "status", "closed_reason", "amount", "currency", "billing_period", "plan",
-    "period_starts_at", "period_ends_at", "created_at",
+    "concept", "payment_method", "period_starts_at", "period_ends_at", "created_at",
 }
 
 
@@ -712,11 +712,13 @@ async def test_a_pending_charge_appears_with_both_period_dates_null(billing_api:
     assert charge["period_starts_at"] is None and charge["period_ends_at"] is None
     assert (charge["amount"], charge["currency"], charge["billing_period"]) == ("499.00", "MXN", "monthly")
     assert charge["plan"] == "Plan Individual"
+    assert charge["concept"] == "Suscripción Plan Individual — mensual"
+    assert charge["payment_method"] is None  # not known yet: it is still pending
 
 
 async def test_an_applied_charge_shows_the_period_it_covered(billing_api: BillingApi, plan_id: int):
     billing_api.clock.set(at("2026-12-01T10:00:00Z"))
-    await start_and_approve(billing_api, "2026-12-01T10:00:00Z")
+    await start_and_approve(billing_api, "2026-12-01T10:00:00Z", payment_type_id="credit_card")
     await billing_api.get_period()  # the period read is what applies the charge
 
     body = (await billing_api.list_charges()).json()
@@ -724,6 +726,35 @@ async def test_an_applied_charge_shows_the_period_it_covered(billing_api: Billin
     [charge] = body["items"]
     assert charge["status"] == "applied"
     assert (charge["period_starts_at"], charge["period_ends_at"]) == (TRIAL_END, "2027-01-04T15:30:00Z")
+    assert charge["payment_method"] == "card"
+
+
+async def test_a_closed_charge_also_shows_the_payment_method_pagos_reported(
+    billing_api: BillingApi, plan_id: int
+):
+    billing_api.clock.set(at("2026-12-10T09:00:00Z"))
+    await billing_api.start_payment()
+    payment_id = (await billing_api.payments())[-1]["id"]
+    await billing_api.set_payment_status(payment_id, "rejected", payment_type_id="ticket")
+    await billing_api.get_period()  # reconciles and closes the charge
+
+    [charge] = (await billing_api.list_charges()).json()["items"]
+
+    assert (charge["status"], charge["closed_reason"]) == ("closed", "rejected")
+    assert charge["payment_method"] == "oxxo"
+
+
+async def test_a_payment_method_this_service_does_not_recognise_is_null_not_guessed(
+    billing_api: BillingApi, plan_id: int
+):
+    billing_api.clock.set(at("2026-12-01T10:00:00Z"))
+    await start_and_approve(billing_api, "2026-12-01T10:00:00Z", payment_type_id="digital_wallet")
+    await billing_api.get_period()
+
+    [charge] = (await billing_api.list_charges()).json()["items"]
+
+    assert charge["status"] == "applied"
+    assert charge["payment_method"] is None
 
 
 @pytest.mark.parametrize(("status", "reason"), [("rejected", "rejected"), ("cancelled", "cancelled")])
