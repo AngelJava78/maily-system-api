@@ -120,16 +120,26 @@ class SubscriptionPeriodService:
     # --- spec 012: the history of charges ---
 
     async def list_charges(
-        self, token: str, organization_id: UUID, *, page: int, page_size: int
+        self,
+        token: str,
+        organization_id: UUID,
+        *,
+        page: int,
+        page_size: int,
+        status: str | None = None,
     ) -> tuple[list[SubscriptionCharge], int]:
         """A page of the charge history of an organization of which the person is the owner.
 
         Only the ownership check is done (the same as `get_status`): this is a read-only history, so
         it does not create the period record nor reconcile with the payments API — a charge can show
         as `pending` here even when the full period read would have resolved it by now.
+
+        `status` (spec 013) filters server-side; see `SubscriptionPeriodRepository.list_charges`.
         """
         await self._read_organization(token, organization_id)
-        return await self._periods.list_charges(organization_id, page=page, page_size=page_size)
+        return await self._periods.list_charges(
+            organization_id, page=page, page_size=page_size, status=status
+        )
 
     # --- story 2: starting the payment ---
 
@@ -190,6 +200,7 @@ class SubscriptionPeriodService:
                 billing_period=billing_period,
                 settles_due_at=due,
                 attempt=attempt,
+                plan=context.plan.name,
             )
         except UniqueViolationError:
             # A simultaneous request registered a charge for this period first. Normally it is the very

@@ -169,17 +169,28 @@ async def test_a_charge_is_registered_as_pending_with_what_was_requested(engine:
     await create_period(engine)
     payment = uuid.uuid4()
 
-    charge = await add_charge(engine, payment_id=payment, billing_period="annual", amount=Decimal("4990.00"))
+    charge = await add_charge(
+        engine, payment_id=payment, billing_period="annual", amount=Decimal("4990.00"), plan="Plan Titán"
+    )
 
     assert charge.payment_id == payment
     assert charge.organization_id == ORGANIZATION
     assert charge.amount == Decimal("4990.00")
     assert (charge.currency, charge.billing_period, charge.attempt) == ("MXN", "annual", 1)
+    assert charge.plan == "Plan Titán"
     assert charge.settles_due_at == TRIAL_END
     assert charge.status == ChargeStatus.PENDING
     assert charge.closed_reason is None and charge.resolved_at is None
     assert charge.period_starts_at is None and charge.period_ends_at is None
     assert isinstance(charge.id, uuid.UUID) and charge.created_at is not None
+
+
+async def test_a_charge_registered_without_a_plan_keeps_it_null(engine: AsyncEngine):
+    await create_period(engine)
+
+    charge = await add_charge(engine)
+
+    assert charge.plan is None
 
 
 async def test_the_same_payment_cannot_be_registered_twice(engine: AsyncEngine):
@@ -534,9 +545,16 @@ async def test_twenty_simultaneous_applications_of_one_charge_move_the_date_once
 # --- the history of charges (spec 012) ---
 
 
-async def list_charges(engine: AsyncEngine, organization_id: uuid.UUID = ORGANIZATION, *, page=1, page_size=10):
+async def list_charges(
+    engine: AsyncEngine,
+    organization_id: uuid.UUID = ORGANIZATION,
+    *,
+    page=1,
+    page_size=10,
+    status=None,
+):
     async with repository(engine) as repo:
-        return await repo.list_charges(organization_id, page=page, page_size=page_size)
+        return await repo.list_charges(organization_id, page=page, page_size=page_size, status=status)
 
 
 async def test_an_organization_without_charges_has_an_empty_history(engine: AsyncEngine):
@@ -604,6 +622,24 @@ async def test_the_history_shows_every_status_with_its_own_fields(engine: AsyncE
     )
     assert by_id[closed.id].status == ChargeStatus.CLOSED
     assert by_id[closed.id].closed_reason == ClosedReason.REJECTED.value
+
+
+async def test_the_history_can_be_filtered_by_status(engine: AsyncEngine):
+    await create_period(engine)
+    pending = await add_charge(engine, payment_id=uuid.uuid4())
+    applied_charge = await add_charge(engine, payment_id=uuid.uuid4(), settles_due_at=NEXT_DUE)
+    closed = await add_charge(engine, payment_id=uuid.uuid4(), settles_due_at=LAST_DUE)
+    await apply(engine, applied_charge.id, start=TRIAL_END, end=NEXT_DUE)
+    async with repository(engine) as repo:
+        await repo.close_charge(closed.id, ClosedReason.REJECTED, NOW)
+
+    pending_only, pending_total = await list_charges(engine, status="pending")
+    applied_only, applied_total = await list_charges(engine, status="applied")
+    closed_only, closed_total = await list_charges(engine, status="closed")
+
+    assert pending_total == 1 and [c.id for c in pending_only] == [pending.id]
+    assert applied_total == 1 and [c.id for c in applied_only] == [applied_charge.id]
+    assert closed_total == 1 and [c.id for c in closed_only] == [closed.id]
 
 
 async def test_two_different_charges_applied_at_the_same_time_both_end_up_applied(engine: AsyncEngine):

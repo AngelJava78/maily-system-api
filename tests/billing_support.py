@@ -354,6 +354,7 @@ class FakePeriodRepository:
         settles_due_at: datetime,
         attempt: int,
         currency: str = "MXN",
+        plan: str | None = None,
     ) -> SubscriptionCharge:
         self.calls["add_charge"] += 1
         if organization_id not in self.periods:
@@ -382,6 +383,7 @@ class FakePeriodRepository:
             billing_period=billing_period,
             settles_due_at=settles_due_at,
             attempt=attempt,
+            plan=plan,
             status=ChargeStatus.PENDING,
             closed_reason=None,
             period_starts_at=None,
@@ -430,10 +432,12 @@ class FakePeriodRepository:
         return ApplyOutcome.APPLIED
 
     async def list_charges(
-        self, organization_id: uuid.UUID, *, page: int, page_size: int
+        self, organization_id: uuid.UUID, *, page: int, page_size: int, status: str | None = None
     ) -> tuple[list[SubscriptionCharge], int]:
         self.calls["list_charges"] += 1
         charges = self.charges_of(organization_id)
+        if status is not None:
+            charges = [c for c in charges if c.status == status]
         charges.reverse()  # most recent first, as the real Repository orders them
         total = len(charges)
         start = (page - 1) * page_size

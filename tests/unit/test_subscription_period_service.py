@@ -1358,6 +1358,39 @@ async def test_the_history_only_lists_charges_of_its_own_organization():
     assert charges[0].organization_id == ORG_ID
 
 
+async def test_the_history_snapshots_the_plan_name_at_the_time_of_the_charge():
+    # Spec 013: a later rename of the plan in the catalog must not rewrite what an old charge says.
+    world = new_world(now=OVERDUE_NOW, plan=make_plan(name="Plan Esencial"))
+    await world.service.start_payment(TOKEN, ORG_ID)  # charge 1, while the plan was "Plan Esencial"
+    world.plans.plans[1] = make_plan(name="Plan Titán", monthly_price="799.00")
+    await world.service.start_payment(TOKEN, ORG_ID)  # charge 2, another attempt, now "Plan Titán"
+
+    charges, _ = await world.service.list_charges(TOKEN, ORG_ID, page=1, page_size=10)
+
+    newest, oldest = charges
+    assert (newest.plan, oldest.plan) == ("Plan Titán", "Plan Esencial")
+
+
+async def test_the_history_can_be_filtered_by_status():
+    world = new_world(now=OVERDUE_NOW)
+    first_payment_id, _ = await start_and_get_ids(world)  # charge 1, stays pending
+    world.plans.plans[1] = make_plan(monthly_price="799.00")
+    await world.service.start_payment(TOKEN, ORG_ID)  # charge 2, another attempt
+    second_payment_id = world.payments.created()[-1]
+    world.payments.set_status(second_payment_id, "rejected")
+    await world.service.get_status(TOKEN, ORG_ID)  # reconciles: charge 2 closes as rejected
+
+    pending_only, pending_total = await world.service.list_charges(
+        TOKEN, ORG_ID, page=1, page_size=10, status="pending"
+    )
+    closed_only, closed_total = await world.service.list_charges(
+        TOKEN, ORG_ID, page=1, page_size=10, status="closed"
+    )
+
+    assert pending_total == 1 and [c.payment_id for c in pending_only] == [first_payment_id]
+    assert closed_total == 1 and [c.payment_id for c in closed_only] == [second_payment_id]
+
+
 async def test_the_history_checks_the_organization_first():
     world = new_world(now=OVERDUE_NOW)
 

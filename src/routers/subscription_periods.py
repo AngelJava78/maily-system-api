@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Path, Query, Response
 
 from src.dependencies import get_subscription_period_service
 from src.dtos.subscription_period import (
+    ChargeStatusName,
     PlanRead,
     SubscriptionChargeRead,
     SubscriptionChargesPageRead,
@@ -50,6 +51,10 @@ PageQuery = Annotated[int, Query(ge=1, description="Página (1 es la primera).")
 PageSizeQuery = Annotated[
     int, Query(ge=1, le=100, description="Cuántos cobros como máximo trae una página.")
 ]
+StatusQuery = Annotated[
+    ChargeStatusName | None,
+    Query(description="Si se da, solo trae los cobros con ese estado (`pending`/`applied`/`closed`)."),
+]
 
 
 def _to_period_read(view: PeriodView) -> SubscriptionPeriodRead:
@@ -83,6 +88,7 @@ def _to_charge_read(charge: Any) -> SubscriptionChargeRead:
         amount=charge.amount,
         currency="MXN",
         billing_period=charge.billing_period,  # type: ignore[arg-type]
+        plan=charge.plan,
         period_starts_at=charge.period_starts_at,
         period_ends_at=charge.period_ends_at,
         created_at=charge.created_at,
@@ -173,6 +179,7 @@ CHARGE_EXAMPLE = {
     "amount": "499.00",
     "currency": "MXN",
     "billing_period": "monthly",
+    "plan": "Plan Individual",
     "period_starts_at": "2026-10-19T12:00:00Z",
     "period_ends_at": "2026-11-19T12:00:00Z",
     "created_at": "2026-10-19T11:58:03Z",
@@ -355,6 +362,10 @@ cerrados sin pagarse (`closed`, con su `closed_reason`), del más reciente al m�
 
 - `period_starts_at`/`period_ends_at` solo están presentes cuando `status` es `applied` (el periodo que
   ese pago cubrió); `closed_reason` solo cuando `status` es `closed`. En cualquier otro caso valen `null`.
+- `plan` (spec 013) es el nombre del plan vigente cuando se generó el cobro, como una foto: un cambio
+  posterior de nombre del plan no lo reescribe. `null` en los cobros creados antes de este campo.
+- `status` (parámetro opcional, spec 013) filtra el listado del lado del servidor; `total`/`total_pages`
+  reflejan el total ya filtrado, no el de toda la organización.
 - No incluye el identificador del pago en Pagos ni los datos internos de la reconciliación: solo lo que
   la persona necesita ver.
 - Esta lectura no sincroniza nada con Pagos (a diferencia de consultar el periodo): un cobro `pending`
@@ -452,7 +463,10 @@ async def list_subscription_charges(
     token: BearerTokenDep,
     page: PageQuery = 1,
     page_size: PageSizeQuery = DEFAULT_PAGE_SIZE,
+    status: StatusQuery = None,
 ) -> SubscriptionChargesPageRead:
-    charges, total = await service.list_charges(token, organization_id, page=page, page_size=page_size)
+    charges, total = await service.list_charges(
+        token, organization_id, page=page, page_size=page_size, status=status
+    )
     response.headers["Cache-Control"] = "no-store"
     return _to_charges_page_read(charges, total, page, page_size)

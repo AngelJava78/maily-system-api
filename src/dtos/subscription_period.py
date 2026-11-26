@@ -176,6 +176,14 @@ class SubscriptionChargeRead(BaseModel):
     billing_period: BillingPeriodName = Field(
         description="Periodo de cobro con el que se generó: `monthly` o `annual`.", examples=["monthly"]
     )
+    plan: str | None = Field(
+        description=(
+            "Nombre del plan vigente cuando se generó el cobro (spec 013), como una foto: un cambio "
+            "posterior de nombre del plan no reescribe este valor. `null` en los cobros creados antes "
+            "de que este campo existiera."
+        ),
+        examples=["Titán"],
+    )
     period_starts_at: AwareDatetime | None = Field(
         description=(
             "Inicio del periodo que cubrió el pago, en ISO 8601 con zona horaria UTC. `null` salvo "

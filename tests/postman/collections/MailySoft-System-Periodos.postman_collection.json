@@ -1760,8 +1760,95 @@
                   "pm.test(\"aplicado, sin razón de cierre\", function () { pm.expect(charge.status).to.eql(\"applied\"); pm.expect(charge.closed_reason).to.eql(null); });",
                   "pm.test(\"importe, moneda y periodo de cobro\", function () { pm.expect(charge.amount).to.eql(\"499.00\"); pm.expect(charge.currency).to.eql(\"MXN\"); pm.expect(charge.billing_period).to.eql(\"monthly\"); });",
                   "pm.test(\"el periodo que cubrió termina en la fecha de pago vigente\", function () { pm.expect(charge.period_ends_at).to.eql(pm.collectionVariables.get(\"paymentDueAt\")); pm.expect(Date.parse(charge.period_starts_at)).to.be.below(Date.parse(charge.period_ends_at)); });",
+                  "pm.test(\"trae el plan vigente al momento del cobro (spec 013)\", function () { pm.expect(charge.plan).to.eql(pm.collectionVariables.get(\"trialPlanName\")); });",
                   "pm.test(\"nunca el identificador del pago ni el intento\", function () { pm.expect(charge).to.not.have.property(\"payment_id\"); pm.expect(charge).to.not.have.property(\"attempt\"); });",
                   "pm.test(\"la respuesta no se guarda en caché\", function () { pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list_subscription_charges: status=applied trae el cobro, status=pending lo deja vacío (spec 013)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/charges?status=applied",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "charges"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "applied"
+                }
+              ]
+            },
+            "description": "El filtro por estado (spec 013) deja `total`/`total_pages` ya reflejando el subconjunto filtrado."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status=applied: estado 200, un cobro\", function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.total).to.eql(1);",
+                  "  pm.expect(body.items[0].status).to.eql(\"applied\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list_subscription_charges: status=approved no es válido (spec 013)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/subscription-periods/{{orgId}}/charges?status=approved",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "subscription-periods",
+                "{{orgId}}",
+                "charges"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "approved"
+                }
+              ]
+            },
+            "description": "Un valor de `status` fuera de pending/applied/closed se rechaza con 422 (spec 013)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status inválido: 422 validation_error\", function () {",
+                  "  pm.response.to.have.status(422);",
+                  "  pm.expect(pm.response.json().code).to.eql(\"validation_error\");",
+                  "});"
                 ]
               }
             }

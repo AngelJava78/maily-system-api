@@ -96,7 +96,7 @@ class SubscriptionPeriodRepository:
         return charges
 
     async def list_charges(
-        self, organization_id: UUID, *, page: int, page_size: int
+        self, organization_id: UUID, *, page: int, page_size: int, status: str | None = None
     ) -> tuple[list[SubscriptionCharge], int]:
         """A page of the charge history of the organization, most recent first (spec 012).
 
@@ -104,14 +104,21 @@ class SubscriptionPeriodRepository:
         trigger a reconciliation with the payments API (the full period read already does that
         whenever the person visits the payment screen), so a charge can legitimately still show as
         `pending` here.
+
+        `status` (spec 013), when given, filters server-side; `total`/`total_pages` then reflect the
+        filtered count, not the organization's whole history.
         """
-        condition = SubscriptionCharge.organization_id == organization_id
+        conditions = [SubscriptionCharge.organization_id == organization_id]
+        if status is not None:
+            conditions.append(SubscriptionCharge.status == status)
         total = (
-            await self._session.scalars(select(func.count()).select_from(SubscriptionCharge).where(condition))
+            await self._session.scalars(
+                select(func.count()).select_from(SubscriptionCharge).where(*conditions)
+            )
         ).one()
         statement = (
             select(SubscriptionCharge)
-            .where(condition)
+            .where(*conditions)
             .order_by(SubscriptionCharge.created_at.desc(), SubscriptionCharge.id.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
@@ -187,12 +194,16 @@ class SubscriptionPeriodRepository:
         settles_due_at: datetime,
         attempt: int,
         currency: str = "MXN",
+        plan: str | None = None,
     ) -> SubscriptionCharge:
         """Register a payment that the payments API created, as a pending charge, and commit.
 
         A payment that is already registered, or conditions and attempt that already exist, raise
         `UniqueViolationError` (with the name of the constraint); the organization must have a period
         (`ForeignKeyViolationError` otherwise). Any other failure is re-raised as it is.
+
+        `plan` (spec 013) is a snapshot of the plan's name at this instant, stored as-is; `None` only
+        when the caller does not know it (there is no such case in production, but tests may omit it).
         """
         statement = (
             insert(SubscriptionCharge)
@@ -204,6 +215,7 @@ class SubscriptionPeriodRepository:
                 billing_period=billing_period,
                 settles_due_at=settles_due_at,
                 attempt=attempt,
+                plan=plan,
             )
             .returning(SubscriptionCharge.id)
         )

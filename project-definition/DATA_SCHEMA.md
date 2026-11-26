@@ -338,6 +338,7 @@ CREATE TABLE subscription_charges (
 	amount numeric(10,2) NOT NULL, -- [spec 010 FR-016, FR-018] pesos mexicanos, sin IVA, nunca float
 	currency varchar(3) NOT NULL,
 	billing_period varchar(10) NOT NULL, -- [spec 010 FR-029] duración del periodo que cubrirá
+	plan varchar(100), -- [spec 013-charges-plan-and-status-filter] foto del nombre del plan al crear el cobro; null en los anteriores a esta columna
 	settles_due_at timestamptz NOT NULL, -- [spec 010 FR-022] la fecha de pago que salda
 	attempt integer NOT NULL, -- [spec 010 FR-022, FR-023] 1 + intentos previos ya terminados con las mismas condiciones
 	status varchar(10) NOT NULL DEFAULT 'pending',
